@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Invoice &amp; Billing System</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: #f5f7fa; color: #1a202c; }
+  header { background: #1a365d; color: #fff; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 20px; }
+  header span { font-size: 13px; opacity: .8; }
+  main { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+  .card { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); padding: 20px; margin-bottom: 20px; }
+  .card h2 { font-size: 15px; margin-bottom: 12px; color: #2d3748; }
+  input[type=file], select, input[type=month], button { padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 14px; }
+  button { background: #2b6cb0; color: #fff; border: none; cursor: pointer; }
+  button:hover { background: #2c5282; }
+  button.danger { background: #e53e3e; }
+  button.small { padding: 4px 10px; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e2e8f0; }
+  th { color: #718096; font-weight: 600; font-size: 13px; text-transform: uppercase; }
+  .badge { padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .unpaid { background: #fefcbf; color: #975a16; }
+  .paid { background: #c6f6d5; color: #22543d; }
+  .overdue { background: #fed7d7; color: #9b2c2c; }
+  .cancelled { background: #e2e8f0; color: #4a5568; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .stat { background: #edf2f7; border-radius: 8px; padding: 14px; text-align: center; }
+  .stat .num { font-size: 22px; font-weight: 700; color: #2b6cb0; }
+  .stat .label { font-size: 12px; color: #718096; margin-top: 4px; }
+  #msg { padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; display: none; font-size: 14px; }
+  #msg.ok { background: #c6f6d5; color: #22543d; display: block; }
+  #msg.err { background: #fed7d7; color: #9b2c2c; display: block; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧾 Invoice &amp; Billing</h1>
+  <span id="health">đang kiểm tra...</span>
+</header>
+<main>
+  <div id="msg"></div>
+
+  <div class="card">
+    <h2>Upload hóa đơn</h2>
+    <div class="row">
+      <input type="file" id="file" accept=".pdf,.txt,.md,.log">
+      <button onclick="upload()">Upload &amp; Trích xuất</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Báo cáo theo tháng</h2>
+    <div class="row">
+      <input type="month" id="month">
+      <button onclick="loadReport()">Xem báo cáo</button>
+    </div>
+    <div class="stats" id="stats" style="margin-top:16px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Danh sách hóa đơn</h2>
+    <div class="row" style="margin-bottom:14px">
+      <select id="filter" onchange="loadInvoices()">
+        <option value="">Tất cả</option>
+        <option value="unpaid">Chưa thanh toán</option>
+        <option value="paid">Đã thanh toán</option>
+        <option value="overdue">Quá hạn</option>
+        <option value="cancelled">Đã hủy</option>
+      </select>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Số hóa đơn</th><th>Nhà cung cấp</th><th>Ngày</th><th>Tổng</th><th>Thuế</th><th>Trạng thái</th><th>Thao tác</th></tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const api = "";  // cùng origin
+
+function showMsg(text, ok) {
+  const el = document.getElementById("msg");
+  el.textContent = text;
+  el.className = ok ? "ok" : "err";
+  setTimeout(() => el.style.display = "none", 4000);
+}
+
+async function health() {
+  try {
+    const r = await fetch(api + "/health");
+    const d = await r.json();
+    document.getElementById("health").textContent = "● " + d.status;
+  } catch { document.getElementById("health").textContent = "● offline"; }
+}
+
+async function upload() {
+  const file = document.getElementById("file").files[0];
+  if (!file) return showMsg("Chọn file trước", false);
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const r = await fetch(api + "/invoices/upload", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Lỗi");
+    showMsg(`Đã trích xuất: ${d.invoice_number} — ${d.vendor} — $${d.total} (độ tin cậy ${(d.confidence*100).toFixed(0)}%)`, true);
+    loadInvoices();
+  } catch (e) { showMsg(e.message, false); }
+}
+
+async function loadInvoices() {
+  const status = document.getElementById("filter").value;
+  const q = status ? "?status=" + status : "";
+  const r = await fetch(api + "/invoices" + q);
+  const rows = await r.json();
+  const tbody = document.getElementById("tbody");
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#a0aec0">Chưa có hóa đơn</td></tr>'; return; }
+  tbody.innerHTML = rows.map(i => `
+    <tr>
+      <td>${i.invoice_number}</td>
+      <td>${i.vendor}</td>
+      <td>${i.issue_date || "—"}</td>
+      <td>$${i.total.toFixed(2)}</td>
+      <td>$${i.tax.toFixed(2)}</td>
+      <td><span class="badge ${i.status}">${i.status}</span></td>
+      <td>
+        ${i.status !== "paid" ? `<button class="small" onclick="markPaid('${i.id}')">✓ Paid</button>` : ""}
+        <button class="small danger" onclick="del('${i.id}')">✕</button>
+      </td>
+    </tr>`).join("");
+}
+
+async function markPaid(id) {
+  await fetch(api + "/invoices/" + id, { method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({status: "paid"}) });
+  showMsg("Đã đánh dấu thanh toán", true);
+  loadInvoices();
+}
+
+async function del(id) {
+  if (!confirm("Xóa hóa đơn này?")) return;
+  await fetch(api + "/invoices/" + id, { method: "DELETE" });
+  showMsg("Đã xóa", true);
+  loadInvoices();
+}
+
+async function loadReport() {
+  const month = document.getElementById("month").value;
+  if (!month) return showMsg("Chọn tháng", false);
+  const r = await fetch(api + "/reports/monthly/" + month);
+  if (!r.ok) return showMsg("Không có hóa đơn tháng này", false);
+  const d = await r.json();
+  document.getElementById("stats").innerHTML = `
+    <div class="stat"><div class="num">${d.invoice_count}</div><div class="label">Hóa đơn</div></div>
+    <div class="stat"><div class="num">$${d.total_amount.toFixed(2)}</div><div class="label">Tổng tiền</div></div>
+    <div class="stat"><div class="num">$${d.total_tax.toFixed(2)}</div><div class="label">Thuế</div></div>
+    <div class="stat"><div class="num">$${d.paid_amount.toFixed(2)}</div><div class="label">Đã thu</div></div>
+    <div class="stat"><div class="num">$${d.unpaid_amount.toFixed(2)}</div><div class="label">Chưa thu</div></div>`;
+}
+
+// init
+document.getElementById("month").value = new Date().toISOString().slice(0, 7);
+health();
+loadInvoices();
+</script>
+</body>
+</html>

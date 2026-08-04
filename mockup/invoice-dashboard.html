@@ -1,0 +1,346 @@
+
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoice &amp; Billing — Dashboard</title>
+<style>
+  :root{
+    --bg:#0f1117; --surface:#161a22; --surface-2:#1d222d; --border:#262c38;
+    --text:#e2e8f0; --text-dim:#94a3b8; --accent:#3b82f6; --accent-hover:#2563eb;
+    --success:#22c55e; --warning:#eab308; --danger:#ef4444; --neutral:#64748b;
+    --fs-xs:12px; --fs-sm:13px; --fs-md:14px; --fs-lg:19px; --fs-xl:22px;
+    --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:20px; --s-6:24px; --s-8:32px;
+    --r-sm:6px; --r-md:10px; --r-lg:16px;
+    --font:-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:var(--font); font-size:var(--fs-md); line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  button{font-family:inherit; cursor:pointer}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:var(--r-sm)}
+
+  /* ---------- Header ---------- */
+  header{
+    background:#0b0e13; border-bottom:1px solid var(--border);
+    padding:14px 24px; display:flex; align-items:center; gap:var(--s-3);
+  }
+  .logo-mark{
+    width:36px; height:36px; border-radius:var(--r-sm); flex:none;
+    background:linear-gradient(135deg, var(--accent), var(--accent-hover));
+    display:grid; place-items:center; color:#fff;
+  }
+  .brand-name{font-size:var(--fs-lg); font-weight:700; letter-spacing:-.2px}
+  .brand-sub{font-size:var(--fs-xs); color:var(--text-dim)}
+  .header-user{margin-left:auto; display:flex; align-items:center; gap:var(--s-3)}
+  .avatar{
+    width:32px; height:32px; border-radius:50%; background:var(--surface-2);
+    border:1px solid var(--border); display:grid; place-items:center;
+    font-size:var(--fs-xs); font-weight:700; color:var(--accent);
+  }
+  .user-name{font-size:var(--fs-sm); color:var(--text)}
+  .user-role{font-size:var(--fs-xs); color:var(--text-dim)}
+
+  /* ---------- Main ---------- */
+  main{max-width:960px; margin:var(--s-6) auto var(--s-8); padding:0 24px;
+    display:flex; flex-direction:column; gap:var(--s-5)}
+
+  /* ---------- Stats ---------- */
+  .stats-grid{
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(130px,1fr)); gap:var(--s-3);
+  }
+  .stat-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--r-md);
+    padding:var(--s-5); transition:border-color .15s, transform .15s;
+  }
+  .stat-card:hover{border-color:color-mix(in srgb, var(--accent) 40%, var(--border)); transform:translateY(-1px)}
+  .stat-label{display:flex; align-items:center; gap:var(--s-2); font-size:var(--fs-xs);
+    text-transform:uppercase; letter-spacing:.6px; color:var(--text-dim); white-space:nowrap}
+  .stat-dot{width:8px; height:8px; border-radius:50%; flex:none}
+  .stat-value{font-size:var(--fs-xl); font-weight:700; margin-top:var(--s-2);
+    font-variant-numeric:tabular-nums; letter-spacing:-.3px}
+  .stat-sub{font-size:var(--fs-xs); color:var(--text-dim); margin-top:var(--s-1)}
+  .dot-accent{background:var(--accent)} .dot-success{background:var(--success)}
+  .dot-warning{background:var(--warning)} .dot-danger{background:var(--danger)}
+
+  /* ---------- Toolbar ---------- */
+  .toolbar{display:flex; flex-direction:column; gap:var(--s-3)}
+  .toolbar-row{display:flex; gap:var(--s-3); align-items:center; flex-wrap:wrap}
+  .search-wrap{position:relative; flex:1; min-width:220px; max-width:360px}
+  .search-wrap svg{position:absolute; left:10px; top:50%; transform:translateY(-50%); color:var(--text-dim); pointer-events:none}
+  .search-input{
+    width:100%; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:var(--r-sm); color:var(--text); font-size:var(--fs-md);
+    padding:9px 12px 9px 34px;
+  }
+  .search-input::placeholder{color:var(--text-dim)}
+  .search-input:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent)}
+
+  .btn{
+    display:inline-flex; align-items:center; gap:var(--s-2);
+    border-radius:var(--r-sm); font-size:var(--fs-md); font-weight:600;
+    padding:9px 12px; border:1px solid transparent; transition:background .15s, border-color .15s, color .15s;
+  }
+  .btn-primary{background:var(--accent); color:#fff; box-shadow:0 1px 3px rgba(0,0,0,.3)}
+  .btn-primary:hover{background:var(--accent-hover)}
+  .btn-sm{padding:4px 10px; font-size:var(--fs-sm); border-radius:var(--r-sm)}
+  .btn-success-ghost{background:transparent; border-color:var(--border); color:var(--success)}
+  .btn-success-ghost:hover{background:color-mix(in srgb, var(--success) 12%, transparent); border-color:var(--success)}
+  .btn-danger-ghost{background:transparent; border-color:var(--border); color:var(--text-dim)}
+  .btn-danger-ghost:hover{background:color-mix(in srgb, var(--danger) 12%, transparent); border-color:var(--danger); color:var(--danger)}
+  .btn svg{flex:none}
+
+  .filter-chips{display:flex; gap:var(--s-2); flex-wrap:wrap}
+  .chip{
+    background:var(--surface); border:1px solid var(--border); color:var(--text-dim);
+    border-radius:999px; padding:5px 12px; font-size:var(--fs-xs); font-weight:600;
+    display:inline-flex; align-items:center; gap:var(--s-2); transition:all .15s;
+  }
+  .chip:hover{border-color:var(--accent); color:var(--text)}
+  .chip.active{background:color-mix(in srgb, var(--accent) 15%, transparent);
+    border-color:var(--accent); color:var(--accent)}
+  .chip-count{font-size:var(--fs-xs); color:var(--text-dim); font-variant-numeric:tabular-nums}
+  .chip.active .chip-count{color:var(--accent)}
+
+  /* ---------- Table ---------- */
+  .table-card{background:var(--surface); border:1px solid var(--border); border-radius:var(--r-lg); overflow:hidden}
+  .table-scroll{overflow-x:auto}
+  table{width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums}
+  thead th{
+    font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.6px; color:var(--text-dim);
+    text-align:left; padding:var(--s-3) var(--s-4); border-bottom:1px solid var(--border);
+    background:var(--surface); white-space:nowrap;
+  }
+  tbody td{padding:var(--s-3) var(--s-4); border-bottom:1px solid var(--border); font-size:var(--fs-md)}
+  tbody tr{transition:background .12s}
+  tbody tr:hover{background:var(--surface-2)}
+  tbody tr:last-child td{border-bottom:none}
+  .num{text-align:right; white-space:nowrap}
+  .invoice-no{font-family:var(--mono); font-size:var(--fs-sm); white-space:nowrap}
+  .customer{font-weight:600}
+  .customer-en{font-size:var(--fs-xs); color:var(--text-dim); margin-top:2px}
+  .actions{text-align:right; white-space:nowrap}
+  .actions .btn-sm{margin-left:var(--s-2)}
+
+  .badge{
+    display:inline-flex; align-items:center; gap:6px;
+    padding:3px 10px; border-radius:999px; font-size:var(--fs-xs); font-weight:600;
+    border:1px solid transparent; white-space:nowrap;
+  }
+  .badge::before{content:""; width:6px; height:6px; border-radius:50%; background:currentColor}
+  td[data-status="paid"] .badge{background:color-mix(in srgb, var(--success) 15%, transparent); color:var(--success); border-color:color-mix(in srgb, var(--success) 30%, transparent)}
+  td[data-status="unpaid"] .badge{background:color-mix(in srgb, var(--warning) 15%, transparent); color:var(--warning); border-color:color-mix(in srgb, var(--warning) 30%, transparent)}
+  td[data-status="overdue"] .badge{background:color-mix(in srgb, var(--danger) 15%, transparent); color:var(--danger); border-color:color-mix(in srgb, var(--danger) 30%, transparent)}
+  td[data-status="cancelled"] .badge{background:color-mix(in srgb, var(--neutral) 15%, transparent); color:var(--neutral); border-color:color-mix(in srgb, var(--neutral) 30%, transparent)}
+
+  .empty{padding:var(--s-8); text-align:center; color:var(--text-dim)}
+
+  @media (max-width:720px){
+    main{padding:0 16px; margin-top:var(--s-4)}
+    .header-user .user-meta{display:none}
+  }
+</style>
+</head>
+<body>
+
+<header data-od-id="app-header">
+  <div class="logo-mark" aria-hidden="true">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+  </div>
+  <div>
+    <div class="brand-name">Invoice &amp; Billing</div>
+    <div class="brand-sub">Quản lý hóa đơn điện tử</div>
+  </div>
+  <div class="header-user" data-od-id="header-user">
+    <div class="user-meta" style="text-align:right">
+      <div class="user-name">Nguyễn Văn An</div>
+      <div class="user-role">Kế toán trưởng</div>
+    </div>
+    <div class="avatar" aria-hidden="true">NA</div>
+  </div>
+</header>
+
+<main data-od-id="dashboard-main">
+  <!-- Thống kê -->
+  <section class="stats-grid" data-od-id="stats-grid" aria-label="Thống kê hóa đơn">
+    <div class="stat-card" data-od-id="stat-total">
+      <div class="stat-label"><span class="stat-dot dot-accent"></span>Tổng hóa đơn</div>
+      <div class="stat-value" id="stat-total">0 ₫</div>
+      <div class="stat-sub" id="stat-total-sub">—</div>
+    </div>
+    <div class="stat-card" data-od-id="stat-paid">
+      <div class="stat-label"><span class="stat-dot dot-success"></span>Đã thu</div>
+      <div class="stat-value" id="stat-paid">0 ₫</div>
+      <div class="stat-sub" id="stat-paid-sub">—</div>
+    </div>
+    <div class="stat-card" data-od-id="stat-unpaid">
+      <div class="stat-label"><span class="stat-dot dot-warning"></span>Chưa thu</div>
+      <div class="stat-value" id="stat-unpaid">0 ₫</div>
+      <div class="stat-sub" id="stat-unpaid-sub">—</div>
+    </div>
+    <div class="stat-card" data-od-id="stat-overdue">
+      <div class="stat-label"><span class="stat-dot dot-danger"></span>Quá hạn</div>
+      <div class="stat-value" id="stat-overdue">0 ₫</div>
+      <div class="stat-sub" id="stat-overdue-sub">—</div>
+    </div>
+  </section>
+
+  <!-- Thanh công cụ -->
+  <section class="toolbar" data-od-id="toolbar">
+    <div class="toolbar-row">
+      <button class="btn btn-primary" id="upload-btn" data-od-id="upload-btn" type="button">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Tải lên hóa đơn
+      </button>
+      <div class="search-wrap">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" class="search-input" id="search-input" data-od-id="search-input"
+          placeholder="Tìm số hóa đơn, khách hàng…" aria-label="Tìm kiếm hóa đơn">
+      </div>
+    </div>
+    <div class="filter-chips" data-od-id="filter-chips" role="group" aria-label="Lọc theo trạng thái">
+      <button class="chip active" data-filter="all" type="button">Tất cả <span class="chip-count" id="count-all">0</span></button>
+      <button class="chip" data-filter="unpaid" type="button">Chưa thu <span class="chip-count" id="count-unpaid">0</span></button>
+      <button class="chip" data-filter="overdue" type="button">Quá hạn <span class="chip-count" id="count-overdue">0</span></button>
+      <button class="chip" data-filter="paid" type="button">Đã thu <span class="chip-count" id="count-paid">0</span></button>
+      <button class="chip" data-filter="cancelled" type="button">Đã hủy <span class="chip-count" id="count-cancelled">0</span></button>
+    </div>
+  </section>
+
+  <!-- Bảng hóa đơn -->
+  <section class="table-card" data-od-id="invoice-table-card">
+    <div class="table-scroll">
+      <table data-od-id="invoice-table">
+        <thead>
+          <tr>
+            <th>Số hóa đơn</th>
+            <th>Khách hàng / Nhà cung cấp</th>
+            <th>Ngày phát hành</th>
+            <th class="num">Tổng tiền</th>
+            <th class="num">Thuế</th>
+            <th class="num">Chiết khấu</th>
+            <th>Trạng thái</th>
+            <th class="actions">Thao tác</th>
+          </tr>
+        </thead>
+        <tbody id="invoice-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const fmt = n => (n || 0).toLocaleString('vi-VN');
+const cur = n => fmt(n) + ' ₫';
+const esc = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fdate = iso => { const d = new Date(iso + 'T00:00:00'); return d.toLocaleDateString('vi-VN'); };
+
+const STATUS_LABEL = { paid:'Đã thu', unpaid:'Chưa thu', overdue:'Quá hạn', cancelled:'Đã hủy' };
+
+let invoices = [
+  { id:1, no:'HD/24E/0001234', customer:'Công ty TNHH TM DV ABC', lang:'vi', date:'2024-11-05', total:12500000, tax:1250000, taxRate:'10%', discount:0, status:'paid' },
+  { id:2, no:'INV-2024-0112', customer:'Baker & Sons Co., Ltd.', lang:'en', date:'2024-11-02', total:8400000, tax:672000, taxRate:'8%', discount:0, status:'unpaid' },
+  { id:3, no:'HD/24E/0001245', customer:'Công ty CP XNK Mekong', lang:'vi', date:'2024-10-28', total:23400000, tax:2120000, taxRate:'10% + 8%', discount:500000, status:'overdue' },
+  { id:4, no:'HD/24E/0001251', customer:'Công ty TNHH SX TM Hùng Phát', lang:'vi', date:'2024-10-19', total:4650000, tax:232500, taxRate:'5%', discount:0, status:'cancelled' },
+  { id:5, no:'HD/24E/0001208', customer:'Công ty TNHH Dịch vụ Sao Việt', lang:'vi', date:'2024-10-15', total:9750000, tax:975000, taxRate:'10%', discount:0, status:'unpaid' },
+  { id:6, no:'HD/24E/0001196', customer:'Công ty TNHH TM DL Gia Bảo', lang:'vi', date:'2024-10-08', total:3850000, tax:308000, taxRate:'8%', discount:0, status:'paid' }
+];
+
+let filter = 'all';
+let query = '';
+
+const $ = id => document.getElementById(id);
+
+function sums(list, status){
+  const s = list.filter(i => i.status === status);
+  return s.reduce((a,i) => a + i.total, 0);
+}
+
+function renderStats(){
+  const list = invoices;
+  $('stat-total').textContent = cur(list.reduce((a,i) => a + i.total, 0));
+  $('stat-total-sub').textContent = list.length + ' hóa đơn';
+  $('stat-paid').textContent = cur(sums(list,'paid'));
+  $('stat-paid-sub').textContent = list.filter(i=>i.status==='paid').length + ' hóa đơn';
+  $('stat-unpaid').textContent = cur(sums(list,'unpaid'));
+  $('stat-unpaid-sub').textContent = list.filter(i=>i.status==='unpaid').length + ' hóa đơn';
+  $('stat-overdue').textContent = cur(sums(list,'overdue'));
+  $('stat-overdue-sub').textContent = list.filter(i=>i.status==='overdue').length + ' hóa đơn';
+  ['all','unpaid','overdue','paid','cancelled'].forEach(s => {
+    $('count-' + s).textContent = s === 'all' ? list.length : list.filter(i=>i.status===s).length;
+  });
+}
+
+function renderTable(){
+  const q = query.trim().toLowerCase();
+  const rows = invoices
+    .filter(i => filter === 'all' || i.status === filter)
+    .filter(i => !q || i.no.toLowerCase().includes(q) || i.customer.toLowerCase().includes(q));
+
+  if (!rows.length){
+    $('invoice-tbody').innerHTML = '<tr><td colspan="8"><div class="empty">Không tìm thấy hóa đơn phù hợp</div></td></tr>';
+    return;
+  }
+
+  $('invoice-tbody').innerHTML = rows.map(i => {
+    const del = `<button class="btn btn-sm btn-danger-ghost" data-action="delete" data-id="${i.id}" aria-label="Xóa hóa đơn ${esc(i.no)}" title="Xóa hóa đơn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+    </button>`;
+    const pay = (i.status === 'unpaid' || i.status === 'overdue')
+      ? `<button class="btn btn-sm btn-success-ghost" data-action="pay" data-id="${i.id}" aria-label="Đánh dấu đã thu ${esc(i.no)}" title="Đánh dấu đã thu">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Đã thu
+        </button>`
+      : '';
+    const langNote = i.lang === 'en' ? '<div class="customer-en">Invoice (EN)</div>' : '<div class="customer-en">Hóa đơn GTGT (VN)</div>';
+    return `<tr data-od-id="invoice-row-${i.id}">
+      <td class="invoice-no">${esc(i.no)}</td>
+      <td><div class="customer">${esc(i.customer)}</div>${langNote}</td>
+      <td style="white-space:nowrap">${fdate(i.date)}</td>
+      <td class="num">${cur(i.total)}</td>
+      <td class="num" title="Thuế suất ${esc(i.taxRate)}">${cur(i.tax)}</td>
+      <td class="num">${i.discount ? cur(i.discount) : '—'}</td>
+      <td data-status="${i.status}"><span class="badge">${STATUS_LABEL[i.status]}</span></td>
+      <td class="actions">${pay}${del}</td>
+    </tr>`;
+  }).join('');
+}
+
+function render(){ renderStats(); renderTable(); }
+
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    filter = chip.dataset.filter;
+    render();
+  });
+});
+
+$('search-input').addEventListener('input', e => { query = e.target.value; render(); });
+
+$('upload-btn').addEventListener('click', () => {});
+
+$('invoice-tbody').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const id = Number(btn.dataset.id);
+  if (btn.dataset.action === 'pay'){
+    const inv = invoices.find(i => i.id === id);
+    if (inv) inv.status = 'paid';
+  }
+  if (btn.dataset.action === 'delete'){
+    invoices = invoices.filter(i => i.id !== id);
+  }
+  render();
+});
+
+render();
+</script>
+</body>
+</html>
