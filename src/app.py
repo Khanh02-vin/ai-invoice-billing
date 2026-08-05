@@ -3,8 +3,9 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 
@@ -85,6 +86,30 @@ async def upload_invoice(file: UploadFile = File(...), user: User = Depends(curr
         Path(temp_path).unlink()
 
 
+@app.post("/invoices/upload-bulk")
+async def upload_invoices_bulk(files: List[UploadFile] = File(...), user: User = Depends(current_user)):
+    """Upload nhiều hóa đơn cùng lúc — xử lý song song, cách ly lỗi từng file."""
+    if not files:
+        raise HTTPException(status_code=400, detail="Cần ít nhất 1 file")
+    if len(files) > 20:
+        raise HTTPException(status_code=400, detail="Tối đa 20 file/lần")
+
+    from src.extract.batch_extractor import extract_batch
+
+    payload = []
+    for f in files:
+        payload.append((f.filename or "invoice.pdf", await f.read()))
+
+    result = extract_batch(payload, repo, user_id=user.id)
+    return {
+        "total": result["total"],
+        "successful": result["successful"],
+        "failed": result["failed"],
+        "errors": result["errors"],
+        "invoices": [inv.model_dump() for inv in result["results"]],
+    }
+
+
 @app.post("/invoices", response_model=Invoice)
 async def create_invoice(data: InvoiceCreate, user: User = Depends(current_user)):
     """Tạo hóa đơn thủ công."""
@@ -138,6 +163,20 @@ async def monthly_report(period: str, user: User = Depends(current_user)):
     if not report:
         raise HTTPException(status_code=404, detail=f"Không có hóa đơn tháng {period}")
     return report
+
+
+@app.get("/reports/monthly/{period}/pdf")
+async def monthly_report_pdf(period: str, user: User = Depends(current_user)):
+    """Export báo cáo tháng thành PDF."""
+    from src.reports.pdf_exporter import generate_monthly_pdf
+    invoices = repo.list(user.id)
+    report = repo.monthly_report(period, user.id)
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Không có hóa đơn tháng {period}")
+    period_invoices = [i for i in invoices if (i.issue_date or "").startswith(period)]
+    pdf_bytes = generate_monthly_pdf(period_invoices, period, report.paid_amount, report.total_tax)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                    headers={"Content-Disposition": f"inline; filename=report_{period}.pdf"})
 
 
 @app.get("/health")
