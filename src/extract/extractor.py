@@ -28,13 +28,17 @@ _DUE_RE = re.compile(
 # và tiền tệ chèn giữa label và số (TOTAL RM/USD), chọn số cuối cùng (dòng total ở dưới).
 # ponytail: capture bắt buộc bắt đầu bằng chữ số để tránh bắt "." rời rạc như capture group.
 _TOTAL_LABELS = (
-    r"nett?\s*total|total\s*payable|final\s*total|total\s*amount|grand\s*total|"
-    r"balance\s*due|amount\s*due|tổng\s*cộng\s*tiền\s*thanh\s*toán|"
-    r"total\s*sales|total\s*includes|net\s*amt|net\s*amount|\btotal\b|sub\s*total"
+    r"nett?\s*total|total\s*due|total\s*payable|final\s*total|total\s*amount|grand\s*total|"
+    r"balance\s*due|amount\s*due|rounding|tổng\s*cộng\s*tiền\s*thanh\s*toán|"
+    r"total\s*sales|total\s*includes|net\s*amt|net\s*amount|\btotal\b|sub[\s-]*total"
 )
 _AMOUNT_RE = re.compile(
-    rf"(?P<label>{_TOTAL_LABELS})\s*(?:\(\s*)?(?:incl[^0-9:#]*?|after\s*rounding[^0-9:#]*?)?\s*[:#]?\s*"
-    rf"(?:rm|usd|eur|vnd|gbp|jpy|\$)?\s*"
+    rf"(?P<label>{_TOTAL_LABELS})\s*(?:\(\s*)?"
+    rf"(?:incl(?:usive)?[^0-9:#\n]*?(?:\d+(?:[.,]\d+)?%[^0-9:#\n]*?)?"
+    rf"|after\s*rounding[^0-9:#\n]*?"
+    rf"|[^0-9:#\n]{{0,20}}?)?"
+    rf"\s*[:#]?\s*"
+    rf"(?:rm|usd|eur|vnd|gbp|jpy|myr|\$)?\s*"
     rf"(?P<num>[0-9]+(?:[.,][0-9]+)*)", re.I)
 
 
@@ -45,16 +49,25 @@ def _pick_total(text: str) -> Optional[str]:
     cands = []
     for m in _AMOUNT_RE.finditer(text):
         ctx = m.group(0).lower()
-        # bỏ subtotal, "total qty/count/item", "excluding gst", "tax total"
-        if any(k in ctx for k in ("sub", "qty", "count", "item", "exclud", "excl", "tax")):
+        # bỏ subtotal (kể cả dạng "SUB-TOTAL" gạch nối), "total qty/count/item",
+        # "excluding gst", "tax total", "GST @6% INCLUDED IN TOTAL", "TOTAL GST:",
+        # "ROUNDING ADJUSTMENT" (chỉ là điều chỉnh, không phải total)
+        if any(k in ctx for k in ("sub", "qty", "quantity", "count", "item", "exclud",
+                                  "excl", "tax", "included", "total gst", "adjustment")):
             continue
+        num = m.group("num")
+        if "rounding" in m.group("label").lower():
+            val = float(num.replace(",", ""))
+            if val < 1.0:
+                continue  # "ROUNDING : 0.00" / "ROUNDING 0.02" — chỉ là điều chỉnh, không phải total
         prev = text[max(0, m.start() - 25):m.start()]
         if re.search(r"\b(?:item|count|qty|quantity|no|number|pcs|unit|pos|ref|trans)"
-                     r"\s+total\s*$", prev, re.I):
+                     r"\s+total\s*$|included\s+in\s*$", prev, re.I):
             continue
         lab = m.group("label").lower()
         rank = 3
-        if any(k in lab for k in ("payable", "nett", "grand", "final", "due", "amount")):
+        if any(k in lab for k in ("payable", "nett", "grand", "final", "due", "amount",
+                                  "rounding")):
             rank = 4
         if "tổng cộng tiền thanh toán" in lab:
             rank = 5
