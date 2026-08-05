@@ -1,0 +1,51 @@
+SROIE benchmark: 987 receipt thật (train 626 + test 361), regex path, không LLM
+
+field    matched   total  accuracy
+vendor         0     987      0.0%
+date           5     869      0.6%
+total        272     887     30.7%
+overall      277    2743     10.1%
+
+--- 40 mẫu fail đầu tiên (field | expected | got) ---
+vendor  X00016469669  exp='ABC HO TRADING'  got='unknown'
+date    X00016469669  exp='2019-01-09'  got=None
+total   X51006414429  exp=8.2  got=7.1
+vendor  X51006414429  exp='UNIHAKKA INTERNATIONAL SDN BHD'  got='unknown'
+total   X51005587267  exp=85.1  got=18.0
+vendor  X51005587267  exp='TRI SHAAS SDN BHD'  got='THE DATE OF PURCHASE. IF THE REQUEST TAX INVOICE MUST BE MAD'
+date    X51005587267  exp='2017-02-04'  got=None
+vendor  X51007339114  exp='SANYU STATIONERY SHOP'  got='unknown'
+date    X51007339114  exp='2017-12-14'  got=None
+vendor  X51007846326  exp='LEMON TREE RESTAURANT JTJ FOODS SDN BHD'  got='unknown'
+total   X51008099071  exp=50.0  got=0.0
+vendor  X51008099071  exp='LEONG HENG SHELL SERVICE STATION'  got='unknown'
+date    X51008099071  exp='0018-06-20'  got=None
+total   X51005447833  exp=88.17  got=0.0
+vendor  X51005447833  exp='SUN WONG KUT SDN BHD'  got='unknown'
+date    X51005447833  exp='0018-02-21'  got=None
+total   X51006466055  exp=20.0  got=19.99
+vendor  X51006466055  exp='CHECKERS HYPERMARKET SDN BHD (JALAN KLANG LAMA'  got='unknown'
+total   X51005763940  exp='60.00'  got='CRASH: ValueError'
+vendor  X51005763940  exp='ELITETRAX MARKETING SDN BHD'  got='CRASH: ValueError'
+date    X51005763940  exp='11.02.18'  got='CRASH: ValueError'
+total   X51006913074  exp=6.7  got=8.9
+vendor  X51006913074  exp="DOMINO'S PIZZA TAMAN UNIVERSITI"  got='unknown'
+date    X51006913074  exp='0018-05-08'  got=None
+total   X51006392299  exp=165.0  got=0.0
+vendor  X51006392299  exp='BEMED (SP) SDN. BHD'  got='unknown'
+vendor  X51005361883  exp='TEO HENG STATIONERY & BOOKS'  got='unknown'
+date    X51005361883  exp='2018-01-18'  got=None
+vendor  X51005433494  exp='AEON CO. (M) BHD'  got='unknown'
+date    X51005433494  exp='2018-03-06'  got=None
+vendor  X00016469612  exp='BOOK TA .K (TAMAN DAYA) SDN BHD'  got='unknown'
+date    X00016469612  exp='2018-12-25'  got=None
+vendor  X51006913073  exp='UNIHAKKA INTERNATIONAL SDN BHD'  got='unknown'
+vendor  X51006619862  exp='MR. D.I.Y. (KUCHAI) SDN BHD'  got='unknown'
+date    X51006619862  exp='0016-06-07'  got=None
+total   X51006414483  exp=7.6  got=7.1
+vendor  X51006414483  exp='UNIHAKKA INTERNATIONAL SDN BHD'  got='unknown'
+vendor  X51008128052  exp='PANDAH INDAH PULAU KETAM RESTAURANT'  got='unknown'
+date    X51008128052  exp='2018-04-30'  got=None
+total   X51007262328  exp=25.0  got=23.58
+
+Fail chi tiết: D:\Project\ai-invoice-billing\tests\sroie_fails.txt
