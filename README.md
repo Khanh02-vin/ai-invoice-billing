@@ -88,14 +88,14 @@ Chạy trên **987 hóa đơn/receipt scan thật** (ICDAR 2019 SROIE: train 626
 |---|---|---|
 | Vendor (company) | 0.0% | 55.7% |
 | Date | 0.6% | 98.7% |
-| Total | 30.7% | 71.9% |
-| **Overall** | **10.1%** | **74.6%** |
+| Total | 30.7% | **84.6%** |
+| **Overall** | **10.1%** | **78.7%** |
 
-Gia cố cho layout receipt thật: `DATE:` / `DATE TIME:`, `TOTAL INCL. GST`, `TOTAL RM/USD`, `TOTAL AFTER ROUNDING`, `NET AMT`, `AMOUNT DUE`/`BALANCE DUE`, công ty dòng đầu không label, ngày 2 chữ số (`20/06/18`), chặn crash khi bắt "." rời rạc. Số còn sai chủ yếu: total nằm trong bảng GST summary không có label, GT làm tròn lệch 0.01.
+Gia cố cho layout receipt thật: `DATE:` / `DATE TIME:`, `TOTAL INCL. GST`, `TOTAL RM/USD`, `TOTAL AFTER ROUNDING`, `NET AMT`, `AMOUNT DUE`/`BALANCE DUE`, công ty dòng đầu không label, ngày 2 chữ số (`20/06/18`), chặn crash khi bắt "." rời rạc. Lần 2 (total 71.9%→**84.6%**, +112 receipt): sửa theo phân tích fail thật — `SUB-TOTAL` gạch nối bị label thành `TOTAL`; `ROUNDING RM 177.20` (total sau GST rounding) được nhận nhưng phải bỏ `ROUNDING ADJUSTMENT`/`ROUNDING 0.00` (chỉ là điều chỉnh); `GST @6% INCLUDED IN TOTAL` không phải total; tiền tệ `MYR`; `TOTAL DUE (GST INC):`. Số còn sai: total nằm trong bảng GST summary không label, GT làm tròn lệch 0.01, OCR đọc hỏng (VD `1007.50`→`1`).
 
 ```bash
 python tests/benchmark_sroie.py             # chạy lại benchmark (987 receipt)
-pytest tests/test_sroie_regression.py       # regression: 8 receipt thật phải giữ nguyên
+pytest tests/test_sroie_regression.py       # regression: 12 receipt thật phải giữ nguyên
 ```
 
 ## Benchmark — Hóa đơn Việt Nam thật (MCOCR 2021)
@@ -105,9 +105,9 @@ pytest tests/test_sroie_regression.py       # regression: 8 receipt thật phả
 | Field | Kết quả |
 |---|---|
 | Vendor | **84.7%** |
-| Date | **87.5%** |
-| Total | **81.4%** |
-| **Overall** | **84.5%** |
+| Date | **85.7%** |
+| Total | **79.7%** |
+| **Overall** | **83.3%** |
 
 Phát hiện thật khi chạy trên hóa đơn VN: regex vendor (anchored `from/vendor/người bán`) không áp dụng được cho hóa đơn bán lẻ VN không có label → fallback dòng đầu; so sánh tên công ty phải bỏ hết space + dấu tiếng Việt (OCR hay lệch space/dấu: "MINIMARTANAN" vs "MINIMART ANAN") — nâng vendor 20.3%→49.2%. Lần 2: **từ điển chuỗi bán lẻ VN** (`_VN_CHAINS`: VinCommerce, Minimart, Co.opmart, FamilyMart, The Coffee House...) + fuzzy match (≥0.9) — OCR đọc sai tên hãng được chuẩn hóa về thương hiệu, và brand nằm khác dòng với vendor line (receipt bắt đầu bằng tên chi nhánh "VM+QNH 690 Tran Phu" nhưng "VinCommerce" nằm dòng dưới → quét cả text) — vendor 49.2%→**84.7%**. Giới hạn còn lại (8/59 fail, ghi thẳng): OCR hỏng hoàn toàn brand (cửa hàng nhỏ không trong từ điển, VD "p000'6"), GT tự có lỗi OCR ("MINIMART ANANAN"), brand không xuất hiện trong text OCR. Note: date/total lệch ±4% giữa các lần chạy = nondeterminism của PaddleOCR (CPU), số ghi là lần chạy cuối.
 
