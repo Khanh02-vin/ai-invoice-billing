@@ -20,12 +20,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.extract.extractor import extract_from_text, read_file_text
-from tests.benchmark_sroie import norm_total
 
 DATA = Path(__file__).parent.parent / "data" / "cord_sample"
 SAMPLE_N = 60
-
-_GT_KEY = ("gt_parse", "total", "total_price")
 
 
 def img_id_of(row) -> str:
@@ -37,14 +34,34 @@ def img_id_of(row) -> str:
 
 
 def gt_total(row) -> float:
-    """GT total từ json ground_truth → float. None nếu thiếu."""
+    """GT total từ json ground_truth → float. None nếu thiếu.
+
+    GT CORD v2 KHÔNG nhất quán quy ước số (phát hiện khi benchmark, ghi thẳng):
+      - comma-thousands: "1,591,600" (40/57 mẫu)
+      - dot-thousands kiểu Hàn: "61.500" = 61.500 won (13/57)
+      - tiền tệ "Rp": "Rp 16.500", "Rp. 20.000"
+      - hỗn hợp EU: "62.000,00" (chấm nghìn + phẩy thập phân)
+    norm_total (SROIE/MCOCR) coi chấm là thập phân → sai 1000x cho dot-thousands.
+    Parser riêng: tổng tiền là số nguyên won → bỏ mọi separator theo quy ước.
+    """
     try:
         d = json.loads(row["ground_truth"])
-        v = d
-        for k in _GT_KEY:
-            v = v[k]
-        return norm_total(str(v))
+        s = str(d["gt_parse"]["total"]["total_price"]).strip()
     except (KeyError, TypeError, ValueError):
+        return None
+    s = s.replace("Rp", "").replace("rp", "").strip()
+    if "," in s and "." in s:
+        # hỗn hợp EU: chấm nghìn, phẩy thập phân → 62.000,00 = 62000.00
+        s = s.replace(".", "").replace(",", ".")
+        return float(s)
+    if "," in s:
+        s = s.replace(",", "")
+        return float(s)
+    if "." in s and len(s.split(".")[-1]) == 3:
+        s = s.replace(".", "")  # dot-thousands kiểu Hàn
+    try:
+        return float(s)
+    except ValueError:
         return None
 
 

@@ -1,0 +1,60 @@
+{"h": "d5169e82e0229adc9a018cc0aec53eb8e5bd54d5", "raw": "{\"invoice_number\": null, \"vendor\": null, \"issue_date\": null, \"total\": 1591600, \"tax\": 144695, \"discount\": null, \"currency\": \"IDR\"}"}
+{"h": "240ec0d153d49d9b2e7eaf5f52090614ef5eb188", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":247775,\"tax\":22525,\"discount\":null,\"currency\":\"VND\"}"}
+{"h": "476c1370a1fbc02c35b5855fa9d615b89a3202ac", "raw": "{\"invoice_number\": null, \"vendor\": \"Pepenero Pastel\", \"issue_date\": null, \"total\": 16500, \"tax\": 1500, \"discount\": null, \"currency\": \"IDR\"}"}
+{"h": "a3b536008e5ebb2a1eb6a53cd90f5d89fc440ac4", "raw": "{\"invoice_number\":null,\"vendor\":\"H COUPLE CEA\",\"issue_date\":null,\"total\":70000,\"tax\":null,\"discount\":null,\"currency\":\"TL\"}"}
+{"h": "a6828b6484df2a6d8d2980aebf6d33442c136878", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":30000,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "39eae65e5b0f3fc0decd8527126ffde82ed33ea0", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":650100,\"tax\":59100,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "17449c21fcd08ce476de8469a51a5a49d0718741", "raw": "```json\n{\n  \"invoice_number\": null,\n  \"vendor\": null,\n  \"issue_date\": null,\n  \"total\": 56000,\n  \"tax\": null,\n  \"discount\": null,\n  \"currency\": \"IDR\"\n}\n```"}
+{"h": "53b982a00b8c0b33de00a6fa20a3a58dd83b6cc3", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":24000,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "1ac68184605006b3cb5b2fbd21ba8c721f3d36ff", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":61500,\"tax\":null,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "49808c16c6d83480c90d46e7a9040b272cb10c7e", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":60000,\"tax\":null,\"discount\":0,\"currency\":null}"}
+{"h": "f5608b2ee38483e802c16c44c928bcb0d9f3537b", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":13000,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "3e0541d85c858805fca886c1ec16c16b54a6e6a5", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":41800,\"tax\":3800,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "310002f5b8f7ef5e24a95f28ce106f339abd63ff", "raw": "{\"invoice_number\": null, \"vendor\": \"Dinmte\", \"issue_date\": null, \"total\": 27300, \"tax\": null, \"discount\": 11700, \"currency\": \"IDR\"}"}
+{"h": "5b7aaff786fe7a06e9d6b3f99a399e2cf516b787", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":23000,\"tax\":null,\"discount\":0,\"currency\":\"IDR\"}"}
+{"h": "d79ff744227624ac384695ac6e1352eac56254e0", "raw": "{\n  \"invoice_number\": \"7716833*\",\n  \"vendor\": null,\n  \"issue_date\": null,\n  \"total\": 18000,\n  \"tax\": null,\n  \"discount\": 7000,\n  \"currency\": null\n}"}
+{"h": "386288b22fc3afa23fccf4b8e48477cf2b2b7f9d", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":31500,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "ac8665a1c177fd0e71d79a445c032eb5e4612a54", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":60000,\"tax\":5454,\"discount\":null,\"currency\":null}"}
+{"h": "e25b35e9de0d69665d512dad9afe6ffda59ef16e", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":123000,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "31315110a106d9095c8ddd70b0e9fbac1857e065", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":21000,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "3b5400512f96b9ec6aa253029cff61fcbbee93db", "raw": "{\"invoice_number\": null, \"vendor\": \"ES KOPI SUSU\", \"issue_date\": null, \"total\": 72000, \"tax\": null, \"discount\": null, \"currency\": \"IDR\"}"}
+{"h": "0c6803ad3a678a25e760280219b2d703f73fd6ef", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":256500,\"tax\":23500,\"discount\":null,\"currency\":null}"}
+{"h": "410fe1664d03c661a4a858502cc17545d1894dfc", "raw": "{\"invoice_number\":\"4\",\"vendor\":\"BBQ Chicken\",\"issue_date\":null,\"total\":41000,\"tax\":null,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "77765e9b568aa8b6d102d5e3c77f5bb0ce92d204", "raw": "{\"invoice_number\": null, \"vendor\": \"Hokkasti\", \"issue_date\": null, \"total\": 14000, \"tax\": null, \"discount\": null, \"currency\": \"IDR\"}"}
+{"h": "e50c45f246b06ee0bcd01fd10e1aad85470e0cae", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":51000,\"tax\":4636,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "1a2780c0fdf1aa22ffac63e877831b768ef6a033", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":10000,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "737a7b4a9f14d63bb4c8836c816e6cb138ddfad7", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":287760,\"tax\":26160,\"discount\":null,\"currency\":\"VND\"}"}
+{"h": "b0980d84376e41c7cb14da6f7f31d7697fd01235", "raw": "{\"invoice_number\": null, \"vendor\": \"THAI TEA\", \"issue_date\": null, \"total\": 22000, \"tax\": null, \"discount\": null, \"currency\": null}"}
+{"h": "d51bc490518e20d7ce60fd147b58ceee80771d53", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":34500,\"tax\":3137,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "54c669bf0af3b3a507e81dd733650b27aa0ebe1b", "raw": "{\n  \"invoice_number\": null,\n  \"vendor\": null,\n  \"issue_date\": null,\n  \"total\": 126000,\n  \"tax\": 11455,\n  \"discount\": null,\n  \"currency\": null\n}"}
+{"h": "c473f78b36df59af230d4ab2e1a075ebd332afa6", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":40000,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "15c0bc9259b8939dda4a73505dd1aff2dea9ed75", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":42000,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "684ce97f9fabc0a3b1b542444c40b29ac43a76ea", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":15500,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "431d34a73ef6dee5d331d97e7d8ad73c47f07146", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":133000,\"tax\":12091,\"discount\":null,\"currency\":\"JPY\"}"}
+{"h": "e6efb0e617577cfba21724b4612e95f3fed718c7", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":256608,\"tax\":23328,\"discount\":null,\"currency\":null}"}
+{"h": "7f8be8925300a7d36c9a81c2f9c1b0a55ee114aa", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":194469,\"tax\":17679,\"discount\":0,\"currency\":\"IDR\"}"}
+{"h": "38b00a3abc657162cfb55ea9da9c594fff4997a6", "raw": "{\"invoice_number\":null,\"vendor\":\"AFUNGAFUNGAFUNGAFUNGAFUN\",\"issue_date\":null,\"total\":70599,\"tax\":6418,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "01a52dde26a3bd2dfdbc51dc34be3bc3bae6dc83", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":167000,\"tax\":null,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "fe804d2e825574627d00790ea79fff7fbf32ad82", "raw": "{\"invoice_number\": null, \"vendor\": null, \"issue_date\": null, \"total\": 62000.00, \"tax\": null, \"discount\": null, \"currency\": \"IDR\"}"}
+{"h": "7049503c88ff8b38a867f2f820baceed13403530", "raw": "{\"invoice_number\": null, \"vendor\": \"Cha Keaw\", \"issue_date\": null, \"total\": 25000, \"tax\": null, \"discount\": null, \"currency\": null}"}
+{"h": "08c03b3ef01befded4f9c447a18d049ca880c0da", "raw": "{\"invoice_number\": null, \"vendor\": null, \"issue_date\": null, \"total\": 217685, \"tax\": null, \"discount\": null, \"currency\": \"IDR\"}"}
+{"h": "43ff60f6edfdc852fd346f9e5be0c8635d3240f1", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":23000,\"tax\":null,\"discount\":null,\"currency\":\"VND\"}"}
+{"h": "fc457a4954ebf2e0c0db92f1d30400520cff8e59", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":60000,\"tax\":5454,\"discount\":null,\"currency\":null}"}
+{"h": "1031bf3ab3612456a32cde26aed300c509f23d65", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":20000,\"tax\":null,\"discount\":null,\"currency\":\"VND\"}"}
+{"h": "e97528c2301b089589082de1d8fcac1080be9949", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":25000,\"tax\":2273,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "b40ab44b7bb05d83417f5f5814f38fc536aecb0e", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":15000,\"tax\":null,\"discount\":0,\"currency\":\"IDR\"}"}
+{"h": "da9cdba6633199f2762ba2883a2dc97a88b8b6cb", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":34500,\"tax\":null,\"discount\":null,\"currency\":\"VND\"}"}
+{"h": "ce8d4efdca0f8af209ae70cf9c4087f23c2f7d29", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":23400,\"tax\":2127,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "af4a5c3eb5579ebca3214aebc5a5d3b20a6bd012", "raw": "{\"invoice_number\":\"CHOONELDICM\",\"vendor\":null,\"issue_date\":null,\"total\":90800,\"tax\":null,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "5df4f0686e6b41de31486d2b56ee8a2dd7964d51", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":391545,\"tax\":35595,\"discount\":0,\"currency\":null}"}
+{"h": "5ddd929473c44f38dbfafbff63b5e9f121b00a21", "raw": "{\"invoice_number\":null,\"vendor\":\"XXI\",\"issue_date\":null,\"total\":40000,\"tax\":null,\"discount\":null,\"currency\":\"VND\"}"}
+{"h": "ba4f6e1dc686d8eefce10a53134f4f3413eaa874", "raw": "{\"invoice_number\": null, \"vendor\": null, \"issue_date\": null, \"total\": 76000, \"tax\": 24000, \"discount\": null, \"currency\": \"VND\"}"}
+{"h": "c4f1a493bebcbd0fa2a9f0749d2cdcc110402bd3", "raw": "```json\n{\n  \"invoice_number\": null,\n  \"vendor\": null,\n  \"issue_date\": null,\n  \"total\": 17999,\n  \"tax\": 1636,\n  \"discount\": null,\n  \"currency\": null\n}\n```"}
+{"h": "6c660cf042a5bb49011dd07071801a239f1dea8e", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":22000,\"tax\":null,\"discount\":null,\"currency\":null}"}
+{"h": "cc3efc7ecb29f0bf7651c040d275ef5e46d0b6c2", "raw": "{\"invoice_number\":\"111\",\"vendor\":null,\"issue_date\":null,\"total\":24000,\"tax\":null,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "ad83f17b960a538399c352858f554931ef96a6e2", "raw": "{\"invoice_number\":null,\"vendor\":\"AFUNG\",\"issue_date\":null,\"total\":76.181,\"tax\":10.0,\"discount\":null,\"currency\":null}"}
+{"h": "4e42db6a5776a3f9c0b715491b98491f9223f4b7", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":42500,\"tax\":3864,\"discount\":null,\"currency\":null}"}
+{"h": "1a26de9b8d73e0bb2989defe66e637b294e6305f", "raw": "{\"invoice_number\":null,\"vendor\":\"VTM\",\"issue_date\":null,\"total\":12000,\"tax\":null,\"discount\":null,\"currency\":\"VND\"}"}
+{"h": "1b897e31a9c6da8bb47fa15290fe1d4e5fad09c6", "raw": "{\"invoice_number\": null, \"vendor\": null, \"issue_date\": null, \"total\": 53000, \"tax\": null, \"discount\": null, \"currency\": \"VND\"}"}
+{"h": "12afdc9dd3f0d4e48e3c0fc5182f38240e3bdba1", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":\"2018-09-19\",\"total\":301003,\"tax\":27364,\"discount\":null,\"currency\":\"IDR\"}"}
+{"h": "422b8e779d1677cb2025dbf5c9fcfdcc7cd45cbc", "raw": "{\"invoice_number\":null,\"vendor\":null,\"issue_date\":null,\"total\":80501,\"tax\":7318,\"discount\":null,\"currency\":\"IDR\"}"}

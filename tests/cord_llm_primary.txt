@@ -4,6 +4,7 @@ Sample: 60 receipt / 800 train
 Pipeline: ảnh → PaddleOCR → regex (không LLM)
 GT CORD chỉ có total (không vendor/date) → đo mỗi field total
 ========================================================================
+LLM mode=primary: 0 API call mới, cache 60 entry
   SKIP 52: GT thiếu total
   SKIP 338: GT thiếu total
   SKIP 468: GT thiếu total
@@ -11,28 +12,13 @@ GT CORD chỉ có total (không vendor/date) → đo mỗi field total
   SKIP 572: GT thiếu total
 
 field    matched   total  accuracy
-total         23      55     41.8%
+total         50      55     90.9%
 
 Time OCR+extract: 2s (0.0s/ảnh)
 
---- 20 fail đầu tiên (img | expected | got) ---
-13  exp=247775.0  got=0.0
-26  exp=16500.0  got=16.5
-39  exp=70000.0  got=0.0
-104  exp=61500.0  got=61.5
-117  exp=60000.0  got=0.0
-143  exp=41800.0  got=41.8
-208  exp=60000.0  got=911724921.0
-234  exp=21000.0  got=50000.0
-247  exp=72000.0  got=72.0
+--- 5 fail đầu tiên (img | expected | got) ---
+182  exp=22500.0  got=18000.0
 260  exp=258500.0  got=256500.0
-286  exp=14000.0  got=0.0
-299  exp=51000.0  got=51.0
-312  exp=10000.0  got=1000.0
 325  exp=287760.0  got=287.0
-377  exp=40000.0  got=0.0
-390  exp=42000.0  got=0.0
-442  exp=194469.0  got=0.0
-455  exp=70599.0  got=70.599
 481  exp=62000.0  got=62.0
-494  exp=25000.0  got=25.0
+702  exp=83799.0  got=76.181

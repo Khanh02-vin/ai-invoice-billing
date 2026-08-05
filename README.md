@@ -126,15 +126,18 @@ python tests/benchmark_mcocr.py             # chạy lại benchmark (tự tải
 
 **Giới hạn GT CORD (ghi thẳng):** annotation chỉ có `menu` + `sub_total` + `total` — KHÔNG có vendor/company và KHÔNG có date → benchmark đo duy nhất field `total`. Thêm nữa, receipt CORD là dạng Hàn/Anh khác hẳn GTGT VN — đây là test **generalization** của extractor, không phải tập tối ưu.
 
-| Field | Regex-only |
-|---|---|
-| Total | **63.0%** |
+| Field | Regex-only | **+LLM primary** |
+|---|---|---|
+| Total | 41.8% | **90.9%** |
 
-Fail chính: `got=0.0` (regex không bắt được "TOTAL" của layout Hàn — format khác GTGT VN/AN đã tối ưu), OCR lệch 1-2 chữ số (258.500 vs 256.500), nhầm dòng tiền khách trả (50.000 vs 21.000). Với LLM primary (chưa chạy, cần `BENCH_LLM=1`) có thể nâng nhưng cần grounding chống hallucinate như SROIE/MCOCR.
+**Phát hiện thật khi soi fail (2 vòng):** (1) GT CORD v2 KHÔNG nhất quán quy ước số — comma-thousands `"1,591,600"` (40/57), dot-thousands kiểu Hàn `"61.500"` = 61.500 won (13/57), tiền tệ `"Rp 16.500"`, hỗn hợp EU `"62.000,00"`; norm_total (vốn cho SROIE/MCOCR) coi chấm là thập phân → parse sai 1000× cho 13 row. Sửa parser GT riêng cho CORD (`gt_total` trong `benchmark_cord.py`, ghi chú đầy đủ) → số tái tính: regex-only **giảm** 63.0%→**41.8%** (lần đầu GT sai "tình cờ" làm vài row trượt). (2) Chính regex extractor cũng parse số theo locale nhầm: OCR text in `"61.500"` → regex ra 61.5 thay vì 61.500 (dot=thập phân) — **điểm yếu thật của regex trên receipt quốc tế**.
+
+**LLM primary (+49.1 điểm):** LLM đọc tổng tiền theo ngữ cảnh tiền tệ của receipt (không phụ thuộc quy ước dấu), grounding chống hallucinate như SROIE/MCOCR. 50/55 đúng. 5 fail còn lại (ghi thẳng): OCR lệch chữ số (258.500 vs 256.500), LLM nhầm dòng tiền khách trả, GT vs OCR bất đồng. Cache `tests/data/llm_cache_cord.jsonl` → rerun không tốn API key.
 
 ```bash
 pip install datasets                # benchmark-only dep (không cần cho app)
-python tests/benchmark_cord.py      # chạy lại benchmark (tự tải dataset + OCR)
+python tests/benchmark_cord.py      # regex-only
+BENCH_LLM=1 LLM_MODE=primary python tests/benchmark_cord.py   # +LLM (cache sẵn, không cần key)
 ```
 
 ## Chạy
