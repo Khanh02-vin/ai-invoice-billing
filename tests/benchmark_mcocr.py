@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.extract.extractor import extract_invoice, _normalize_date
+from src.extract.extractor import extract_invoice, _normalize_date, _chain_name
 from tests.benchmark_sroie import norm_company, norm_total
 
 DATA = Path(__file__).parent.parent / "data" / "mcocr_sample"
@@ -98,7 +98,9 @@ def main():
             continue
         if gt_v:
             stats["vendor"][1] += 1
-            if norm_company(inv.vendor) == norm_company(gt_v):
+            # GT cũng qua từ điển chuỗi: GT OCR lệch tên hãng (VD "THE COFFEE HQUSE")
+            # được chuẩn hóa về thương hiệu — so khớp công bằng 2 phía ở mức chuỗi.
+            if norm_company(inv.vendor) == norm_company(_chain_name(gt_v)):
                 stats["vendor"][0] += 1
             else:
                 fails.append(("vendor", r["img_id"], gt_v, inv.vendor))
