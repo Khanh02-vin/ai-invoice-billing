@@ -12,26 +12,100 @@ from ..llm.base import get_llm_provider, LLMProvider
 # --- Nhãn song ngữ (Anh + Việt) ---
 _INVOICE_NO_RE = re.compile(
     r"(?:invoice\s*(?:no|number|#)|số\s*h[oó][aá]\s*đơn|hđ\s*số)\s*[:#]?\s*([A-Z0-9\-_/]+)", re.I)
+# ponytail: anchored đầu dòng tránh "from the date of purchase..." bắt nhầm trong receipt thật
 _VENDOR_RE = re.compile(
-    r"(?:from|vendor|seller|supplier|người\s*bán(?!\s*hàng))\s*[:#]?\s*(.+)", re.I)
+    r"(?m)^\s*(?:from|vendor|seller|supplier|người\s*bán(?!\s*hàng))\s*[:#]?\s*(.+)", re.I)
 _DATE_RE = re.compile(
-    r"(?:invoice\s*date|issue\s*date|dated|ngày)\s*[:#]?\s*"
-    r"(\d{1,2}[-/]\d{1,2}[-/]\d{4}|\d{4}[-/]\d{1,2}[-/]\d{1,2})", re.I)
+    r"(?:invoice\s*date|issue\s*date|dated|date(?:\s*time)?|ngày)\s*[:#]?\s*"
+    r"(\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2})", re.I)
 _DUE_RE = re.compile(
     r"(?:due\s*date|payment\s*due)\s*[:#]?\s*"
     r"(\d{1,2}[-/]\d{1,2}[-/]\d{4}|\d{4}[-/]\d{1,2}[-/]\d{1,2})", re.I)
-# "cộng tiền hàng hóa" (subtotal) bị loại bằng lookahead; ưu tiên "tổng cộng tiền thanh toán"
+# "cộng tiền hàng hóa" (subtotal) bị loại; ưu tiên "tổng cộng tiền thanh toán".
+# Cho receipt thật: hỗ trợ "total payable", "nett total", "final total", "amount due/balance due",
+# và tiền tệ chèn giữa label và số (TOTAL RM/USD), chọn số cuối cùng (dòng total ở dưới).
+# ponytail: capture bắt buộc bắt đầu bằng chữ số để tránh bắt "." rời rạc như capture group.
+_TOTAL_LABELS = (
+    r"nett?\s*total|total\s*payable|final\s*total|total\s*amount|grand\s*total|"
+    r"balance\s*due|amount\s*due|tổng\s*cộng\s*tiền\s*thanh\s*toán|"
+    r"total\s*sales|total\s*includes|net\s*amt|net\s*amount|\btotal\b|sub\s*total"
+)
 _AMOUNT_RE = re.compile(
-    r"(?:tổng\s*cộng(?:\s*tiền\s*thanh\s*toán)?|grand\s*total|\btotal\b|cộng\s*tiền(?!\s*hàng)|amount\s*(?:due)?)"
-    r"\s*[:#]?\s*\$?\s*([0-9.,]+)", re.I)
+    rf"(?P<label>{_TOTAL_LABELS})\s*(?:\(\s*)?(?:incl[^0-9:#]*?|after\s*rounding[^0-9:#]*?)?\s*[:#]?\s*"
+    rf"(?:rm|usd|eur|vnd|gbp|jpy|\$)?\s*"
+    rf"(?P<num>[0-9]+(?:[.,][0-9]+)*)", re.I)
+
+
+def _pick_total(text: str) -> Optional[str]:
+    """Chọn số total đúng trên receipt thật: loại 'tax total'/subtotal/total qty/count,
+    ưu tiên nhãn cụ thể (grand/nett/final/payable/due), hòa nhất bằng dòng total ở dưới cùng.
+    Bonus cho dòng mà số là token cuối (loại số giao dịch kiểu 'TOTAL 1010 008 00B0498')."""
+    cands = []
+    for m in _AMOUNT_RE.finditer(text):
+        ctx = m.group(0).lower()
+        # bỏ subtotal, "total qty/count/item", "excluding gst", "tax total"
+        if any(k in ctx for k in ("sub", "qty", "count", "item", "exclud", "excl", "tax")):
+            continue
+        prev = text[max(0, m.start() - 25):m.start()]
+        if re.search(r"\b(?:item|count|qty|quantity|no|number|pcs|unit|pos|ref|trans)"
+                     r"\s+total\s*$", prev, re.I):
+            continue
+        lab = m.group("label").lower()
+        rank = 3
+        if any(k in lab for k in ("payable", "nett", "grand", "final", "due", "amount")):
+            rank = 4
+        if "tổng cộng tiền thanh toán" in lab:
+            rank = 5
+        rest = text[m.end():].split("\n", 1)[0].strip()
+        if not rest or re.fullmatch(r"cr|[a-z]{2,3}", rest, re.I):  # số là token cuối dòng
+            rank += 1
+        cands.append((rank, m.start(), m.group("num")))
+    if not cands:
+        return None
+    best_rank = max(c[0] for c in cands)
+    # tie-break: chọn match sau cùng trong text (dòng total ở dưới cùng)
+    best = max((c for c in cands if c[0] == best_rank), key=lambda c: c[1])
+    return best[2]
+
+
+def _guess_vendor(text: str) -> str:
+    """Fallback cho receipt thật không có label Vendor/Seller: công ty thường ở dòng đầu/đầu hai.
+    Bỏ header/giờ/thuế/số tiền/dòng nhãn/địa chỉ. Không áp dụng cho tiếng Việt (có label)."""
+    noise = re.compile(
+        r"^(receipt|tax invoice|invoice|gst|abn|acn|tel|fax|website|email|"
+        r"date|time|cashier|payment|change|thank|like and follow|"
+        r"trans|terminal|company no|site|lot|no\.|address|telephone|"
+        r"item|qty|price|amount|total|sub.?total|nett?|subtotal|due|"
+        r"pre.?auth|page|ref|bill|the|to|goods|posted|jalan|taman|"
+        r"số|so|notice|all|any|keep|please|welcome|terima|tq|sale|sales|"
+        r"member|card|shop|store|outlet|branch|wisma|menara|blok|unit)",
+        re.I)
+    for line in text.splitlines():
+        s = line.strip()
+        if len(s) < 3 or not s[0].isalpha() or s.isdigit():
+            continue
+        if noise.match(s):
+            continue
+        if re.fullmatch(r"[\d\s.,$&*%():<>+\-]+", s):  # không có chữ
+            continue
+        if re.search(r"\d{5,}", s) and not re.search(r"[A-Z]{3,}", s):  # số dài, ko có tên
+            continue
+        s = re.sub(r"\s*\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+                   r"[a-z]*\.?\s+\d{4}(\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*$", "", s, flags=re.I)
+        s = re.sub(r"\s+\d{1,2}:\d{2}(?::\d{2})?\s*$", "", s)
+        s = re.sub(r"\s*tax\s*invoice\s*$", "", s, flags=re.I)
+        if not s:
+            continue
+        return s[:60]
+    return "unknown"
 # "Thuế suất GTGT: 10%" bị loại (lookahead suất + %); findall cộng dồn nhiều mức thuế
 _TAX_RE = re.compile(
     r"(?:thuế\s*gtgt|thuế(?!\s*suất)|\btax\b|vat)"
-    r"(?!\s*[:#]?\s*\$?\s*[0-9.,]*\s*%)\s*[:#]?\s*\$?\s*([0-9.,]+)", re.I)
+    r"(?!\s*[:#]?\s*\$?\s*[0-9.,]*\s*%)\s*[:#]?\s*\$?\s*([0-9]+(?:[.,][0-9]+)*)", re.I)
 # Chiết khấu: "Chiết khấu thương mại: 1,000,000". Loại giá trị dạng %.
 _DISCOUNT_RE = re.compile(
     r"(?:chiết\s*khấu(?:\s*thương\s*mại)?|discount)(?!\s*[:#]?\s*\$?\s*[0-9.,]*\s*%)"
-    r"[^0-9]*?([0-9.,]+)", re.I)
+    r"[^0-9]*?([0-9]+(?:[.,][0-9]+)*)", re.I)
 _CURRENCY_RE = re.compile(r"(USD|EUR|VND|GBP|JPY)", re.I)
 _VI_DETECT = re.compile(
     r"số\s*h[oó][aá]\s*đơn|tổng\s*cộng|thuế\s*gtgt|người\s*bán|đồng|mst"
@@ -67,12 +141,16 @@ def _read_pdf(path: str) -> str:
             return ""
 
 
+_paddle_cache = {}
+
+
 def _try_paddle(path: str) -> str:
-    """OCR bằng PaddleOCR (tiếng Việt)."""
+    """OCR bằng PaddleOCR (tiếng Việt). Cache instance — reload mỗi ảnh gây segfault."""
     try:
-        from paddleocr import PaddleOCR
-        ocr = PaddleOCR(lang="vi", show_log=False)
-        result = ocr.ocr(path)
+        if "vi" not in _paddle_cache:
+            from paddleocr import PaddleOCR
+            _paddle_cache["vi"] = PaddleOCR(lang="vi", show_log=False)
+        result = _paddle_cache["vi"].ocr(path)
         lines = []
         for page in result if result else []:
             for line in page or []:
@@ -119,9 +197,10 @@ def _normalize_date(s: str) -> str:
     parts = re.split(r"[-/]", s)
     if len(parts[0]) == 4:  # yyyy-mm-dd
         y, m, d = parts
-    else:  # dd/mm/yyyy
+    else:  # dd/mm/yyyy (hoặc dd/mm/yy 2 chữ số trên receipt lâu đời)
         d, m, y = parts
-    return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+    y = int(y) + 2000 if len(y) == 2 else int(y)  # năm 2 chữ số → 20yy
+    return f"{y:04d}-{int(m):02d}-{int(d):02d}"
 
 
 def extract_invoice(path: str, llm: Optional[LLMProvider] = None) -> Invoice:
@@ -143,10 +222,14 @@ def _extract_regex(text: str) -> tuple:
     count += 1 if m else 0
 
     m = _VENDOR_RE.search(text)
-    f["vendor"] = m.group(1).strip().splitlines()[0][:60] if m else "unknown"
+    f["vendor"] = m.group(1).strip().splitlines()[0][:60] if m else (
+        _guess_vendor(text) if not vi else "unknown")
     count += 1 if m else 0
 
     m = _DATE_RE.search(text)
+    # receipt thật không có label ngày → fallback: ngày dạng số đầu tiên trong text (non-vi)
+    if m is None and not vi:
+        m = re.search(r"\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b", text)
     f["issue_date"] = _normalize_date(m.group(1)) if m else None
     count += 1 if m else 0
 
@@ -154,9 +237,9 @@ def _extract_regex(text: str) -> tuple:
     f["due_date"] = _normalize_date(m.group(1)) if m else None
     # due_date không tính vào confidence — GTGT Việt Nam không có trường này
 
-    m = _AMOUNT_RE.search(text)
-    f["total"] = _to_float(m.group(1), vi) if m else 0.0
-    count += 1 if m else 0
+    num = _pick_total(text)
+    f["total"] = _to_float(num, vi) if num else 0.0
+    count += 1 if num else 0
 
     tax = sum(_to_float(m, vi) for m in _TAX_RE.findall(text))
     f["tax"] = tax
