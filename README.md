@@ -83,7 +83,7 @@ pytest tests/ -v
 
 ## Benchmark — SROIE (dữ liệu thật)
 
-Chạy trên **987 hóa đơn/receipt scan thật** (ICDAR 2019 SROIE: train 626 + test 361, OCR text + ground truth company/date/total, nguồn `jsdnrs/ICDAR2019-SROIE`, dữ liệu trong `data/sroie/`). Đo theo quy trình before/after trên cùng bộ dữ liệu, **không sửa test data**:
+Chạy trên **987 hóa đơn/receipt scan thật** (ICDAR 2019 SROIE: train 626 + test 361, OCR text + ground truth company/date/total, nguồn `jsdnrs/ICDAR2019-SROIE`, dữ liệu trong `data/sroie/`). Đo theo quy trình before/after trên cùng bộ dữ liệu, **không sửa test data**. Dataset phát hành theo **CC-BY-4.0** — dữ liệu thuộc về tác giả gốc (https://huggingface.co/datasets/jsdnrs/ICDAR2019-SROIE), repo này chỉ tái phân phối kèm attribution:
 
 | Field | Baseline | Regex gia cố | **+LLM primary** |
 |---|---|---|---|
