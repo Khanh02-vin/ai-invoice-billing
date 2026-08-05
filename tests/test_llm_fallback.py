@@ -1,5 +1,7 @@
 """Tests cho LLM fallback — regex fail → LLM lấp chỗ thiếu."""
-from src.extract.extractor import extract_from_text, _merge_fields
+import os
+
+from src.extract.extractor import extract_from_text, _merge_fields, _grounded
 from src.llm.base import MockProvider
 
 
@@ -36,7 +38,7 @@ def test_llm_fallback_fills_missing():
 def test_llm_json_with_backticks():
     """LLM trả JSON trong ``` markdown → vẫn parse được."""
     response = '```json\n{"invoice_number": "ABC-1", "total": "123.45", "currency": "USD"}\n```'
-    inv = extract_from_text("FOO BAR BAZ", llm=MockProvider(response))
+    inv = extract_from_text("FOO BAR BAZ\nAMOUNT 123.45", llm=MockProvider(response))
     assert inv.invoice_number == "ABC-1"
     assert inv.total == 123.45
 
@@ -78,3 +80,31 @@ def test_merge_regex_wins_for_conflict():
     assert merged["vendor"] == "LLM Vendor"  # LLM lấp chỗ unknown
     assert merged["total"] == 100.0  # regex giữ
     assert merged["tax"] == 50.0  # LLM lấp chỗ 0
+
+
+def test_grounding_rejects_hallucination():
+    """Vendor/total KHÔNG có trong text gốc → bị loại (nhường regex)."""
+    text = "ACME TRADING SDN BHD\nGRAND TOTAL RM 177.20\n"
+    out = _grounded({"vendor": "PHARMACITY", "total": 999.0}, text)
+    assert "vendor" not in out and "total" not in out
+    out2 = _grounded({"vendor": "ACME TRADING SDN BHD", "total": 177.2}, text)
+    assert out2["vendor"] == "ACME TRADING SDN BHD" and out2["total"] == 177.2
+
+
+def test_grounding_vendor_fuzzy_ocr():
+    """Vendor có lỗi OCR nhỏ (vài ký tự) vẫn qua được grounding fuzzy."""
+    text = "VINCOMMERCE Q2\nTổng cộng: 236,990\n"
+    out = _grounded({"vendor": "VinCommerce"}, text)
+    assert out["vendor"] == "VinCommerce"
+
+
+def test_primary_mode_overrides_regex_wrong_total(monkeypatch):
+    """LLM_MODE=primary: LLM (đã grounded) đè total sai của regex (ca SROIE thật X51005757323:
+    regex bắt nhầm dòng 'GST INCLUDED IN TOTAL 1.58')."""
+    monkeypatch.setenv("LLM_MODE", "primary")
+    text = ("TOTAL INCL. GST@6% RM 28.00\n"
+            "CASH RM 40.00\n"
+            "CHANGE RM 12.00\n"
+            "GST @6% INCLUDED IN TOTAL RM 1.58\n")
+    inv = extract_from_text(text, llm=MockProvider('{"total": 28.0}'))
+    assert inv.total == 28.0

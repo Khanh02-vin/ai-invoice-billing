@@ -12,6 +12,7 @@ Chạy: python tests/benchmark_mcocr.py > tests/mcocr_result.txt
 import ast
 import csv
 import io
+import os
 import re
 import sys
 import time
@@ -20,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.extract.extractor import extract_invoice, _normalize_date, _chain_name
+from src.extract.extractor import extract_from_text, read_file_text, _normalize_date, _chain_name
 from tests.benchmark_sroie import norm_company, norm_total
 
 DATA = Path(__file__).parent.parent / "data" / "mcocr_sample"
@@ -85,14 +86,35 @@ def main():
     print("Pipeline: ảnh → PaddleOCR(vi) → regex (không LLM)")
     print("=" * 72)
 
+    # Pass 1: OCR text cache — PaddleOCR CPU nondeterminism ±4% giữa các lần chạy.
+    # Cache text sau lần OCR đầu → rerun (kể cả +LLM) deterministic, so sánh công bằng.
+    txt_dir = DATA / "text_cache"
+    txt_dir.mkdir(exist_ok=True)
+    texts = {}
+    for r in sample:
+        p = txt_dir / (r["img_id"] + ".txt")
+        if p.exists():
+            texts[r["img_id"]] = p.read_text(encoding="utf-8")
+        else:
+            text = read_file_text(str(DATA / r["img_id"]))
+            p.write_text(text, encoding="utf-8")
+            texts[r["img_id"]] = text
+
+    llm = None
+    if os.getenv("BENCH_LLM"):
+        from tests.llm_cache import CachingProvider, CACHE_DIR
+        llm = CachingProvider(CACHE_DIR / "llm_cache_mcocr.jsonl")
+        n = llm.preload([texts[r["img_id"]] for r in sample])
+        print(f"LLM mode={os.getenv('LLM_MODE', 'fill')}: {n} API call mới, "
+              f"cache {len(llm.cache)} entry")
+
     stats = {"vendor": [0, 0], "date": [0, 0], "total": [0, 0]}
     fails = []
     t0 = time.perf_counter()
     for r in sample:
-        img = DATA / r["img_id"]
         gt_v, gt_d, gt_t = gt_from_row(r)
         try:
-            inv = extract_invoice(str(img), llm=None)
+            inv = extract_from_text(texts[r["img_id"]], llm=llm)
         except Exception as e:
             print(f"  CRASH {r['img_id']}: {e}")
             continue

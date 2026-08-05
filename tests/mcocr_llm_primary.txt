@@ -1,0 +1,36 @@
+========================================================================
+INVOICE EXTRACTION — HÓA ĐƠN VIỆT NAM THẬT (MCOCR 2021)
+Sample: 60 ảnh (quality >= 0.6), tải mới 0
+Pipeline: ảnh → PaddleOCR(vi) → regex (không LLM)
+========================================================================
+LLM mode=primary: 0 API call mới, cache 60 entry
+
+field    matched   total  accuracy
+vendor        50      59     84.7%
+date          52      56     92.9%
+total         46      59     78.0%
+overall      148     174     85.1%
+
+Time: 4s (0.1s/ảnh)
+
+--- 20 fail đầu tiên (field | img | expected | got) ---
+vendor  mcocr_public_145013pbggg  exp='VinCommerce'  got='VM+QNH1060-1062Tran Phü'
+total   mcocr_public_145013yhzdy  exp=95000.0  got=95100.0
+total   mcocr_public_145013oxnpr  exp=116000.0  got=150000.0
+vendor  mcocr_public_145013adyee  exp='MINIMART ANANAN'  got='MINIMART ANAN'
+total   mcocr_public_145013cleap  exp=222000.0  got=22000.0
+total   mcocr_public_145013qqkij  exp=84000.0  got=0.0
+vendor  mcocr_public_145013awcbh  exp='NHÀ SÁCH GD-TC CẨM PHẢ'  got="p000'6"
+total   mcocr_public_145013awcbh  exp=42000.0  got=400000.0
+total   mcocr_public_145013vilkn  exp=5799546.0  got=5596546.0
+date    mcocr_public_145013blmgu  exp='2020-08-13'  got=None
+total   mcocr_public_145014fvnus  exp=17.0  got=236990.0
+date    mcocr_public_145014khrvg  exp='2020-08-13'  got=None
+total   mcocr_public_145014fgfzb  exp=60000.0  got=60100.0
+vendor  mcocr_public_145014wrzex  exp='MINIMART ANAN'  got='JEN MINIMART ANAN'
+total   mcocr_public_145014wrzex  exp=33000.0  got=33100.0
+vendor  mcocr_public_145014tfdcx  exp='VinCommerce'  got='VM+ QNH T6 7.Khu Minh Tien A'
+vendor  mcocr_public_145014zoebw  exp='SCTC CÔ THỎ 104 TRẦN PHÚ - CẨM'  got='CUKCUK - Một sản phẩm của MISA'
+total   mcocr_public_145014vnfrc  exp=47000.0  got=47100.0
+vendor  mcocr_public_145014rwzyq  exp='CTC CÔ THỎ 104 TRẦN PHÚ - CẨM'  got='SCTCCO THO104 TRAN PHU - CAM PHA'
+date    mcocr_public_145014rwzyq  exp='2020-08-08'  got='2002-08-08'

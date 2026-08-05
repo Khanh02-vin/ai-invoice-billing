@@ -362,6 +362,36 @@ def _extract_llm(text: str, provider: LLMProvider) -> dict:
         return {}
 
 
+_NUM_TOKEN_RE = re.compile(r"\d[\d.,]*")
+
+
+def _grounded(fields: dict, text: str) -> dict:
+    """Chống hallucinate: vendor/total do LLM trả về phải xuất hiện trong text gốc.
+    vendor: exact (bỏ space/dấu) hoặc fuzzy ≥0.85 với một dòng. total: khớp 1 số có trong text
+    (thử cả cách đọc VN lẫn EN). Field không qua được kiểm tra bị loại — nhường cho regex."""
+    out = dict(fields)
+    v = out.get("vendor")
+    if v:
+        nv = _norm_name(str(v))
+        lines = [_norm_name(l) for l in text.splitlines() if len(l.strip()) >= 4]
+        ok = bool(nv) and (nv in "".join(lines) or any(
+            difflib.SequenceMatcher(None, nv, l).ratio() >= 0.85 for l in lines if l))
+        if not ok:
+            out.pop("vendor")
+    t = out.get("total")
+    if t is not None:
+        nums = set()
+        for tok in _NUM_TOKEN_RE.findall(text):
+            for vi in (False, True):
+                try:
+                    nums.add(round(_to_float(tok, vi), 2))
+                except (ValueError, OverflowError):
+                    pass
+        if not any(abs(float(t) - n) < 0.01 for n in nums):
+            out.pop("total")
+    return out
+
+
 def _merge_fields(regex_fields: dict, llm_fields: dict) -> dict:
     """Regex là nguồn chính; LLM lấp chỗ regex bỏ sót (unknown/None/0)."""
     merged = dict(regex_fields)
@@ -375,13 +405,27 @@ def _merge_fields(regex_fields: dict, llm_fields: dict) -> dict:
 
 
 def extract_from_text(text: str, source_file: str = "", llm: Optional[LLMProvider] = None) -> Invoice:
-    """Trích xuất Invoice. Regex trước; nếu confidence < 0.8 và có LLM → merge."""
+    """Trích xuất Invoice. Regex trước; nếu confidence < 0.8 và có LLM → merge.
+    LLM_MODE=primary: LLM (đã qua grounding) GHI ĐÈ vendor/date/total của regex —
+    dùng khi regex hay chọn sai (receipt thật); mặc định 'fill' chỉ lấp chỗ trống."""
     fields, count = _extract_regex(text)
     confidence = min(1.0, count / 5.0)
 
-    if confidence < 0.8 and llm is not None:
-        llm_fields = _extract_llm(text, llm)
+    mode = os.getenv("LLM_MODE", "fill")
+    if llm is not None and (confidence < 0.8 or mode == "primary"):
+        llm_fields = _grounded(_extract_llm(text, llm), text)
         if llm_fields:
+            if mode == "primary":
+                for k in ("vendor", "issue_date", "total"):
+                    if llm_fields.get(k) not in (None, "", "unknown", 0, 0.0):
+                        fields[k] = llm_fields[k]
+                # vendor LLM cũng qua chuẩn hóa chuỗi bán lẻ như đường regex
+                # (LLM hay trả dòng chi nhánh "VM+QNH..." thay vì brand "VinCommerce")
+                if llm_fields.get("vendor"):
+                    v = _chain_name(fields["vendor"])
+                    if v == fields["vendor"]:
+                        v = _find_chain_in_text(text) or v
+                    fields["vendor"] = v or fields["vendor"]
             fields = _merge_fields(fields, llm_fields)
             core = ["invoice_number", "vendor", "issue_date", "total", "tax"]
             new_count = sum(1 for k in core if fields.get(k) not in (None, "", "unknown", 0, 0.0))

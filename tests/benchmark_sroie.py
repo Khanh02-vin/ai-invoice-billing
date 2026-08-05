@@ -8,8 +8,10 @@ Chạy: python tests/benchmark_sroie.py > tests/sroie_baseline.txt
       (sau khi gia cố: > tests/sroie_improved.txt)
 """
 import json
+import os
 import re
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -74,16 +76,27 @@ def main():
     for split in ("train", "test"):
         for line in (DATA / f"{split}.jsonl").open(encoding="utf-8"):
             recs.append(json.loads(line))
+
+    llm = None
+    texts = ["\n".join(reconstruct_lines(r["words"], r["bboxes"], r["image_size"]["height"]))
+             for r in recs]
+    if os.getenv("BENCH_LLM"):
+        from tests.llm_cache import CachingProvider, CACHE_DIR
+        llm = CachingProvider(CACHE_DIR / "llm_cache_sroie.jsonl")
+        t0 = time.perf_counter()
+        n = llm.preload(texts)
+        print(f"LLM mode={os.getenv('LLM_MODE', 'fill')}: "
+              f"{n} API call mới ({time.perf_counter() - t0:.0f}s), "
+              f"cache {len(llm.cache)} entry\n")
     print(f"SROIE benchmark: {len(recs)} receipt thật (train 626 + test 361), "
-          f"regex path, không LLM\n")
+          f"{'regex+LLM' if llm else 'regex path, không LLM'}\n")
 
     stats = {"vendor": [0, 0], "date": [0, 0], "total": [0, 0]}
     fails = []
 
-    for r in recs:
-        text = "\n".join(reconstruct_lines(r["words"], r["bboxes"], r["image_size"]["height"]))
+    for r, text in zip(recs, texts):
         try:
-            inv = extract_from_text(text, llm=None)
+            inv = extract_from_text(text, llm=llm)
         except Exception as e:  # extractor crash trên dữ liệu thật → tính là fail cả 3 field
             ent = r.get("entities") or {}
             for field, gt in (("total", ent.get("total")), ("vendor", ent.get("company")), ("date", ent.get("date"))):
