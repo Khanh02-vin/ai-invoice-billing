@@ -78,7 +78,42 @@ Swagger UI: http://localhost:8004/docs
 pytest tests/ -v
 ```
 
-28 tests: trích xuất (Anh + GTGT Việt), OCR, nhiều mức thuế, chiết khấu, CRUD, auth JWT, cách ly đa user.
+54 tests: trích xuất (Anh + GTGT Việt), OCR, nhiều mức thuế, chiết khấu, CRUD, auth JWT, cách ly đa user, regression trên receipt thật.
+
+## Benchmark — SROIE (dữ liệu thật)
+
+Chạy trên **987 hóa đơn/receipt scan thật** (ICDAR 2019 SROIE: train 626 + test 361, OCR text + ground truth company/date/total, nguồn `jsdnrs/ICDAR2019-SROIE`, dữ liệu trong `data/sroie/`). Đo theo quy trình before/after trên cùng bộ dữ liệu, **không sửa test data**:
+
+| Field | Baseline | Sau gia cố regex |
+|---|---|---|
+| Vendor (company) | 0.0% | 55.7% |
+| Date | 0.6% | 98.7% |
+| Total | 30.7% | 71.9% |
+| **Overall** | **10.1%** | **74.6%** |
+
+Gia cố cho layout receipt thật: `DATE:` / `DATE TIME:`, `TOTAL INCL. GST`, `TOTAL RM/USD`, `TOTAL AFTER ROUNDING`, `NET AMT`, `AMOUNT DUE`/`BALANCE DUE`, công ty dòng đầu không label, ngày 2 chữ số (`20/06/18`), chặn crash khi bắt "." rời rạc. Số còn sai chủ yếu: total nằm trong bảng GST summary không có label, GT làm tròn lệch 0.01.
+
+```bash
+python tests/benchmark_sroie.py             # chạy lại benchmark (987 receipt)
+pytest tests/test_sroie_regression.py       # regression: 8 receipt thật phải giữ nguyên
+```
+
+## Benchmark — Hóa đơn Việt Nam thật (MCOCR 2021)
+
+60 hóa đơn tiếng Việt thật từ **MCOCR 2021** (dataset public OCR của AIC, mirror GitHub `TanDuong986/GCN_Vietnamese_invoice`; Co.opmart, VinCommerce, minimart...) có label SELLER/TIMESTAMP/TOTAL_COST + image quality. Pipeline đầy đủ: ảnh → PaddleOCR (vi) → regex extract (không LLM).
+
+| Field | Kết quả |
+|---|---|
+| Vendor | **49.2%** |
+| Date | **83.9%** |
+| Total | **78.0%** |
+| **Overall** | **70.1%** |
+
+Phát hiện thật khi chạy trên hóa đơn VN: regex vendor (anchored `from/vendor/người bán`) không áp dụng được cho hóa đơn bán lẻ VN không có label → fallback dòng đầu; so sánh tên công ty phải bỏ hết space + dấu tiếng Việt (OCR hay lệch space/dấu: "MINIMARTANAN" vs "MINIMART ANAN") — nâng vendor 20.3%→49.2%. Giới hạn còn lại chủ yếu do OCR đọc sai chính tên hãng ("VinCommerce"→"MinComnerce") — không phải regex. Note: date/total lệch ±4% giữa 2 lần chạy = nondeterminism của PaddleOCR (CPU), số ghi là lần chạy cuối.
+
+```bash
+python tests/benchmark_mcocr.py             # chạy lại benchmark (tự tải 60 ảnh nếu thiếu)
+```
 
 ## Chạy
 

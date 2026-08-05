@@ -31,3 +31,6 @@ Thumbs.db
 .idea/
 .vscode/
 .codex/
+
+# MCOCR sample images (tự tải lại bằng tests/benchmark_mcocr.py)
+data/mcocr_sample/
