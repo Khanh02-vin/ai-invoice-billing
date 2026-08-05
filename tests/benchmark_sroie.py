@@ -41,10 +41,13 @@ def reconstruct_lines(words, bboxes, height):
 
 def norm_company(s: str) -> str:
     """Chuẩn hóa tên công ty: uppercase, BỎ HẾT khoảng trắng + dấu tiếng Việt,
-    bỏ ký tự lề và số đăng ký dạng (728515-N) ở cuối.
+    bỏ ký tự lề và số đăng ký Malaysia (SSM/GST) dạng (728515-N), (126926-H), (308282-A).
+    Số đăng ký kết thúc bằng CHỮ CÁI → strip bất cứ đâu (không chỉ cuối dòng);
+    "(M)" (Malaysia) không bị nhầm vì không có chữ số.
     So sánh theo chuỗi chữ thuần (OCR hay lệch space/dấu) — áp cả 2 vế."""
     if not s:
         return ""
+    s = re.sub(r"\s*\([0-9]{4,6}-[A-Za-z]\)", "", s)  # mã đăng ký: 4-6 số + chữ
     s = re.sub(r"\s*\(\s*[\dA-Z-]*-?[\d]+\s*\)\s*$", "", s.strip())
     s = re.sub(r"\s+", "", "".join(
         c for c in unicodedata.normalize("NFD", s.strip(" .,;:/\\\"'()-"))

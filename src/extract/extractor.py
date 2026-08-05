@@ -93,7 +93,9 @@ def _guess_vendor(text: str) -> str:
         r"item|qty|price|amount|total|sub.?total|nett?|subtotal|due|"
         r"pre.?auth|page|ref|bill|the|to|goods|posted|jalan|taman|"
         r"số|so|notice|all|any|keep|please|welcome|terima|tq|sale|sales|"
-        r"member|card|shop|store|outlet|branch|wisma|menara|blok|unit)",
+        r"member|card|shop|store|outlet|branch|wisma|menara|blok|unit|"
+        r"rounding|feedback|complaint|purchased|purchase|request|returnable|"
+        r"exchangeable|date of|duty free|valid|expiry|warranty|policy)",
         re.I)
     for line in text.splitlines():
         s = line.strip()
