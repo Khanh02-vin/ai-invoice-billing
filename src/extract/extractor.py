@@ -2,9 +2,11 @@
 Hỗ trợ: tiếng Anh + Hóa đơn GTGT điện tử tiếng Việt + ảnh scan (OCR).
 Regex chính; LLM fallback khi regex đọc thiếu (confidence < 0.8).
 ponytail: chuỗi OCR Paddle→Tesseract, LLM qua provider có thể inject."""
+import difflib
 import json
 import os
 import re
+import unicodedata
 from typing import Optional
 from ..domain.models import Invoice
 from ..llm.base import get_llm_provider, LLMProvider
@@ -112,6 +114,58 @@ _VI_DETECT = re.compile(
     r"|đơn\s*vị\s*bán|ngày\s*lập|tổng\s*phải\s*trả|giá\s*trị", re.I)
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".tiff", ".bmp")
+
+# Chuỗi bán lẻ/ăn uống phổ biến VN — từ điển thương hiệu: sửa vendor khi OCR
+# đọc lệch tên hãng (VD "MinComnerce"→VinCommerce, "THE COFFEE HQUSE"→The Coffee House).
+_VN_CHAINS = (
+    "VinCommerce", "VinMart", "WinMart", "Co.opmart", "Saigon Co.op", "Minimart",
+    "Bách Hóa Xanh", "Circle K", "FamilyMart", "GS25", "FPT Shop", "Điện Máy Xanh",
+    "Thế Giới Di Động", "Nguyễn Kim", "The Coffee House", "Highlands Coffee",
+    "Milano Coffee", "Lotteria", "KFC", "Jollibee", "Pharmacity", "Guardian",
+    "Phúc Anh Minimart", "Big C", "Lotte Mart", "AEON", "Mega Market",
+)
+
+
+def _norm_name(s: str) -> str:
+    """Chuẩn hóa tên công ty: bỏ hết space + dấu tiếng Việt (OCR lệch space/dấu)."""
+    if not s:
+        return ""
+    s = re.sub(r"\s*\(\s*[\dA-Z-]*-?[\d]+\s*\)\s*$", "", s.strip())
+    s = re.sub(r"\s+", "", "".join(
+        c for c in unicodedata.normalize("NFD", s.strip(" .,;:/\\\"'()-"))
+        if not unicodedata.combining(c)))
+    return s.upper()
+
+
+def _chain_name(s: str) -> str:
+    """Trả tên chuỗi nếu vendor khớp (fuzzy ≥0.8) một chuỗi bán lẻ VN trong từ điển.
+    Sửa lỗi OCR tên hãng; so khớp ở mức thương hiệu (bỏ tên chi nhánh).
+    Áp dụng cho cả 2 ngôn ngữ — vendor English (SROIE) không khớp chuỗi VN nên giữ nguyên."""
+    v = _norm_name(s)
+    if len(v) < 4:
+        return s
+    best, best_r = None, 0.0
+    for c in _VN_CHAINS:
+        r = difflib.SequenceMatcher(None, v, _norm_name(c)).ratio()
+        if r > best_r:
+            best, best_r = c, r
+    return best if best_r >= 0.9 else s
+
+
+def _find_chain_in_text(text: str):
+    """Quét toàn bộ text OCR tìm dòng chứa tên chuỗi bán lẻ VN (fuzzy ≥0.8/dòng).
+    Fix thật: vendor line rơi vào tên chi nhánh ("VM+QNH 690 Tran Phu") trong khi
+    brand ("VinCommerce") nằm ở dòng khác của receipt."""
+    best, best_r = None, 0.0
+    for line in text.splitlines():
+        s = _norm_name(line.strip())
+        if len(s) < 4:
+            continue
+        for c in _VN_CHAINS:
+            r = difflib.SequenceMatcher(None, s, _norm_name(c)).ratio()
+            if r > best_r:
+                best, best_r = c, r
+    return best if best_r >= 0.9 else None
 
 
 def read_file_text(path: str) -> str:
@@ -224,6 +278,12 @@ def _extract_regex(text: str) -> tuple:
     m = _VENDOR_RE.search(text)
     f["vendor"] = m.group(1).strip().splitlines()[0][:60] if m else (
         _guess_vendor(text) if not vi else "unknown")
+    raw_vendor = f["vendor"]
+    f["vendor"] = _chain_name(raw_vendor)  # chuẩn hóa tên chuỗi bán lẻ (fix OCR brand)
+    if f["vendor"] == raw_vendor:  # chưa khớp chuỗi → quét cả text tìm brand (fix "VM+QNH...")
+        full = _find_chain_in_text(text)
+        if full:
+            f["vendor"] = full
     count += 1 if m else 0
 
     m = _DATE_RE.search(text)
