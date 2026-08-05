@@ -1,0 +1,99 @@
+========================================================================
+INVOICE EXTRACTION — RECEIPT THẬT (CORD v2, CC-BY-4.0)
+Sample: 60 receipt / 800 train
+Pipeline: ảnh → PaddleOCR → regex (không LLM)
+GT CORD chỉ có total (không vendor/date) → đo mỗi field total
+========================================================================
+[2026/08/06 02:04:30] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:36] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:38] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:40] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:41] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:42] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:45] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:46] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:47] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:49] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:50] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:51] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:52] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:53] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:54] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:55] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:56] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:04:57] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:00] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:01] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:03] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:04] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:05] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:06] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:07] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:09] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:10] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:11] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:12] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:16] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:17] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:18] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:21] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:22] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:24] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:26] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:28] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:30] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:35] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:36] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:37] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:39] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:40] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:42] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:43] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:44] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:45] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:46] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:47] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:48] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:51] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:53] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:55] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:55] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:57] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:05:59] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:06:00] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:06:01] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:06:02] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+[2026/08/06 02:06:04] ppocr WARNING: Since the angle classifier is not initialized, it will not be used during the forward process
+  SKIP 26: GT thiếu total
+  SKIP 52: GT thiếu total
+  SKIP 338: GT thiếu total
+  SKIP 468: GT thiếu total
+  SKIP 507: GT thiếu total
+  SKIP 572: GT thiếu total
+
+field    matched   total  accuracy
+total         34      54     63.0%
+
+Time OCR+extract: 3s (0.1s/ảnh)
+
+--- 20 fail đầu tiên (img | expected | got) ---
+13  exp=247775.0  got=0.0
+39  exp=70000.0  got=0.0
+117  exp=60000.0  got=0.0
+208  exp=60000.0  got=911724921.0
+234  exp=21000.0  got=50000.0
+260  exp=258500.0  got=256500.0
+286  exp=14000.0  got=0.0
+312  exp=10000.0  got=1000.0
+325  exp=287760.0  got=287.0
+377  exp=40000.0  got=0.0
+390  exp=42000.0  got=0.0
+442  exp=194469.0  got=0.0
+533  exp=60000.0  got=0.0
+546  exp=20.0  got=0.0
+559  exp=25000.0  got=2500.0
+637  exp=40.0  got=50.0
+650  exp=76000.0  got=0.0
+663  exp=17999.0  got=0.0
+702  exp=83799.0  got=76.181
+728  exp=12000.0  got=0.0

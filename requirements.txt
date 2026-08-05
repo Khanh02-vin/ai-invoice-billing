@@ -10,4 +10,7 @@ pytest>=7.0.0
 # pytesseract>=0.3.10
 # Pillow>=10.0.0
 # paddleocr>=2.7.0
+
+# Benchmark CORD (tests/benchmark_cord.py) — chỉ cho benchmark, không cần cho app
+# datasets>=2.0
 openai>=1.0
