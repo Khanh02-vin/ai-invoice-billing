@@ -37,3 +37,5 @@ data/mcocr_sample/
 
 # CORD sample images + OCR text cache (tự tải lại bằng tests/benchmark_cord.py)
 data/cord_sample/
+# Log benchmark (regenerable)
+tests/*_err.log
