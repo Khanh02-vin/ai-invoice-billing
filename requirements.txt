@@ -14,3 +14,4 @@ pytest>=7.0.0
 # Benchmark CORD (tests/benchmark_cord.py) — chỉ cho benchmark, không cần cho app
 # datasets>=2.0
 openai>=1.0
+reportlab
