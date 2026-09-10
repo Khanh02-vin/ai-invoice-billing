@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: invoice-billing-config
+  namespace: invoice-billing
+  labels:
+    app: ai-invoice-billing
+data:
+  APP_ENV: "production"
+  APP_DEBUG: "false"
+  PORT: "8000"
+  STORAGE_DIR: "/app/data/storage"
+  DATABASE_PATH: "/app/data/invoices.db"
+  CORS_ORIGINS: "https://invoice.example.com"
+  MAX_UPLOAD_BYTES: "10485760"
+  MAX_PDF_PAGES: "20"
+  UPLOAD_TIMEOUT_SECONDS: "60"
+  LLM_BASE_URL: "https://api.qwencoder.cloud/api/v1"
+  LLM_MODEL: "qwen3.7-max"
+  LLM_TIMEOUT_SECONDS: "30"
+  LLM_MAX_RETRIES: "2"
+  LLM_COST_CAP_USD: "0.50"
+  PRIVACY_REDACT_PII: "true"
+  PRIVACY_LOCAL_ONLY: "false"

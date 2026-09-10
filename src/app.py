@@ -1,14 +1,23 @@
-"""FastAPI app cho Invoice & Billing System. Auth JWT + đa người dùng."""
+"""FastAPI app cho Invoice & Billing System. Auth JWT + đa người dùng.
+
+Nguyên tắc (PLAN mục 3):
+- CORS allowlist; security headers; request ID; structured logging.
+- Error contract JSON ổn định; không trả stack trace/PII.
+- Upload validation: dung lượng, MIME sniff, số trang.
+- Health/readiness phân biệt process sống và dependency sẵn sàng.
+"""
+import secrets
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Response
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 
+from .config import get_settings
 from .domain.models import (
     Invoice, InvoiceCreate, InvoiceUpdate, MonthlyReport, InvoiceStatus,
     User, UserCreate, UserPublic, Token,
@@ -16,25 +25,95 @@ from .domain.models import (
 from .extract.extractor import extract_invoice
 from .store.repository import InvoiceRepository
 from .store.users import UserRepository
-from .auth.security import hash_password, verify_password, create_token, decode_token
+from .auth.security import hash_password, verify_password, create_token, decode_token, create_refresh_token as create_refresh_jwt
+from .errors import register_error_handlers, AppError
+from .middleware import (
+    RequestIdMiddleware, SecurityHeadersMiddleware, StructuredLoggingMiddleware, configure_cors,
+)
+from .upload import validate_upload
+from .store.storage import LocalFileStorage, generate_storage_key, compute_fingerprint
+from .routers.orgs import router as orgs_router
+from .routers.search import router as search_router
+from .routers.billing import router as billing_router
+from .routers.auth_ext import router as auth_ext_router
+from .observability import metrics as obs_metrics
 
-app = FastAPI(title="Invoice & Billing System", version="2.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+settings = get_settings()
+settings.ensure_production_readiness()
+
+app = FastAPI(title="Invoice & Billing System", version="3.0.0")
+
+# --- Middleware (order matters: outermost first) ---
+configure_cors(app, settings.cors_origins)
+app.add_middleware(RequestIdMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(StructuredLoggingMiddleware)
+
+# --- Error handlers ---
+register_error_handlers(app)
+
+# --- Routers (Phase 2-4) ---
+app.include_router(orgs_router)
+app.include_router(search_router)
+app.include_router(billing_router)
+app.include_router(auth_ext_router)
+
+# --- Observability (Phase 4) ---
+@app.get("/metrics")
+async def metrics_endpoint():
+    return obs_metrics.metrics_response()
 
 repo = InvoiceRepository()
 users = UserRepository()
 bearer = HTTPBearer(auto_error=False)
 
+# --- Storage ---
+storage = LocalFileStorage(settings.storage_dir)
+
 
 def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> User:
-    """Lấy user từ JWT. 401 nếu thiếu/sai token."""
+    """Resolve the canonical user and require verified email for protected routes."""
     if not credentials:
-        raise HTTPException(status_code=401, detail="Cần đăng nhập")
+        raise AppError("UNAUTHORIZED", "Cần đăng nhập.", status=401)
     user_id = decode_token(credentials.credentials)
     user = users.get(user_id) if user_id else None
     if not user:
-        raise HTTPException(status_code=401, detail="Token không hợp lệ")
+        raise AppError("UNAUTHORIZED", "Token không hợp lệ.", status=401)
+    if not user.verified:
+        raise AppError("EMAIL_NOT_VERIFIED", "Vui lòng xác minh email trước.", status=403)
     return user
+
+
+# ---------- Health / Readiness ----------
+@app.get("/health")
+async def health():
+    """Health check — process sống."""
+    return {"status": "ok", "version": "2.0.0"}
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness check — dependency sẵn sàng."""
+    checks = {"database": False, "storage": False}
+    try:
+        # Test DB connection
+        repo.ping()
+        checks["database"] = True
+    except Exception:
+        pass
+    try:
+        # Test storage writable
+        test_path = Path(settings.storage_dir)
+        test_path.mkdir(parents=True, exist_ok=True)
+        checks["storage"] = test_path.exists()
+    except Exception:
+        pass
+    all_ready = all(checks.values())
+    status_code = 200 if all_ready else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={"ready": all_ready, "checks": checks},
+    )
 
 
 # ---------- Auth ----------
@@ -43,157 +122,162 @@ def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) ->
 
 @app.post("/auth/register", response_model=Token)
 async def register(data: UserCreate):
-    import os
-    if not os.getenv("OPEN_REGISTRATION"):
-        raise HTTPException(status_code=403, detail="Đăng ký đã tắt — liên hệ quản trị viên")
-    """Đăng ký tài khoản mới."""
+    # Đọc settings tại request time để test monkeypatch có hiệu lực
+    _settings = get_settings()
+    if not _settings.open_registration:
+        raise AppError("REGISTRATION_CLOSED", "Đng ký đang tắt.", status=403)
     if users.get_by_username(data.username):
-        raise HTTPException(status_code=400, detail="Tên người dùng đã tồn tại")
+        raise AppError("USERNAME_EXISTS", "Tên người dùng đã tồn tại.", status=409)
     user = users.create(data.username, hash_password(data.password))
-    return Token(access_token=create_token(user.id))
+    jti = secrets.token_urlsafe(24)
+    refresh_token = create_refresh_jwt(user.id, jti)
+    users.store_refresh_token(jti, user.id, (datetime.now(timezone.utc) + timedelta(days=30)).isoformat())
+    return {"access_token": create_token(user.id), "refresh_token": refresh_token}
 
 
 @app.post("/auth/login", response_model=Token)
 async def login(data: UserCreate):
-    """Đăng nhập, trả về JWT."""
     user = users.get_by_username(data.username)
     if not user or not verify_password(data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Sai tên đăng nhập hoặc mật khẩu")
-    return Token(access_token=create_token(user.id))
+        raise AppError("INVALID_CREDENTIALS", "Sai tên người dùng hoặc mật khẩu.", status=401)
+    if not user.verified:
+        raise AppError("EMAIL_NOT_VERIFIED", "Vui lòng xác minh email trước.", status=403)
+    jti = secrets.token_urlsafe(24)
+    refresh_token = create_refresh_jwt(user.id, jti)
+    users.store_refresh_token(jti, user.id, (datetime.now(timezone.utc) + timedelta(days=30)).isoformat())
+    return {"access_token": create_token(user.id), "refresh_token": refresh_token}
 
 
 @app.get("/auth/me", response_model=UserPublic)
 async def me(user: User = Depends(current_user)):
-    """Thông tin user hiện tại."""
-    return UserPublic(id=user.id, username=user.username, created_at=user.created_at)
+    return UserPublic(id=user.id, username=user.username)
 
 
-# ---------- Invoices (yêu cầu đăng nhập) ----------
-
-@app.post("/invoices/upload", response_model=Invoice)
-async def upload_invoice(file: UploadFile = File(...), user: User = Depends(current_user)):
-    """Upload file hóa đơn (PDF/text) → trích xuất → lưu cho user."""
-    suffix = Path(file.filename).suffix
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
-        f.write(await file.read())
-        temp_path = f.name
-    try:
-        invoice = extract_invoice(temp_path)
-        invoice.user_id = user.id
-        repo.upsert(invoice)
-        return invoice
-    finally:
-        Path(temp_path).unlink()
-
-
-@app.post("/invoices/upload-bulk")
-async def upload_invoices_bulk(files: List[UploadFile] = File(...), user: User = Depends(current_user)):
-    """Upload nhiều hóa đơn cùng lúc — xử lý song song, cách ly lỗi từng file."""
-    if not files:
-        raise HTTPException(status_code=400, detail="Cần ít nhất 1 file")
-    if len(files) > 20:
-        raise HTTPException(status_code=400, detail="Tối đa 20 file/lần")
-
-    from src.extract.batch_extractor import extract_batch
-
-    payload = []
-    for f in files:
-        payload.append((f.filename or "invoice.pdf", await f.read()))
-
-    result = extract_batch(payload, repo, user_id=user.id)
-    return {
-        "total": result["total"],
-        "successful": result["successful"],
-        "failed": result["failed"],
-        "errors": result["errors"],
-        "invoices": [inv.model_dump() for inv in result["results"]],
-    }
-
-
-@app.post("/invoices", response_model=Invoice)
-async def create_invoice(data: InvoiceCreate, user: User = Depends(current_user)):
-    """Tạo hóa đơn thủ công."""
-    import hashlib
-    invoice = Invoice(
-        id=hashlib.md5(f"{data.invoice_number}|{user.id}".encode()).hexdigest()[:12],
-        user_id=user.id,
-        **data.model_dump(),
-    )
-    return repo.upsert(invoice)
+# ---------- Invoices ----------
+def _can_access(invoice: Invoice, user: User) -> bool:
+    """Kiểm tra user có quyền truy cập invoice."""
+    return invoice.user_id == user.id
 
 
 @app.get("/invoices", response_model=List[Invoice])
 async def list_invoices(
-    status: Optional[InvoiceStatus] = None, limit: int = 100, user: User = Depends(current_user)
+    status: Optional[InvoiceStatus] = None,
+    limit: int = 100,
+    user: User = Depends(current_user),
 ):
-    """Liệt kê hóa đơn của user, lọc theo status tùy chọn."""
     return repo.list(user_id=user.id, status=status, limit=limit)
 
 
 @app.get("/invoices/{invoice_id}", response_model=Invoice)
 async def get_invoice(invoice_id: str, user: User = Depends(current_user)):
-    """Lấy hóa đơn theo id (chỉ hóa đơn của user)."""
-    invoice = repo.get(invoice_id, user.id)
+    invoice = repo.get(invoice_id, user_id=user.id)
     if not invoice:
-        raise HTTPException(status_code=404, detail="Không tìm thấy hóa đơn")
+        raise AppError("NOT_FOUND", "Không tìm thấy hóa đơn.", status=404)
     return invoice
 
 
-@app.patch("/invoices/{invoice_id}", response_model=Invoice)
-async def update_invoice(invoice_id: str, changes: InvoiceUpdate, user: User = Depends(current_user)):
-    """Cập nhật hóa đơn (vd: đánh dấu paid)."""
-    invoice = repo.update(invoice_id, changes, user.id)
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Không tìm thấy hóa đơn")
+@app.post("/invoices", response_model=Invoice)
+async def create_invoice(data: InvoiceCreate, user: User = Depends(current_user)):
+    invoice = repo.create(data, user_id=user.id)
     return invoice
+
+
+@app.put("/invoices/{invoice_id}", response_model=Invoice)
+async def update_invoice(
+    invoice_id: str, data: InvoiceUpdate, user: User = Depends(current_user),
+):
+    invoice = repo.get(invoice_id, user_id=user.id)
+    if not invoice:
+        raise AppError("NOT_FOUND", "Không tìm thấy hóa đơn.", status=404)
+    updated = repo.update(invoice_id, data, user_id=user.id)
+    if not updated:
+        raise AppError("UPDATE_FAILED", "Cập nhật thất bại.", status=400)
+    return updated
 
 
 @app.delete("/invoices/{invoice_id}")
 async def delete_invoice(invoice_id: str, user: User = Depends(current_user)):
-    """Xóa hóa đơn của user."""
-    if not repo.delete(invoice_id, user.id):
-        raise HTTPException(status_code=404, detail="Không tìm thấy hóa đơn")
-    return {"deleted": invoice_id}
+    invoice = repo.get(invoice_id, user_id=user.id)
+    if not invoice:
+        raise AppError("NOT_FOUND", "Không tìm thấy hóa đơn.", status=404)
+    repo.delete(invoice_id, user_id=user.id)
+    return {"deleted": True}
 
 
+# ---------- Upload + Extraction ----------
+@app.post("/upload", response_model=Invoice)
+async def upload_invoice(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+):
+    """Upload file hóa đơn → validate → trích xuất → lưu."""
+    content = await file.read()
+
+    # Validate upload
+    validated = validate_upload(
+        content=content,
+        filename=file.filename or "upload",
+        declared_mime=file.content_type or "application/octet-stream",
+        max_bytes=settings.max_upload_bytes,
+        allowed_mimes=settings.allowed_mime_types,
+        max_pdf_pages=settings.max_pdf_pages,
+    )
+
+    # Lưu file gốc
+    storage_key = generate_storage_key(validated.filename, content)
+    stored = storage.put(storage_key, content)
+
+    # Trích xuất
+    try:
+        invoice = extract_invoice(
+            content=content,
+            mime_type=validated.mime_type,
+            source_file=file.filename or "upload",
+            user_id=user.id,
+        )
+    except Exception as e:
+        raise AppError(
+            "EXTRACTION_FAILED",
+            f"Trích xuất thất bại: {str(e)}",
+            status=422,
+        )
+
+    # Cập nhật provenance với file metadata
+    invoice.file_checksum = compute_fingerprint(content)
+    invoice.file_size = validated.size
+    invoice.page_count = validated.page_count
+    invoice.source_file = file.filename or "upload"
+
+    # Lưu invoice
+    saved = repo.upsert(invoice)
+    return saved
+
+
+# ---------- Reports ----------
 @app.get("/reports/monthly/{period}", response_model=MonthlyReport)
 async def monthly_report(period: str, user: User = Depends(current_user)):
-    """Báo cáo theo tháng của user. period = YYYY-MM."""
-    report = repo.monthly_report(period, user.id)
-    if not report:
-        raise HTTPException(status_code=404, detail=f"Không có hóa đơn tháng {period}")
+    report = repo.monthly_report(period, user_id=user.id)
+    if report is None:
+        raise AppError("NOT_FOUND", "Không có hóa đơn trong kỳ này.", status=404)
     return report
 
 
 @app.get("/reports/monthly/{period}/pdf")
 async def monthly_report_pdf(period: str, user: User = Depends(current_user)):
-    """Export báo cáo tháng thành PDF."""
-    from src.reports.pdf_exporter import generate_monthly_pdf
-    invoices = repo.list(user.id)
-    report = repo.monthly_report(period, user.id)
-    if not report:
-        raise HTTPException(status_code=404, detail=f"Không có hóa đơn tháng {period}")
-    period_invoices = [i for i in invoices if (i.issue_date or "").startswith(period)]
-    pdf_bytes = generate_monthly_pdf(period_invoices, period, report.paid_amount, report.total_tax)
-    return Response(content=pdf_bytes, media_type="application/pdf",
-                    headers={"Content-Disposition": f"inline; filename=report_{period}.pdf"})
+    """Xuất báo cáo tháng dạng PDF."""
+    report = repo.monthly_report(period, user_id=user.id)
+    if report is None:
+        raise AppError("NOT_FOUND", "Không có hóa đơn trong kỳ này.", status=404)
+    try:
+        from .reports.pdf_exporter import export_monthly_pdf
+        invoices = repo.list(user_id=user.id)
+        pdf_bytes = export_monthly_pdf(report, invoices)
+        return Response(content=pdf_bytes, media_type="application/pdf")
+    except Exception as e:
+        raise AppError("PDF_EXPORT_FAILED", f"Xuất PDF thất bại: {str(e)}", status=500)
 
 
-@app.get("/health")
-async def health():
-    """Kiểm tra server."""
-    return {"status": "healthy", "version": "2.0.0"}
-
-
-# Mount UI sau cùng — StaticFiles chặn hết nếu đặt trước routes.
-# Ưu tiên dist React (build), fallback static cũ.
-_dist = Path(__file__).parent.parent / "frontend" / "dist"
+# ---------- Static frontend ----------
 _static_dir = Path(__file__).parent / "static"
-ui_dir = _dist if _dist.exists() else (_static_dir if _static_dir.exists() else None)
-if ui_dir:
-    app.mount("/", StaticFiles(directory=str(ui_dir), html=True), name="ui")
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8004)
+if _static_dir.exists():
+    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="static")

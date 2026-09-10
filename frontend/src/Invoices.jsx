@@ -1,19 +1,30 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { api, clearToken } from "./api";
 import LineSidebar from "./components/react-bits/LineSidebar.jsx";
 import { CountUp, Sparkline } from "./components/mini";
 
-const STATUS_LABEL = { unpaid: "Chưa thanh toán", paid: "Đã thanh toán", overdue: "Quá hạn", cancelled: "Đã hủy" };
+const STATUS_LABEL = {
+  unpaid: "Chưa thanh toán",
+  paid: "Đã thanh toán",
+  overdue: "Quá hạn",
+  cancelled: "Đã hủy",
+};
 const NAV = ["Tổng quan", "Báo cáo", "Cài đặt"];
+const PAGE_SIZE = 8;
 
 const fmt = new Intl.NumberFormat("vi-VN");
-const fmtNum = (v) => fmt.format(Math.round(v));
-const money = (currency, v) => (currency === "VND" ? "₫" : currency + " ") + fmt.format(v);
+const fmtNum = (v) => fmt.format(Math.round(v || 0));
+const money = (currency, v) => (currency === "VND" ? "₫" : currency + " ") + fmt.format(v || 0);
 
 // Icon SVG nhỏ, inline — không thêm thư viện
 const Icon = {
   upload: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M8 11V3m0 0L4.5 6.5M8 3l3.5 3.5M2.5 12.5h11" strokeLinecap="round" strokeLinejoin="round" /></svg>,
   search: <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" strokeLinecap="round" /></svg>,
+  empty: <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M9 13h6" /><path d="M9 17h6" /></svg>,
+  users: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><path d="M20 8l2 2-2 2" /></svg>,
+  creditCard: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M2 10h20" /></svg>,
+  shield: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>,
+  chevronDown: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>,
 };
 
 export default function Invoices({ user, onLogout }) {
@@ -23,244 +34,510 @@ export default function Invoices({ user, onLogout }) {
   const [search, setSearch] = useState("");
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const [report, setReport] = useState(null);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
   const [msg, setMsg] = useState(null);
+  const [reportExpanded, setReportExpanded] = useState(false);
+  const [settingsSections, setSettingsSections] = useState({
+    team: true,
+    billing: true,
+    security: true,
+  });
 
-  function showErr(e) { setMsg({ text: e.message, ok: false }); }
-  function ok(text) { setMsg({ text, ok: true }); }
+  const showErr = useCallback((e) => {
+    setError(e.message || "Lỗi không xác định");
+  }, []);
+  const clearMsg = useCallback(() => setMsg(null), []);
 
-  async function load() {
-    const q = filter ? "?status=" + filter : "";
-    const rows = await api("/invoices" + q);
-    setInvoices(rows);
-  }
+  // Demo data for settings
+  const [teamMembers] = useState([
+    { id: 1, username: "nguyenvan_a", role: "owner", email: "nguyen@example.com" },
+    { id: 2, username: "tranthib", role: "admin", email: "tran@example.com" },
+    { id: 3, username: "lehoangc", role: "member", email: "le@example.com" },
+  ]);
 
-  useEffect(() => { load().catch(showErr); }, [filter]);
+  const [billingInfo] = useState({
+    plan: "Pro",
+    status: "active",
+    renewalDate: "2026-10-09",
+    amount: "299,000₫",
+  });
 
-  async function upload(file) {
-    const fd = new FormData();
-    fd.append("file", file);
-    const d = await api("/invoices/upload", { method: "POST", body: fd });
-    ok(`Đã trích xuất: ${d.invoice_number} — ${d.vendor} — ${money(d.currency, d.total)} (độ tin cậy ${(d.confidence * 100).toFixed(0)}%)`);
-    load();
-  }
+  const [securityInfo] = useState({
+    mfaEnabled: true,
+    lastPasswordChange: "2026-08-15",
+  });
 
-  async function markPaid(id) {
-    await api("/invoices/" + id, { method: "PATCH", body: JSON.stringify({ status: "paid" }) });
-    ok("Đã đánh dấu thanh toán");
-    load();
-  }
-
-  async function del(id) {
-    if (!confirm("Xóa hóa đơn này?")) return;
-    await api("/invoices/" + id, { method: "DELETE" });
-    ok("Đã xóa");
-    load();
-  }
-
-  async function loadReport() {
-    try {
-      setReport(await api("/reports/monthly/" + month));
-    } catch (e) {
-      setReport(null);
-      showErr(e);
+  // Move focus to error banner when error appears
+  const errorRef = useRef(null);
+  useEffect(() => {
+    if (error && errorRef.current) {
+      errorRef.current.focus();
     }
-  }
+  }, [error]);
+
+  const upload = async (file) => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const data = await api("/invoices/upload", {
+        method: "POST",
+        body: form,
+      });
+      setInvoices((prev) => [...prev, ...(data.invoices || [])]);
+      setMsg({ ok: true, text: `Đã upload ${data.invoices?.length || 1} hóa đơn` });
+    } catch (e) {
+      showErr(e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    api("/invoices/")
+      .then((data) => { if (active) setInvoices(data); })
+      .catch((e) => { if (active) showErr(e); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [showErr]);
+
+  useEffect(() => {
+    const handler = () => { setError(null); };
+    window.addEventListener("auth-expired", handler);
+    return () => window.removeEventListener("auth-expired", handler);
+  }, []);
+
+  const loadReport = () => {
+    setError(null);
+    setReport(null);
+    api("/reports/monthly/" + month)
+      .then((data) => setReport(data))
+      .catch((e) => { showErr(e); });
+  };
 
   // Thống kê từ danh sách hóa đơn (bộ lọc hiện tại)
   const stats = useMemo(() => {
-    const sum = (arr) => arr.reduce((a, b) => a + b, 0);
+    const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
     const totals = invoices.map((i) => i.total);
-    const byDate = [...invoices].sort((a, b) => (a.issue_date || a.created_at || "").localeCompare(b.issue_date || b.created_at || ""));
-    const series = byDate.map((i) => i.total);
+    const byDate = [...invoices].sort((a, b) =>
+      (a.issue_date || a.created_at || "").localeCompare(b.issue_date || b.created_at || "")
+    );
     return {
       total: sum(totals),
       paid: sum(invoices.filter((i) => i.status === "paid").map((i) => i.total)),
       unpaid: sum(invoices.filter((i) => ["unpaid", "overdue"].includes(i.status)).map((i) => i.total)),
       overdue: sum(invoices.filter((i) => i.status === "overdue").map((i) => i.total)),
-      series,
+      series: byDate.map((i) => i.total),
       count: invoices.length,
     };
   }, [invoices]);
 
   const rows = useMemo(() => {
-    if (!search.trim()) return invoices;
-    const q = search.trim().toLowerCase();
-    return invoices.filter((i) => (i.invoice_number + " " + i.vendor).toLowerCase().includes(q));
+    const all = search.trim()
+      ? invoices.filter((i) =>
+          (i.invoice_number + " " + (i.vendor || "")).toLowerCase().includes(search.trim().toLowerCase())
+        )
+      : invoices;
+    return all.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
   }, [invoices, search]);
 
+  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const pagedRows = useMemo(
+    () => rows.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [rows, safePage]
+  );
+  useEffect(() => { if (page !== safePage) setPage(safePage); }, [page, safePage]);
   const paidRatio = stats.total ? (stats.paid / stats.total) * 100 : 0;
+
+  const toggleSection = (key) => {
+    setSettingsSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
   return (
     <div className="app-shell">
+      {/* Skip link for keyboard navigation */}
+      <a href="#main-content" className="skip-link">Bỏ qua điều hướng, đến nội dung chính</a>
+
       <aside className="sidebar">
         <div className="sidebar-brand">
           <span className="brand-dot" aria-hidden="true" />
           <strong>Invoice &amp; Billing</strong>
         </div>
-        <LineSidebar
-          items={NAV}
-          defaultActive={0}
-          accentColor="var(--accent)"
-          textColor="var(--text-dim)"
-          markerColor="var(--border)"
-          markerLength={40}
-          itemGap={6}
-          fontSize={1}
-          showIndex={false}
-          onItemClick={(i) => setView(NAV[i])}
-        />
-        <div className="sidebar-user">
-          <span className="avatar" aria-hidden="true">{user.username[0]?.toUpperCase()}</span>
-          <div>
-            <div className="sidebar-user-name">{user.username}</div>
-            <div className="sidebar-user-role">Quản trị</div>
+        <nav className="sidebar-nav" aria-label="Primary">
+          {NAV.map((n) => (
+            <button
+              key={n}
+              className={view === n ? "nav-item active" : "nav-item"}
+              onClick={() => { setView(n); setError(null); clearMsg(); }}
+              aria-current={view === n ? "page" : undefined}
+            >
+              {n}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-footer">
+          <div className="user-chip">
+            <span className="user-avatar" aria-hidden="true">{(user?.username || "?").slice(0, 1).toUpperCase()}</span>
+            <span className="user-name">{user?.username}</span>
           </div>
+          <button
+            className="btn-ghost"
+            onClick={() => { clearToken(); onLogout && onLogout(); }}
+            aria-label="Đăng xuất khỏi tài khoản"
+          >
+            Đăng xuất
+          </button>
         </div>
       </aside>
 
-      <main className="content">
-        <header className="content-header">
-          <h1>{view === "Cài đặt" ? "Cài đặt" : view === "Báo cáo" ? "Báo cáo theo tháng" : "Tổng quan"}</h1>
-          <div className="content-header-actions">
-            {view === "Tổng quan" && (
-              <>
-                <div className="search-box">
-                  {Icon.search}
-                  <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm hóa đơn..." aria-label="Tìm hóa đơn" />
-                </div>
-                <input type="file" id="file" accept=".pdf,.txt,.md,.log" className="file-input"
-                  onChange={(e) => { const f = e.target.files[0]; if (f) upload(f).catch(showErr); e.target.value = ""; }} />
-                <button className="btn-primary" onClick={() => document.getElementById("file").click()}>{Icon.upload} Upload hóa đơn</button>
-              </>
-            )}
+      <main id="main-content" className="main" tabIndex={-1}>
+        {/* Global message / error banner */}
+        {error && (
+          <div className="banner banner-error" role="alert" aria-live="assertive" ref={errorRef} tabIndex={-1}>
+            <span>⚠ {error}</span>
+            <button className="banner-close" onClick={() => setError(null)} aria-label="Đóng thông báo lỗi">×</button>
           </div>
-        </header>
-
-        {msg && <div className={`msg ${msg.ok ? "ok" : "err"}`} role="status">{msg.text}</div>}
+        )}
+        {msg && (
+          <div className={msg.ok ? "banner banner-ok" : "banner banner-error"} role="status" aria-live="polite">
+            <span>{msg.text}</span>
+            <button className="banner-close" onClick={clearMsg} aria-label="Đóng thông báo">×</button>
+          </div>
+        )}
 
         {view === "Tổng quan" && (
           <>
-            <section className="stat-grid" aria-label="Thống kê">
-              <StatCard label="Tổng hóa đơn" value={stats.total} suffix={invoices[0]?.currency === "VND" ? "₫" : undefined} data={stats.series} accent="var(--accent)" fmt={fmtNum} />
-              <StatCard label="Đã thu" value={stats.paid} suffix={invoices[0]?.currency === "VND" ? "₫" : undefined} data={stats.series} accent="var(--success)" fmt={fmtNum} />
-              <StatCard label="Chưa thu" value={stats.unpaid} suffix={invoices[0]?.currency === "VND" ? "₫" : undefined} data={stats.series} accent="var(--warning)" fmt={fmtNum} />
-              <StatCard label="Quá hạn" value={stats.overdue} suffix={invoices[0]?.currency === "VND" ? "₫" : undefined} data={stats.series} accent="var(--danger)" fmt={fmtNum} />
+            <header className="page-header">
+              <div>
+                <h1>Tổng quan</h1>
+                <p className="muted">Theo dõi dòng tiền hóa đơn</p>
+              </div>
+              <div className="header-actions">
+                <div className="search-wrap" role="search" aria-label="Tìm kiếm hóa đơn">
+                  <span className="search-icon" aria-hidden="true">{Icon.search}</span>
+                  <input
+                    className="search-input"
+                    placeholder="Tìm mã / nhà cung cấp…"
+                    value={search}
+                    onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                    aria-label="Tìm kiếm hóa đơn theo mã hoặc nhà cung cấp"
+                  />
+                </div>
+                <label className={"btn-primary" + (submitting ? " disabled" : "")}>
+                  {submitting ? "Đang tải…" : (<>{Icon.upload} Upload</>)}
+                  <input
+                    type="file"
+                    hidden
+                    disabled={submitting}
+                    aria-label="Tải lên hóa đơn mới"
+                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
+                  />
+                </label>
+              </div>
+            </header>
+
+            {/* Stats */}
+            <section className="stats-grid" aria-label="Thống kê">
+              <div className="stat-card accent-blue">
+                <span className="stat-label">Tổng giá trị</span>
+                <span className="stat-value"><CountUp to={stats.total} /></span>
+                <Sparkline data={stats.series} />
+              </div>
+              <div className="stat-card accent-green">
+                <span className="stat-label">Đã thanh toán</span>
+                <span className="stat-value"><CountUp to={stats.paid} /></span>
+                <div className="progress" role="progressbar" aria-valuenow={Math.round(paidRatio)} aria-valuemin="0" aria-valuemax="100" aria-label="Tỷ lệ thanh toán">
+                  <div className="progress-fill" style={{ width: `${paidRatio}%` }} />
+                </div>
+              </div>
+              <div className="stat-card accent-amber">
+                <span className="stat-label">Chưa thanh toán</span>
+                <span className="stat-value"><CountUp to={stats.unpaid} /></span>
+              </div>
+              <div className="stat-card accent-red">
+                <span className="stat-label">Quá hạn</span>
+                <span className="stat-value"><CountUp to={stats.overdue} /></span>
+              </div>
             </section>
 
-            <section className="card">
-              <div className="card-head">
-                <h2>Danh sách hóa đơn</h2>
-                <select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Lọc trạng thái">
-                  <option value="">Tất cả trạng thái</option>
-                  <option value="unpaid">Chưa thanh toán</option>
-                  <option value="paid">Đã thanh toán</option>
-                  <option value="overdue">Quá hạn</option>
-                  <option value="cancelled">Đã hủy</option>
-                </select>
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr><th>Số hóa đơn</th><th>Nhà cung cấp</th><th>Ngày</th><th>Tổng</th><th>Thuế</th><th>Chiết khấu</th><th>Trạng thái</th><th>Thao tác</th></tr>
-                  </thead>
-                  <tbody>
-                    {rows.length === 0 && (
-                      <tr><td colSpan="8" className="empty">{invoices.length === 0 ? "Chưa có hóa đơn — upload file đầu tiên" : "Không tìm thấy"}</td></tr>
-                    )}
-                    {rows.map((i) => (
-                      <tr key={i.id}>
-                        <td className="mono">{i.invoice_number}</td>
-                        <td>{i.vendor}</td>
-                        <td>{i.issue_date || "—"}</td>
-                        <td className="num">{money(i.currency, i.total)}</td>
-                        <td className="num">{money(i.currency, i.tax)}</td>
-                        <td className="num">{i.discount ? money(i.currency, i.discount) : "—"}</td>
-                        <td><span className={`badge ${i.status}`}>{STATUS_LABEL[i.status] || i.status}</span></td>
-                        <td className="actions">
-                          {i.status !== "paid" && <button className="btn-small" onClick={() => markPaid(i.id).catch(showErr)}>✓ Paid</button>}
-                          <button className="btn-small danger" onClick={() => del(i.id).catch(showErr)} aria-label="Xóa hóa đơn">✕</button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            {/* Filters */}
+            <div className="filters" role="group" aria-label="Bộ lọc trạng thái hóa đơn">
+              {[{ l: "Tất cả", v: "" }, { l: "Chưa thanh toán", v: "unpaid" }, { l: "Đã thanh toán", v: "paid" }, { l: "Quá hạn", v: "overdue" }].map((c) => (
+                <button
+                  key={c.v}
+                  className={filter === c.v ? "chip active" : "chip"}
+                  onClick={() => setFilter(c.v)}
+                  aria-pressed={filter === c.v}
+                >
+                  {c.l}
+                </button>
+              ))}
+            </div>
+
+            {/* Invoice table */}
+            <section className="card table-card" aria-label="Danh sách hóa đơn">
+              {loading ? (
+                <div className="state-wrap" role="status" aria-live="polite">
+                  <div className="spinner" aria-hidden="true" />
+                  <p>Đang tải hóa đơn…</p>
+                </div>
+              ) : rows.length === 0 ? (
+                <div className="state-wrap" role="status">
+                  <span className="empty-icon" aria-hidden="true">{Icon.empty}</span>
+                  <p className="state-title">Chưa có hóa đơn</p>
+                  <p className="muted">Upload hóa đơn đầu tiên hoặc thử bộ lọc khác.</p>
+                  {filter || search ? (
+                    <button className="btn-ghost" onClick={() => { setFilter(""); setSearch(""); }}>
+                      Xóa bộ lọc
+                    </button>
+                  ) : (
+                    <label className="btn-primary">
+                      {Icon.upload} Upload hóa đơn
+                      <input type="file" hidden aria-label="Tải lên hóa đơn" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
+                    </label>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <div className="table-scroll">
+                    <table className="data-table" role="table" aria-rowcount={rows.length}>
+                      <thead>
+                        <tr>
+                          <th scope="col" aria-sort="none">Mã hóa đơn</th>
+                          <th scope="col" aria-sort="none">Nhà cung cấp</th>
+                          <th scope="col" aria-sort="none">Ngày</th>
+                          <th scope="col" aria-sort="none">Tổng</th>
+                          <th scope="col" aria-sort="none">Trạng thái</th>
+                          <th scope="col" className="col-actions">Hành động</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pagedRows.map((i, idx) => (
+                          <tr key={i.id} aria-rowindex={idx + 1}>
+                            <td>{i.invoice_number}</td>
+                            <td>{i.vendor || "-"}</td>
+                            <td>{i.issue_date || i.created_at?.slice(0, 10) || "-"}</td>
+                            <td>{money(i.currency, i.total)}</td>
+                            <td>
+                              <span className={`status status-${i.status}`}>
+                                {STATUS_LABEL[i.status] || i.status}
+                              </span>
+                            </td>
+                            <td className="col-actions">
+                              <button className="btn-ghost" aria-label={`Xem chi tiết hóa đơn ${i.invoice_number}`}>Xem</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="pagination">
+                    <button
+                      className="btn-ghost"
+                      disabled={safePage <= 1}
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      aria-label="Trang trước"
+                    >
+                      ‹
+                    </button>
+                    <span className="page-info" aria-live="polite">
+                      Trang {safePage} / {pageCount}
+                    </span>
+                    <button
+                      className="btn-ghost"
+                      disabled={safePage >= pageCount}
+                      onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                      aria-label="Trang sau"
+                    >
+                      ›
+                    </button>
+                  </div>
+                </>
+              )}
             </section>
           </>
         )}
 
         {view === "Báo cáo" && (
-          <section className="card">
-            <div className="card-head">
-              <h2>Báo cáo theo tháng</h2>
-              <div className="row">
-                <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} aria-label="Chọn tháng" />
-                <button className="btn-primary" onClick={loadReport}>Xem báo cáo</button>
+          <>
+            <header className="page-header">
+              <div>
+                <h1>Báo cáo</h1>
+                <p className="muted">Báo cáo tài chính theo tháng</p>
               </div>
-            </div>
-            {report ? (
-              <>
-                <div className="report-big">
-                  <div className="report-item">
-                    <div className="report-label">Tổng doanh thu</div>
-                    <div className="report-value">{money("VND", report.total_amount)}</div>
-                  </div>
-                  <div className="report-item">
-                    <div className="report-label">Thuế</div>
-                    <div className="report-value">{money("VND", report.total_tax)}</div>
-                  </div>
-                  <div className="report-item">
-                    <div className="report-label">Chiết khấu</div>
-                    <div className="report-value">{money("VND", report.total_discount)}</div>
-                  </div>
+            </header>
+            <section className="card" aria-label="Báo cáo tháng">
+              <div className="form-row">
+                <label htmlFor="month-picker" id="month-picker-label">Chọn tháng</label>
+                <input
+                  id="month-picker"
+                  type="month"
+                  value={month}
+                  onChange={(e) => setMonth(e.target.value)}
+                  aria-describedby="month-picker-label"
+                />
+              </div>
+              <button className="btn-primary" onClick={loadReport} aria-label="Xem báo cáo tháng đã chọn">Xem báo cáo</button>
+              {report && (
+                <div className="report-result" role="region" aria-live="polite" aria-label="Kết quả báo cáo">
+                  <p>Tổng doanh thu: <strong>{money(report.currency, report.total_revenue)}</strong></p>
+                  <a className="btn-ghost" href={"/reports/monthly/" + month + ".pdf"} target="_blank" rel="noopener noreferrer">
+                    Tải PDF
+                  </a>
                 </div>
-                <div className="report-bars">
-                  <div className="bar-row">
-                    <div className="bar-label">Đã thu <span>{report.paid_count} hóa đơn</span></div>
-                    <div className="bar"><div className="bar-fill success" style={{ width: paidRatio + "%" }} /></div>
-                    <div className="bar-num">{money("VND", report.paid_amount)}</div>
-                  </div>
-                  <div className="bar-row">
-                    <div className="bar-label">Chưa thu <span>{report.unpaid_count} hóa đơn</span></div>
-                    <div className="bar"><div className="bar-fill warning" style={{ width: (100 - paidRatio) + "%" }} /></div>
-                    <div className="bar-num">{money("VND", report.unpaid_amount)}</div>
-                  </div>
-                </div>
-                <div className="report-meta">{report.invoice_count} hóa đơn trong {report.period}</div>
-              </>
-            ) : (
-              <p className="empty-note">Chọn tháng và bấm "Xem báo cáo".</p>
-            )}
-          </section>
+              )}
+            </section>
+          </>
         )}
 
         {view === "Cài đặt" && (
-          <section className="card settings">
-            <h2>Tài khoản</h2>
-            <div className="settings-row">
-              <span className="avatar large" aria-hidden="true">{user.username[0]?.toUpperCase()}</span>
+          <>
+            <header className="page-header">
               <div>
-                <div className="settings-name">{user.username}</div>
-                <div className="settings-meta">Tham gia {user.created_at?.slice(0, 10) || "—"} · Quản trị viên</div>
+                <h1>Cài đặt</h1>
+                <p className="muted">Quản lý nhóm, thanh toán và bảo mật</p>
               </div>
+            </header>
+
+            <div className="settings-container">
+              {/* Team Section */}
+              <section className="card settings-card" aria-labelledby="settings-team-heading">
+                <button
+                  className="settings-header"
+                  onClick={() => toggleSection("team")}
+                  aria-expanded={settingsSections.team}
+                  aria-controls="settings-team-content"
+                  id="settings-team-heading"
+                >
+                  <span className="settings-icon" aria-hidden="true">{Icon.users}</span>
+                  <h2>Đội nhóm</h2>
+                  <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
+                </button>
+                {settingsSections.team && (
+                  <div id="settings-team-content" role="region" aria-labelledby="settings-team-heading">
+                    <p className="muted">Quản lý thành viên và quyền truy cập trong tổ chức.</p>
+                    <div className="table-scroll">
+                      <table className="data-table" role="table" aria-label="Danh sách thành viên đội nhóm">
+                        <thead>
+                          <tr>
+                            <th scope="col">Thành viên</th>
+                            <th scope="col">Email</th>
+                            <th scope="col">Vai trò</th>
+                            <th scope="col">Hành động</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {teamMembers.map((member) => (
+                            <tr key={member.id}>
+                              <td>{member.username}</td>
+                              <td>{member.email}</td>
+                              <td>
+                                <span className={`role role-${member.role}`}>
+                                  {member.role === "owner" ? "Chủ sở hữu" : member.role === "admin" ? "Quản trị viên" : "Thành viên"}
+                                </span>
+                              </td>
+                              <td>
+                                <button className="btn-ghost" aria-label={`Thay đổi quyền của ${member.username}`}>Thay đổi quyền</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <button className="btn-primary" aria-label="Mời thành viên mới vào đội nhóm">
+                      + Mời thành viên
+                    </button>
+                  </div>
+                )}
+              </section>
+
+              {/* Billing Section */}
+              <section className="card settings-card" aria-labelledby="settings-billing-heading">
+                <button
+                  className="settings-header"
+                  onClick={() => toggleSection("billing")}
+                  aria-expanded={settingsSections.billing}
+                  aria-controls="settings-billing-content"
+                  id="settings-billing-heading"
+                >
+                  <span className="settings-icon" aria-hidden="true">{Icon.creditCard}</span>
+                  <h2>Thanh toán</h2>
+                  <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
+                </button>
+                {settingsSections.billing && (
+                  <div id="settings-billing-content" role="region" aria-labelledby="settings-billing-heading">
+                    <p className="muted">Quản lý gói dịch vụ và phương thức thanh toán.</p>
+                    <div className="billing-info" role="region" aria-label="Thông tin gói hiện tại">
+                      <div className="billing-row">
+                        <span>Gói hiện tại:</span>
+                        <strong>{billingInfo.plan}</strong>
+                      </div>
+                      <div className="billing-row">
+                        <span>Trạng thái:</span>
+                        <span className={`status status-${billingInfo.status}`}>{billingInfo.status === "active" ? "Đang hoạt động" : "Đã dừng"}</span>
+                      </div>
+                      <div className="billing-row">
+                        <span>Ngày gia hạn:</span>
+                        <strong>{billingInfo.renewalDate}</strong>
+                      </div>
+                      <div className="billing-row">
+                        <span>Số tiền:</span>
+                        <strong>{billingInfo.amount}/tháng</strong>
+                      </div>
+                    </div>
+                    <button className="btn-primary" aria-label="Nâng cấp gói dịch vụ">
+                      Nâng cấp gói
+                    </button>
+                  </div>
+                )}
+              </section>
+
+              {/* Security Section */}
+              <section className="card settings-card" aria-labelledby="settings-security-heading">
+                <button
+                  className="settings-header"
+                  onClick={() => toggleSection("security")}
+                  aria-expanded={settingsSections.security}
+                  aria-controls="settings-security-content"
+                  id="settings-security-heading"
+                >
+                  <span className="settings-icon" aria-hidden="true">{Icon.shield}</span>
+                  <h2>Bảo mật</h2>
+                  <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
+                </button>
+                {settingsSections.security && (
+                  <div id="settings-security-content" role="region" aria-labelledby="settings-security-heading">
+                    <p className="muted">Quản lý xác thực hai yếu tố và mật khẩu.</p>
+                    <div className="security-info" role="region" aria-label="Thông tin bảo mật">
+                      <div className="security-row">
+                        <span>Xác thực hai yếu tố (MFA):</span>
+                        <span className={`status status-${securityInfo.mfaEnabled ? "paid" : "overdue"}`}>
+                          {securityInfo.mfaEnabled ? "Đã bật" : "Đã tắt"}
+                        </span>
+                      </div>
+                      <div className="security-row">
+                        <span>Thay đổi mật khẩu gần nhất:</span>
+                        <strong>{securityInfo.lastPasswordChange}</strong>
+                      </div>
+                    </div>
+                    <button className="btn-ghost" aria-label="Thay đổi mật khẩu tài khoản">
+                      Thay đổi mật khẩu
+                    </button>
+                  </div>
+                )}
+              </section>
             </div>
-            <button className="btn-danger" onClick={() => { clearToken(); onLogout(); }}>Đăng xuất</button>
-          </section>
+          </>
         )}
       </main>
-    </div>
-  );
-}
-
-function StatCard({ label, value, suffix, data, accent, fmt }) {
-  return (
-    <div className="stat-card">
-      <div className="stat-top">
-        <span className="stat-label">{label}</span>
-        <Sparkline data={data} stroke={accent} />
-      </div>
-      <div className="stat-num"><CountUp to={Math.round(value)} format={fmt} />{suffix || ""}</div>
-      <div className="stat-sub">{value > 0 ? fmt(value) + (suffix || "") : "—"}</div>
+      <LineSidebar />
     </div>
   );
 }

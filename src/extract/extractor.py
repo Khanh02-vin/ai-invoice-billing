@@ -1,20 +1,32 @@
 """Trích xuất trường hóa đơn từ file.
+
 Hỗ trợ: tiếng Anh + Hóa đơn GTGT điện tử tiếng Việt + ảnh scan (OCR).
 Regex chính; LLM fallback khi regex đọc thiếu (confidence < 0.8).
-ponytail: chuỗi OCR Paddle→Tesseract, LLM qua provider có thể inject."""
+ponytail: chuỗi OCR Paddle→Tesseract, LLM qua provider có thể inject.
+
+Nguyên tắc (PLAN mục 3):
+- Mỗi field lưu value, confidence, source, page, bbox/text_span nếu có.
+- Provider adapters cho regex, OCR và LLM; timeout/retry/cost cap.
+"""
 import difflib
 import json
 import os
 import re
 import unicodedata
-from typing import Optional
-from ..domain.models import Invoice
+from typing import Optional, Tuple
+from ..domain.models import Invoice, FieldProvenance, JobStatus
 from ..llm.base import get_llm_provider, LLMProvider
 
 # --- Nhãn song ngữ (Anh + Việt) ---
 _INVOICE_NO_RE = re.compile(
     r"(?:invoice\s*(?:no|number|#)|số\s*h[oó][aá]\s*đơn|hđ\s*số)\s*[:#]?\s*([A-Z0-9\-_/]+)", re.I)
 # ponytail: anchored đầu dòng tránh "from the date of purchase..." bắt nhầm trong receipt thật
+def _clean_vendor_line(s: str) -> str:
+    """Strip trailing date/time from first-line vendor (e.g. 'UNIHAKKA ... 02 APR 2018 18:31')."""
+    s = re.sub(r"\s+\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}.*$", "", s).strip()
+    s = re.sub(r"\s+\d{1,2}[-/]\d{1,2}[-/]\d{2,4}.*$", "", s).strip()
+    return s
+
 _VENDOR_RE = re.compile(
     r"(?m)^\s*(?:from|vendor|seller|supplier|người\s*bán(?!\s*hàng))\s*[:#]?\s*(.+)", re.I)
 _DATE_RE = re.compile(
@@ -41,7 +53,6 @@ _AMOUNT_RE = re.compile(
     rf"(?:rm|usd|eur|vnd|gbp|jpy|myr|\$)?\s*"
     rf"(?P<num>[0-9]+(?:[.,][0-9]+)*)", re.I)
 
-
 def _pick_total(text: str) -> Optional[str]:
     """Chọn số total đúng trên receipt thật: loại 'tax total'/subtotal/total qty/count,
     ưu tiên nhãn cụ thể (grand/nett/final/payable/due), hòa nhất bằng dòng total ở dưới cùng.
@@ -49,326 +60,358 @@ def _pick_total(text: str) -> Optional[str]:
     cands = []
     for m in _AMOUNT_RE.finditer(text):
         ctx = m.group(0).lower()
-        # bỏ subtotal (kể cả dạng "SUB-TOTAL" gạch nối), "total qty/count/item",
-        # "excluding gst", "tax total", "GST @6% INCLUDED IN TOTAL", "TOTAL GST:",
-        # "ROUNDING ADJUSTMENT" (chỉ là điều chỉnh, không phải total)
-        if any(k in ctx for k in ("sub", "qty", "quantity", "count", "item", "exclud",
-                                  "excl", "tax", "included", "total gst", "adjustment")):
-            continue
+        label_low = m.group("label").lower()
         num = m.group("num")
-        if "rounding" in m.group("label").lower():
-            val = float(num.replace(",", ""))
+        is_after_rounding = "after rounding" in ctx or "after rounding" in text[max(0,m.start()-30):m.end()].lower()
+        is_incl_gst = "incl" in ctx
+        if not (is_after_rounding or is_incl_gst):
+            if any(k in ctx for k in ("sub", "qty", "quantity", "count", "item", "exclud",
+                                      "excl", "tax", "included", "total gst", "adjustment")):
+                continue
+        if "adjustment" in ctx:
+            continue
+        if "rounding" in label_low:
+            try:
+                val = float(num.replace(",", ""))
+            except:
+                val = 0
             if val < 1.0:
-                continue  # "ROUNDING : 0.00" / "ROUNDING 0.02" — chỉ là điều chỉnh, không phải total
-        prev = text[max(0, m.start() - 25):m.start()]
-        if re.search(r"\b(?:item|count|qty|quantity|no|number|pcs|unit|pos|ref|trans)"
+                continue
+        prev = text[max(0, m.start() - 40):m.start()]
+        prev_low = prev.lower()
+        if not (is_incl_gst or is_after_rounding) and ("item count" in prev_low or "item count" in (prev_low + " " + ctx)):
+            continue
+        if not (is_incl_gst or is_after_rounding) and re.search(r"\b(?:item|count|qty|quantity|no|number|pcs|unit|pos|ref|trans)"
                      r"\s+total\s*$|included\s+in\s*$", prev, re.I):
             continue
-        lab = m.group("label").lower()
+        if not (is_incl_gst or is_after_rounding) and label_low.strip() == "total" and any(k in prev_low for k in ("item", "count", "qty", "quantity")):
+            continue
+        lab = label_low
         rank = 3
-        if any(k in lab for k in ("payable", "nett", "grand", "final", "due", "amount",
-                                  "rounding")):
+        if any(k in lab for k in ("payable", "nett", "grand", "final", "due", "amount")):
             rank = 4
+        if "rounding" in lab:
+            rank = 6
+        if "after rounding" in ctx or "after rounding" in text[max(0,m.start()-30):m.end()].lower():
+            rank = 6
+        if "incl" in ctx:
+            rank = 5
         if "tổng cộng tiền thanh toán" in lab:
             rank = 5
         rest = text[m.end():].split("\n", 1)[0].strip()
-        if not rest or re.fullmatch(r"cr|[a-z]{2,3}", rest, re.I):  # số là token cuối dòng
+        if not rest or not re.search(r"\d", rest):
             rank += 1
-        cands.append((rank, m.start(), m.group("num")))
+        cands.append((rank, m))
     if not cands:
         return None
-    best_rank = max(c[0] for c in cands)
-    # tie-break: chọn match sau cùng trong text (dòng total ở dưới cùng)
-    best = max((c for c in cands if c[0] == best_rank), key=lambda c: c[1])
-    return best[2]
+    cands.sort(key=lambda x: (-x[0], x[1].start()))
+    return cands[0][1].group("num")
 
 
-def _guess_vendor(text: str) -> str:
-    """Fallback cho receipt thật không có label Vendor/Seller: công ty thường ở dòng đầu/đầu hai.
-    Bỏ header/giờ/thuế/số tiền/dòng nhãn/địa chỉ. Không áp dụng cho tiếng Việt (có label)."""
-    noise = re.compile(
-        r"^(receipt|tax invoice|invoice|gst|abn|acn|tel|fax|website|email|"
-        r"date|time|cashier|payment|change|thank|like and follow|"
-        r"trans|terminal|company no|site|lot|no\.|address|telephone|"
-        r"item|qty|price|amount|total|sub.?total|nett?|subtotal|due|"
-        r"pre.?auth|page|ref|bill|the|to|goods|posted|jalan|taman|"
-        r"số|so|notice|all|any|keep|please|welcome|terima|tq|sale|sales|"
-        r"member|card|shop|store|outlet|branch|wisma|menara|blok|unit|"
-        r"rounding|feedback|complaint|purchased|purchase|request|returnable|"
-        r"exchangeable|date of|duty free|valid|expiry|warranty|policy)",
-        re.I)
-    for line in text.splitlines():
-        s = line.strip()
-        if len(s) < 3 or not s[0].isalpha() or s.isdigit():
-            continue
-        if noise.match(s):
-            continue
-        if re.fullmatch(r"[\d\s.,$&*%():<>+\-]+", s):  # không có chữ
-            continue
-        if re.search(r"\d{5,}", s) and not re.search(r"[A-Z]{3,}", s):  # số dài, ko có tên
-            continue
-        s = re.sub(r"\s*\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
-                   r"[a-z]*\.?\s+\d{4}(\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*$", "", s, flags=re.I)
-        s = re.sub(r"\s+\d{1,2}:\d{2}(?::\d{2})?\s*$", "", s)
-        s = re.sub(r"\s*tax\s*invoice\s*$", "", s, flags=re.I)
-        if not s:
-            continue
-        return s[:60]
-    return "unknown"
-# "Thuế suất GTGT: 10%" bị loại (lookahead suất + %); findall cộng dồn nhiều mức thuế
-_TAX_RE = re.compile(
-    r"(?:thuế\s*gtgt|thuế(?!\s*suất)|\btax\b|vat)"
-    r"(?!\s*[:#]?\s*\$?\s*[0-9.,]*\s*%)\s*[:#]?\s*\$?\s*([0-9]+(?:[.,][0-9]+)*)", re.I)
-# Chiết khấu: "Chiết khấu thương mại: 1,000,000". Loại giá trị dạng %.
-_DISCOUNT_RE = re.compile(
-    r"(?:chiết\s*khấu(?:\s*thương\s*mại)?|discount)(?!\s*[:#]?\s*\$?\s*[0-9.,]*\s*%)"
-    r"[^0-9]*?([0-9]+(?:[.,][0-9]+)*)", re.I)
-_CURRENCY_RE = re.compile(r"(USD|EUR|VND|GBP|JPY)", re.I)
-_VI_DETECT = re.compile(
-    r"số\s*h[oó][aá]\s*đơn|tổng\s*cộng|thuế\s*gtgt|người\s*bán|đồng|mst"
-    r"|đơn\s*vị\s*bán|ngày\s*lập|tổng\s*phải\s*trả|giá\s*trị", re.I)
-
-_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".tiff", ".bmp")
-
-# Chuỗi bán lẻ/ăn uống phổ biến VN — từ điển thương hiệu: sửa vendor khi OCR
-# đọc lệch tên hãng (VD "MinComnerce"→VinCommerce, "THE COFFEE HQUSE"→The Coffee House).
-_VN_CHAINS = (
-    "VinCommerce", "VinMart", "WinMart", "Co.opmart", "Saigon Co.op", "Minimart",
-    "Bách Hóa Xanh", "Circle K", "FamilyMart", "GS25", "FPT Shop", "Điện Máy Xanh",
-    "Thế Giới Di Động", "Nguyễn Kim", "The Coffee House", "Highlands Coffee",
-    "Milano Coffee", "Lotteria", "KFC", "Jollibee", "Pharmacity", "Guardian",
-    "Phúc Anh Minimart", "Big C", "Lotte Mart", "AEON", "Mega Market",
-)
+def _parse_number(s: str) -> float:
+    """Parse số từ string — hỗ trợ cả dấu chấm và phẩy ngàn (VN: 30.900.000, EU: 1.234,56, US: 1,234.56)."""
+    s = s.strip().replace(" ", "")
+    if "," in s and "." in s:
+        if s.rindex(",") < s.rindex("."):
+            return float(s.replace(",", ""))
+        else:
+            return float(s.replace(".", "").replace(",", "."))
+    if "," in s:
+        parts = s.split(",")
+        if len(parts[-1]) == 3 and len(parts) > 1:
+            return float(s.replace(",", ""))
+        return float(s.replace(",", "."))
+    if "." in s:
+        # Only dots: distinguish thousands (30.900.000) vs decimal (177.20)
+        import re as _re
+        if _re.match(r"^\d{1,3}(\.\d{3})+$", s):
+            return float(s.replace(".", ""))
+        return float(s)
+    return float(s)
 
 
-def _norm_name(s: str) -> str:
-    """Chuẩn hóa tên công ty: bỏ hết space + dấu tiếng Việt (OCR lệch space/dấu)."""
-    if not s:
-        return ""
-    s = re.sub(r"\s*\(\s*[\dA-Z-]*-?[\d]+\s*\)\s*$", "", s.strip())
-    s = re.sub(r"\s+", "", "".join(
-        c for c in unicodedata.normalize("NFD", s.strip(" .,;:/\\\"'()-"))
-        if not unicodedata.combining(c)))
-    return s.upper()
-
-
-def _chain_name(s: str) -> str:
-    """Trả tên chuỗi nếu vendor khớp (fuzzy ≥0.8) một chuỗi bán lẻ VN trong từ điển.
-    Sửa lỗi OCR tên hãng; so khớp ở mức thương hiệu (bỏ tên chi nhánh).
-    Áp dụng cho cả 2 ngôn ngữ — vendor English (SROIE) không khớp chuỗi VN nên giữ nguyên."""
-    v = _norm_name(s)
-    if len(v) < 4:
-        return s
-    best, best_r = None, 0.0
-    for c in _VN_CHAINS:
-        r = difflib.SequenceMatcher(None, v, _norm_name(c)).ratio()
-        if r > best_r:
-            best, best_r = c, r
-    return best if best_r >= 0.9 else s
-
-
-def _find_chain_in_text(text: str):
-    """Quét toàn bộ text OCR tìm dòng chứa tên chuỗi bán lẻ VN (fuzzy ≥0.8/dòng).
-    Fix thật: vendor line rơi vào tên chi nhánh ("VM+QNH 690 Tran Phu") trong khi
-    brand ("VinCommerce") nằm ở dòng khác của receipt."""
-    best, best_r = None, 0.0
-    for line in text.splitlines():
-        s = _norm_name(line.strip())
-        if len(s) < 4:
-            continue
-        for c in _VN_CHAINS:
-            r = difflib.SequenceMatcher(None, s, _norm_name(c)).ratio()
-            if r > best_r:
-                best, best_r = c, r
-    return best if best_r >= 0.9 else None
-
-
-def read_file_text(path: str) -> str:
-    """Đọc text từ file PDF, ảnh (OCR), hoặc text."""
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".pdf":
-        return _read_pdf(path)
-    if ext in _IMAGE_EXTS:
-        return _read_image(path)
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read()
-
-
-def _read_pdf(path: str) -> str:
-    """Đọc PDF, thử pdfplumber rồi PyPDF2."""
-    try:
-        import pdfplumber
-        with pdfplumber.open(path) as pdf:
-            return "\n".join(p.extract_text() or "" for p in pdf.pages)
-    except Exception:
-        try:
-            import PyPDF2
-            with open(path, "rb") as f:
-                reader = PyPDF2.PdfReader(f)
-                return "\n".join(p.extract_text() or "" for p in reader.pages)
-        except Exception:
-            return ""
-
-
-_paddle_cache = {}
-
-
-def _try_paddle(path: str) -> str:
-    """OCR bằng PaddleOCR (tiếng Việt). Cache instance — reload mỗi ảnh gây segfault."""
-    try:
-        if "vi" not in _paddle_cache:
-            from paddleocr import PaddleOCR
-            _paddle_cache["vi"] = PaddleOCR(lang="vi", show_log=False)
-        result = _paddle_cache["vi"].ocr(path)
-        lines = []
-        for page in result if result else []:
-            for line in page or []:
-                lines.append(line[1][0])
-        return "\n".join(lines)
-    except Exception:
-        return ""
-
-
-def _try_tesseract(path: str) -> str:
-    """OCR bằng Tesseract (tiếng Việt)."""
-    try:
-        import pytesseract
-        from PIL import Image
-        return pytesseract.image_to_string(Image.open(path), lang="vie")
-    except Exception:
-        return ""
-
-
-def _read_image(path: str) -> str:
-    """OCR ảnh: PaddleOCR → Tesseract → rỗng."""
-    for fn in (_try_paddle, _try_tesseract):
-        text = fn(path)
-        if text.strip():
-            return text
+def _extract_text(content: bytes, mime_type: str) -> str:
+    """Trích xuất text từ file theo MIME type."""
+    if mime_type == "application/pdf":
+        return _extract_pdf_text(content)
+    if mime_type.startswith("image/"):
+        return _extract_ocr_text(content)
+    if mime_type == "text/plain":
+        return content.decode("utf-8", errors="ignore")
     return ""
 
 
-def _to_float(s: str, vi: bool) -> float:
-    """Đọc số tiền. VND dùng phẩy/chấm làm ngăn nghìn, không có thập phân.
-    Nếu non-vi mà vẫn có dạng VND (1.000.000) → thử bỏ cả hai."""
-    s = s.strip()
-    if vi:
-        return float(s.replace(",", "").replace(".", ""))
+def _extract_pdf_text(content: bytes) -> str:
+    """Trích xuất text từ PDF."""
     try:
-        return float(s.replace(",", ""))
-    except ValueError:
-        return float(s.replace(",", "").replace(".", ""))
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            return "\n".join(page.extract_text() or "" for page in pdf.pages)
+    except Exception:
+        pass
+    try:
+        from PyPDF2 import PdfReader
+        reader = PdfReader(io.BytesIO(content))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception:
+        return ""
+
+
+def _extract_ocr_text(content: bytes) -> str:
+    """OCR ảnh → text."""
+    try:
+        from paddleocr import PaddleOCR
+        from PIL import Image
+        import numpy as np
+        ocr = PaddleOCR(use_angle_cls=True, lang="en")
+        img = Image.open(io.BytesIO(content))
+        result = ocr.ocr(np.array(img), cls=True)
+        lines = []
+        for line in result[0]:
+            lines.append(line[1][0])
+        return "\n".join(lines)
+    except Exception:
+        pass
+    try:
+        import pytesseract
+        from PIL import Image
+        img = Image.open(io.BytesIO(content))
+        return pytesseract.image_to_string(img)
+    except Exception:
+        return ""
+
+
+def extract_from_text(text: str, source_file: str = "unknown") -> Invoice:
+    """Trích xuất hóa đơn từ text thô — regex path, không LLM."""
+    import uuid
+    invoice = Invoice(id=str(uuid.uuid4()), source_file=source_file)
+
+    # Invoice number
+    m = _INVOICE_NO_RE.search(text)
+    if m:
+        invoice.invoice_number = m.group(1).strip()
+        invoice.provenance["invoice_number"] = FieldProvenance(
+            value=invoice.invoice_number, confidence=0.9, source="regex",
+            text_span=m.group(0),
+        )
+
+    # Vendor
+    m = _VENDOR_RE.search(text)
+    if m:
+        cand = m.group(1).strip()
+        if len(cand) < 60 and "date of purchase" not in cand.lower() and "request tax" not in cand.lower():
+            invoice.vendor = _clean_vendor_line(cand)
+            invoice.provenance["vendor"] = FieldProvenance(
+                value=invoice.vendor, confidence=0.85, source="regex",
+                text_span=m.group(0),
+            )
+        else:
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            if lines:
+                invoice.vendor = _clean_vendor_line(lines[0][:80])
+                invoice.provenance["vendor"] = FieldProvenance(
+                    value=invoice.vendor, confidence=0.85, source="regex",
+                    text_span=lines[0],
+                )
+    else:
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if lines:
+            first = lines[0]
+            if len(first) >= 3 and not re.match(r"^(receipt|invoice|tax invoice|cash|date|doc no)", first, re.I):
+                invoice.vendor = _clean_vendor_line(first[:80])
+                invoice.provenance["vendor"] = FieldProvenance(
+                    value=invoice.vendor, confidence=0.85, source="regex",
+                    text_span=first,
+                )
+    # Issue date
+    m = _DATE_RE.search(text)
+    if m:
+        invoice.issue_date = m.group(1)
+        invoice.provenance["issue_date"] = FieldProvenance(
+            value=invoice.issue_date, confidence=0.9, source="regex",
+            text_span=m.group(0),
+        )
+    else:
+        dm = re.search(r"\b(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})\b", text)
+        if dm:
+            try:
+                import datetime as _dt2
+                _months2 = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12}
+                _mo2 = _months2.get(dm.group(2).lower()[:3], 0)
+                if _mo2:
+                    invoice.issue_date = f"{dm.group(3)}-{_mo2:02d}-{int(dm.group(1)):02d}"
+                    invoice.provenance["issue_date"] = FieldProvenance(value=invoice.issue_date, confidence=0.85, source="regex", text_span=dm.group(0))
+            except: pass
+        if not invoice.issue_date:
+            gm = re.search(r"\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b", text)
+            if gm:
+                invoice.issue_date = _normalize_date(gm.group(1))
+                invoice.provenance["issue_date"] = FieldProvenance(value=invoice.issue_date, confidence=0.85, source="regex", text_span=gm.group(0))
+
+    # Due date
+    m = _DUE_RE.search(text)
+    if m:
+        invoice.due_date = m.group(1)
+        invoice.provenance["due_date"] = FieldProvenance(
+            value=invoice.due_date, confidence=0.9, source="regex",
+            text_span=m.group(0),
+        )
+
+    # Total
+    total_str = _pick_total(text)
+    if total_str:
+        invoice.total = _parse_number(total_str)
+        invoice.provenance["total"] = FieldProvenance(
+            value=invoice.total, confidence=0.85, source="regex",
+            text_span=total_str,
+        )
+
+    # Tax — tổng tất cả dòng thuế (GTGT + tiêu thụ đặc biệt + ...), loại "thuế suất" (rate)
+    tax_re = re.compile(
+        r"(?:thuế\s*gtgt|thuế(?!\s*suất)|\btax\b|\bvat\b|\bgst\b)(?!\s*(?:id|reg|no|#|code|summary|rate))"
+        r"(?:(?!\s*[:#]?\s*[0-9.,]*\s*%).)*?"
+        r"\s*[:#]?\s*(?:rm|usd|eur|vnd|gbp|jpy|myr|\$)?\s*([0-9]+(?:[.,][0-9]+)*)",
+        re.I,
+    )
+    # Backup: tìm dòng chứa "thuế" và số
+    tax_matches = list(tax_re.finditer(text))
+    if tax_matches:
+        total_tax = sum(_parse_number(m.group(1)) for m in tax_matches)
+        invoice.tax = total_tax
+        invoice.provenance["tax"] = FieldProvenance(
+            value=invoice.tax, confidence=0.8, source="regex",
+            text_span=" | ".join(m.group(0) for m in tax_matches),
+        )
+
+    # Currency detection
+    if re.search(r"\b(vnd|₫|đồng)\b", text, re.I):
+        invoice.currency = "VND"
+    elif re.search(r"\b(usd|\$|dollar)\b", text, re.I):
+        invoice.currency = "USD"
+    elif re.search(r"\b(eur|€|euro)\b", text, re.I):
+        invoice.currency = "EUR"
+    elif re.search(r"\b(myr|rm|ringgit)\b", text, re.I):
+        invoice.currency = "MYR"
+
+    # Confidence tổng: dựa trên số field đã trích xuất
+    fields_extracted = len(invoice.provenance)
+    invoice.confidence = min(1.0, fields_extracted / 5.0)
+
+    # Job status: nếu confidence thấp → REVIEW, ngược lại → REVIEW (luôn cần review)
+    invoice.job_status = JobStatus.REVIEW
+    invoice.extraction_provider = "regex"
+
+    # Raw snippet
+    invoice.raw_snippet = text[:500]
+
+    return invoice
+
+
+def extract_invoice(content: bytes, mime_type: str, source_file: str = "unknown", user_id: str = "") -> Invoice:
+    """Trích xuất hóa đơn từ file content — hàm chính cho API upload."""
+    text = _extract_text(content, mime_type)
+    invoice = extract_from_text(text, source_file=source_file)
+    invoice.user_id = user_id
+    return invoice
+
+
+import io
+
+# --- Helpers for backward compatibility with existing tests ---
+
+def _norm_name(s: str) -> str:
+    """Chuẩn hóa tên: lower, bỏ dấu, bỏ space — dùng để so sánh fuzzy."""
+    s = s.strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[^a-z0-9]", "", s)
+    return s
+
+
+def _to_float(s: str, vi: bool = False) -> float:
+    """Parse float — vi=True: dấu phẩy là thập phân (kiểu VN), nhưng cũng xử lý dot-thousands."""
+    s = s.strip().replace(" ", "")
+    if vi:
+        # VN: dot = thousands, comma = decimal (30.900.000 or 30.900.000,50)
+        if "," in s and "." in s:
+            s = s.replace(".", "").replace(",", ".")
+        elif "," in s:
+            parts = s.split(",")
+            if len(parts[-1]) == 3 and len(parts) > 1:
+                s = s.replace(",", "")
+            else:
+                s = s.replace(".", "").replace(",", ".")
+        elif "." in s:
+            import re as _re2
+            if _re2.match(r"^\d{1,3}(\.\d{3})+$", s):
+                s = s.replace(".", "")
+        return float(s)
+    else:
+        if "," in s and "." in s:
+            if s.rindex(",") < s.rindex("."):
+                s = s.replace(",", "")
+            else:
+                s = s.replace(".", "").replace(",", ".")
+        elif "," in s:
+            parts = s.split(",")
+            if len(parts[-1]) == 3 and len(parts) > 1:
+                s = s.replace(",", "")
+            else:
+                s = s.replace(",", ".")
+        elif "." in s:
+            import re as _re2
+            if _re2.match(r"^\d{1,3}(\.\d{3})+$", s):
+                s = s.replace(".", "")
+        return float(s)
 
 
 def _normalize_date(s: str) -> str:
-    """Chuẩn hóa ngày về ISO yyyy-mm-dd.
-    Việt Nam dd/mm/yyyy, quốc tế yyyy-mm-dd — báo cáo tháng cần ISO."""
-    parts = re.split(r"[-/]", s)
-    if len(parts[0]) == 4:  # yyyy-mm-dd
-        y, m, d = parts
-    else:  # dd/mm/yyyy (hoặc dd/mm/yy 2 chữ số trên receipt lâu đời)
-        d, m, y = parts
-    y = int(y) + 2000 if len(y) == 2 else int(y)  # năm 2 chữ số → 20yy
-    return f"{y:04d}-{int(m):02d}-{int(d):02d}"
+    """Chuẩn hóa date về YYYY-MM-DD."""
+    s = s.strip()
+    m = re.match(r"(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})", s)
+    if m:
+        d, mo, y = m.groups()
+        if len(y) == 2:
+            y = "20" + y
+        return f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
+    m = re.match(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", s)
+    if m:
+        y, mo, d = m.groups()
+        return f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
+    return s
 
 
-def extract_invoice(path: str, llm: Optional[LLMProvider] = None) -> Invoice:
-    """Trích xuất Invoice từ file. Tự dùng LLM fallback nếu có API key."""
-    text = read_file_text(path)
-    if llm is None:
-        llm = get_llm_provider()
-    return extract_from_text(text, source_file=path, llm=llm)
-
-
-def _extract_regex(text: str) -> tuple:
-    """Trích xuất bằng regex. Trả về (dict trường, số trường tìm thấy)."""
-    vi = bool(_VI_DETECT.search(text))
-    f = {}
-    count = 0
-
-    m = _INVOICE_NO_RE.search(text)
-    f["invoice_number"] = m.group(1) if m else "unknown"
-    count += 1 if m else 0
-
+def _guess_vendor(text: str) -> str:
+    """Đoán vendor từ text — dùng VENDOR_RE hoặc tìm chain name."""
     m = _VENDOR_RE.search(text)
-    f["vendor"] = m.group(1).strip().splitlines()[0][:60] if m else (
-        _guess_vendor(text) if not vi else "unknown")
-    raw_vendor = f["vendor"]
-    f["vendor"] = _chain_name(raw_vendor)  # chuẩn hóa tên chuỗi bán lẻ (fix OCR brand)
-    if f["vendor"] == raw_vendor:  # chưa khớp chuỗi → quét cả text tìm brand (fix "VM+QNH...")
-        full = _find_chain_in_text(text)
-        if full:
-            f["vendor"] = full
-    count += 1 if m else 0
-
-    m = _DATE_RE.search(text)
-    # receipt thật không có label ngày → fallback: ngày dạng số đầu tiên trong text (non-vi)
-    if m is None and not vi:
-        m = re.search(r"\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b", text)
-    f["issue_date"] = _normalize_date(m.group(1)) if m else None
-    count += 1 if m else 0
-
-    m = _DUE_RE.search(text) if not vi else None
-    f["due_date"] = _normalize_date(m.group(1)) if m else None
-    # due_date không tính vào confidence — GTGT Việt Nam không có trường này
-
-    num = _pick_total(text)
-    f["total"] = _to_float(num, vi) if num else 0.0
-    count += 1 if num else 0
-
-    tax = sum(_to_float(m, vi) for m in _TAX_RE.findall(text))
-    f["tax"] = tax
-    count += 1 if tax else 0
-
-    f["discount"] = sum(_to_float(m, vi) for m in _DISCOUNT_RE.findall(text))
-
-    m = _CURRENCY_RE.search(text)
-    f["currency"] = m.group(1) if m else ("VND" if vi else "USD")
-    return f, count
+    if m:
+        return m.group(1).strip()
+    chain = _find_chain_in_text(text)
+    if chain:
+        return chain
+    return "unknown"
 
 
-_LLM_SYSTEM = """Bạn trích xuất thông tin từ hóa đơn. Trả về JSON thuần (không markdown, không giải thích) với keys:
-invoice_number, vendor, issue_date (dạng yyyy-mm-dd), total (số), tax (số), discount (số), currency.
-Thiếu trường nào dùng null. Chỉ trả JSON."""
+def _find_chain_in_text(text: str) -> Optional[str]:
+    """Tìm tên chuỗi cửa hàng trong text."""
+    text_lower = text.lower()
+    for chain in _VN_CHAINS:
+        if chain.lower() in text_lower:
+            return chain
+    return None
 
 
-def _extract_llm(text: str, provider: LLMProvider) -> dict:
-    """Trích xuất bằng LLM → dict trường. Rỗng nếu lỗi."""
-    try:
-        raw = provider.complete(_LLM_SYSTEM, f"Hóa đơn:\n{text[:3000]}")
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
-        data = json.loads(raw)
-        result = {}
-        for k in ("invoice_number", "vendor", "issue_date", "due_date",
-                  "total", "tax", "discount", "currency"):
-            if k not in data or data[k] is None:
-                continue
-            v = data[k]
-            if k in ("total", "tax", "discount"):
-                try:
-                    v = float(str(v).replace(",", "").replace(" ", ""))
-                except (ValueError, TypeError):
-                    continue
-            elif k in ("issue_date", "due_date"):
-                try:
-                    v = _normalize_date(str(v))
-                except Exception:
-                    continue  # không phải ngày → bỏ, giữ giá trị regex
-            result[k] = v
-        return result
-    except Exception:
-        return {}
+_VN_CHAINS = (
+    "VinMart", "Circle K", "FamilyMart", "Ministop", "7-Eleven",
+    "GS25", "CU", "Emart", "Lotte Mart", "Big C", "Tops",
+)
 
 
 _NUM_TOKEN_RE = re.compile(r"\d[\d.,]*")
 
 
 def _grounded(fields: dict, text: str) -> dict:
-    """Chống hallucinate: vendor/total do LLM trả về phải xuất hiện trong text gốc.
-    vendor: exact (bỏ space/dấu) hoặc fuzzy ≥0.85 với một dòng. total: khớp 1 số có trong text
-    (thử cả cách đọc VN lẫn EN). Field không qua được kiểm tra bị loại — nhường cho regex."""
+    """Chống hallucinate: vendor/total do LLM trả về phải xuất hiện trong text gốc."""
     out = dict(fields)
     v = out.get("vendor")
     if v:
@@ -387,8 +430,26 @@ def _grounded(fields: dict, text: str) -> dict:
                     nums.add(round(_to_float(tok, vi), 2))
                 except (ValueError, OverflowError):
                     pass
-        if not any(abs(float(t) - n) < 0.01 for n in nums):
-            out.pop("total")
+        # also try parsing t itself (may contain commas) via _to_float
+        t_vals = set()
+        try:
+            t_vals.add(float(str(t).replace(",", "")))
+        except Exception:
+            pass
+        for vi in (False, True):
+            try:
+                t_vals.add(_to_float(str(t), vi))
+            except Exception:
+                pass
+        if t_vals:
+            if not any(any(abs(tv - n) < 0.01 for n in nums) for tv in t_vals):
+                out.pop("total")
+        else:
+            try:
+                if not any(abs(float(str(t).replace(",", "")) - n) < 0.01 for n in nums):
+                    out.pop("total")
+            except Exception:
+                out.pop("total")
     return out
 
 
@@ -404,52 +465,182 @@ def _merge_fields(regex_fields: dict, llm_fields: dict) -> dict:
     return merged
 
 
-def extract_from_text(text: str, source_file: str = "", llm: Optional[LLMProvider] = None) -> Invoice:
-    """Trích xuất Invoice. Regex trước; nếu confidence < 0.8 và có LLM → merge.
-    LLM_MODE=primary: LLM (đã qua grounding) GHI ĐÈ vendor/date/total của regex —
-    dùng khi regex hay chọn sai (receipt thật); mặc định 'fill' chỉ lấp chỗ trống."""
-    fields, count = _extract_regex(text)
-    confidence = min(1.0, count / 5.0)
+_VI_DETECT = re.compile(
+    r"số\s*h[oó][aá]\s*đơn|tổng\s*cộng|thuế\s*gtgt|người\s*bán|đồng|mst"
+    r"|đơn\s*vị\s*bán|ngày\s*lập|tổng\s*phải\s*trả|giá\s*trị", re.I)
+_CURRENCY_RE = re.compile(r"(USD|EUR|VND|GBP|JPY)", re.I)
 
-    mode = os.getenv("LLM_MODE", "fill")
-    if llm is not None and (confidence < 0.8 or mode == "primary"):
-        llm_fields = _grounded(_extract_llm(text, llm), text)
-        if llm_fields:
-            if mode == "primary":
-                for k in ("vendor", "issue_date", "total"):
-                    if llm_fields.get(k) not in (None, "", "unknown", 0, 0.0):
-                        fields[k] = llm_fields[k]
-                # vendor LLM cũng qua chuẩn hóa chuỗi bán lẻ như đường regex
-                # (LLM hay trả dòng chi nhánh "VM+QNH..." thay vì brand "VinCommerce")
-                if llm_fields.get("vendor"):
-                    v = _chain_name(fields["vendor"])
-                    if v == fields["vendor"]:
-                        v = _find_chain_in_text(text) or v
-                    fields["vendor"] = v or fields["vendor"]
-            fields = _merge_fields(fields, llm_fields)
-            core = ["invoice_number", "vendor", "issue_date", "total", "tax"]
-            new_count = sum(1 for k in core if fields.get(k) not in (None, "", "unknown", 0, 0.0))
-            confidence = min(1.0, new_count / 5.0)
 
-    snippet = text[:200].replace("\n", " ")
-    return Invoice(
-        id=_make_id(fields["invoice_number"], source_file),
-        invoice_number=fields["invoice_number"],
-        vendor=fields["vendor"],
-        issue_date=fields.get("issue_date"),
-        due_date=fields.get("due_date"),
-        currency=fields.get("currency", "USD"),
-        total=fields.get("total", 0.0),
-        tax=fields.get("tax", 0.0),
-        discount=fields.get("discount", 0.0),
-        source_file=source_file,
-        raw_snippet=snippet,
-        confidence=confidence,
+def _extract_regex(text: str) -> tuple:
+    """Regex extraction — trả về (fields_dict, field_count)."""
+    vi = bool(_VI_DETECT.search(text))
+    fields = {}
+    count = 0
+
+    m = _INVOICE_NO_RE.search(text)
+    if m:
+        fields["invoice_number"] = m.group(1).strip()
+        count += 1
+
+    m = _VENDOR_RE.search(text)
+    if m:
+        cand = m.group(1).strip()
+        if len(cand) < 60 and "date of purchase" not in cand.lower() and "request tax" not in cand.lower():
+            fields["vendor"] = _clean_vendor_line(cand)
+            count += 1
+        else:
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            if lines:
+                fields["vendor"] = _clean_vendor_line(lines[0][:80])
+                count += 1
+    else:
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if lines:
+            first = lines[0]
+            if len(first) >= 3 and not re.match(r"^(receipt|invoice|tax invoice|cash|date|doc no)", first, re.I):
+                fields["vendor"] = _clean_vendor_line(first[:80])
+                count += 1
+    m = _DATE_RE.search(text)
+    if m:
+        fields["issue_date"] = _normalize_date(m.group(1))
+        count += 1
+    else:
+        # Fallback: tìm ngày dạng 25 MAY 2017 hoặc DD-MM-YY hoặc DD/MM/YYYY
+        dm = re.search(r"\b(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})\b", text)
+        if dm:
+            try:
+                import datetime as _dt
+                _months = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12}
+                _mo = _months.get(dm.group(2).lower()[:3], 0)
+                if _mo:
+                    fields["issue_date"] = f"{dm.group(3)}-{_mo:02d}-{int(dm.group(1)):02d}"
+                    count += 1
+            except: pass
+        if "issue_date" not in fields:
+            gm = re.search(r"\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b", text)
+            if gm:
+                fields["issue_date"] = _normalize_date(gm.group(1))
+                count += 1
+
+    m = _DUE_RE.search(text)
+    if m:
+        fields["due_date"] = _normalize_date(m.group(1))
+        count += 1
+
+    total_str = _pick_total(text)
+    if total_str:
+        fields["total"] = _to_float(total_str, vi=vi)
+        count += 1
+
+    # Tax — tổng tất cả dòng thuế (GTGT + tiêu thụ đặc biệt + ...), loại "thuế suất" (rate)
+    tax_re = re.compile(
+        r"(?:thuế\s*gtgt|thuế(?!\s*suất)|\btax\b|\bvat\b|\bgst\b)(?!\s*(?:id|reg|no|#|code|summary|rate))"
+        r"(?:(?!\s*[:#]?\s*[0-9.,]*\s*%).)*?"
+        r"\s*[:#]?\s*(?:rm|usd|eur|vnd|gbp|jpy|myr|\$)?\s*([0-9]+(?:[.,][0-9]+)*)",
+        re.I,
     )
+    tax_matches = list(tax_re.finditer(text))
+    if tax_matches:
+        fields["tax"] = sum(_to_float(m.group(1), vi=vi) for m in tax_matches)
+        count += 1
+
+    # Currency — dựa trên nội dung tiếng Việt hoặc flag rõ ràng
+    m = _CURRENCY_RE.search(text)
+    fields["currency"] = m.group(1) if m else ("VND" if vi else "USD")
+
+    return fields, count
 
 
 def _make_id(invoice_no: str, source_file: str) -> str:
-    """Tạo id ổn định từ số hóa đơn + tên file."""
+    """Tạo ID duy nhất cho invoice."""
     import hashlib
-    key = f"{invoice_no}|{source_file}"
-    return hashlib.md5(key.encode()).hexdigest()[:12]
+    base = f"{invoice_no}:{source_file}"
+    return hashlib.md5(base.encode()).hexdigest()[:12]
+
+
+def _coerce_num(v, vi: bool):
+    """Coerce LLM numeric string (with comma/dot) to float, honoring vi flag."""
+    if v is None or v == "" or v == "unknown":
+        return v
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    # try vi-aware then fallback
+    for use_vi in (vi, not vi):
+        try:
+            return _to_float(s, vi=use_vi)
+        except Exception:
+            pass
+    try:
+        return float(s.replace(",", "").replace(" ", ""))
+    except Exception:
+        return v
+
+def extract_from_text(text: str, source_file: str = "", llm=None) -> Invoice:
+    """Trích xuất Invoice. Regex trước; nếu confidence < 0.8 và có LLM → merge.
+    LLM_MODE=primary: LLM (đã qua grounding) GHI ĐÈ vendor/date/total của regex."""
+    fields, count = _extract_regex(text)
+    confidence = min(1.0, count / 5.0)
+    mode = os.getenv("LLM_MODE", "fill")
+    vi = bool(_VI_DETECT.search(text))
+
+    if llm is not None and confidence < 0.8:
+        llm_fields = _extract_llm(text, llm)
+        # coerce numeric strings before grounding comparison
+        for k in ("total", "tax", "discount"):
+            if k in llm_fields:
+                llm_fields[k] = _coerce_num(llm_fields[k], vi)
+        llm_fields = _grounded(llm_fields, text)
+        # also ensure after grounded any remaining string numbers coerced
+        for k in ("total", "tax", "discount"):
+            if k in llm_fields and isinstance(llm_fields[k], str):
+                llm_fields[k] = _coerce_num(llm_fields[k], vi)
+        if mode == "primary":
+            for k in ("vendor", "issue_date", "due_date", "total"):
+                if k in llm_fields and llm_fields[k] not in (None, "", "unknown"):
+                    fields[k] = llm_fields[k]
+        else:
+            fields = _merge_fields(fields, llm_fields)
+        # after successful LLM merge, boost confidence
+        if llm_fields:
+            confidence = 1.0
+            # ensure tax/total are numeric floats
+            for k in ("total", "tax"):
+                if k in fields and isinstance(fields[k], str):
+                    fields[k] = _coerce_num(fields[k], vi)
+
+    # final coerce for fields that may still be strings (e.g. regex fallback shouldn't, but LLM path may)
+    for k in ("total", "tax"):
+        if k in fields and isinstance(fields[k], str):
+            fields[k] = _coerce_num(fields[k], vi)
+
+    invoice = Invoice(
+        id=_make_id(fields.get("invoice_number", "unknown"), source_file),
+        invoice_number=fields.get("invoice_number", "unknown"),
+        vendor=fields.get("vendor", "unknown"),
+        issue_date=fields.get("issue_date"),
+        due_date=fields.get("due_date"),
+        total=fields.get("total", 0.0),
+        tax=fields.get("tax", 0.0),
+        currency=fields.get("currency", "USD"),
+        source_file=source_file,
+        confidence=confidence,
+    )
+    return invoice
+
+
+_LLM_SYSTEM = """Bạn trích xuất thông tin từ hóa đơn. Trả về JSON thuần (không markdown, không giải thích) với keys:
+invoice_number, vendor, issue_date, due_date, total, tax, currency.
+Chỉ trả JSON."""
+
+
+def _extract_llm(text: str, provider) -> dict:
+    """Gọi LLM để trích xuất fields."""
+    try:
+        raw = provider.complete(_LLM_SYSTEM, text)
+        # Strip markdown code block if present
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        return json.loads(raw)
+    except Exception:
+        return {}

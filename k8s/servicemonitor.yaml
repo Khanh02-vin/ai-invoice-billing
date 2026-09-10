@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: invoice-billing-sm
+  namespace: invoice-billing
+  labels:
+    app: ai-invoice-billing
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: ai-invoice-billing
+      component: backend
+  namespaceSelector:
+    matchNames:
+      - invoice-billing
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      scheme: http
+      honorLabels: true

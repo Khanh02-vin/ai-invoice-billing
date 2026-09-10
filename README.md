@@ -42,10 +42,42 @@
 
 ## Bắt đầu nhanh
 
+### Chạy backend local
+
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
 pip install -r requirements.txt
-python main.py        # chạy demo end-to-end
-python -m uvicorn src.app:app --port 8004
+cp .env.example .env
+python -m uvicorn main:app --reload --port 8000
+```
+
+Backend cung cấp `/health`, `/ready` và Swagger tại http://localhost:8000/docs. Đặt `OPEN_REGISTRATION=true` trong `.env` khi cần tạo tài khoản local; production phải đặt `APP_ENV=production`, `JWT_SECRET` riêng và `CORS_ORIGINS` cụ thể.
+
+### Chạy frontend local
+
+```bash
+cd frontend
+npm ci
+npm run dev -- --host 0.0.0.0
+```
+
+Mở http://localhost:5173. Frontend dùng `VITE_API_BASE=http://localhost:8000` mặc định.
+
+### Chạy bằng Docker Compose
+
+```bash
+cp .env.example .env
+# thay JWT_SECRET bằng một secret ngẫu nhiên trước khi chạy production
+JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" docker compose up --build
+```
+
+Compose chạy backend tại http://localhost:8000 và frontend tại http://localhost:5173, đồng thời lưu SQLite/upload data trong volume `invoice-data`.
+
+### Demo end-to-end
+
+```bash
+python main.py
 ```
 
 LLM fallback (tùy chọn): tạo file `.env` (đã có sẵn key mẫu — thay bằng key của bạn):
@@ -79,7 +111,21 @@ Swagger UI: http://localhost:8004/docs
 pytest tests/ -v
 ```
 
-61 tests: trích xuất (Anh + GTGT Việt), OCR, nhiều mức thuế, chiết khấu, CRUD, auth JWT, cách ly đa user, LLM fallback + grounding chống hallucinate, regression trên receipt thật.
+54 tests: trích xuất (Anh + GTGT Việt), OCR, nhiều mức thuế, chiết khấu, CRUD, auth JWT, cách ly đa user, LLM fallback + grounding chống hallucinate, regression trên receipt thật.
+
+## Phạm vi milestone Phase 0+1
+
+Milestone này hoàn thiện nền tảng dùng được: xác thực JWT, upload và trích xuất hóa đơn, SQLite CRUD theo user, provenance/job status, báo cáo JSON/PDF, health/readiness, cấu hình production fail-fast, Docker Compose, CI và frontend có loading/error/empty/success, tìm kiếm, lọc, phân trang, báo cáo và cài đặt.
+
+## Phạm vi nâng cao (Phase 2 + Phase 4) — đã triển khai
+
+- **Phase 2 — Đa tenant (organizations/workspaces + RBAC):** mỗi user có thể tạo organization, mời thành với theo role `owner/admin/member/viewer`, kiểm soát truy cập chặt chẽ (xem `src/domain/orgs.py`, `src/store/orgs.py`, `src/routers/orgs.py`).
+- **Phase 4 — RAG search + eval:** tìm kiếm vector offline bằng TF-IDF + cosine trên hóa đơn, không phụ thuộc ML bên ngoài, kèm script đánh giá `scripts/eval_rag.py` (xem `src/search/`, `tests/test_rag_search.py`).
+- **Phase 4 — Observability + K8s:** endpoint `/metrics` theo chuẩn Prometheus (fallback stdlib nếu chưa cài `prometheus_client`), manifest Kubernetes (namespace, configmap, secret template, deployment, service, ingress, HPA, ServiceMonitor) và dashboard Grafana (xem `src/observability/`, `k8s/`, `monitoring/`).
+
+## Còn lại cho vòng tiếp theo
+
+Phase 3 (Stripe/Paddle checkout, subscriptions, webhooks, entitlements) và một số mục Phase 4 chưa triển khai: refresh-token/revocation, email verification, password reset, MFA, rate limiting, malware scanning, object storage hardening, backup/restore, privacy/DPA/SLA và mở rộng accessibility/settings.
 
 ## Benchmark — SROIE (dữ liệu thật)
 

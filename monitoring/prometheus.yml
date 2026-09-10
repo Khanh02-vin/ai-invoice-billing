@@ -1,0 +1,50 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    monitor: "invoice-billing"
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "invoice-billing-backend"
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          app: "ai-invoice-billing"
+          component: "backend"
+    # When running in Kubernetes, prefer kubernetes_sd_configs instead:
+    # kubernetes_sd_configs:
+    #   - role: endpoints
+    # relabel_configs:
+    #   - source_labels: [__meta_kubernetes_service_label_app]
+    #     action: keep
+    #     regex: ai-invoice-billing
+    #   - source_labels: [__meta_kubernetes_namespace]
+    #     action: keep
+    #     regex: invoice-billing
+    #   - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+    #     action: keep
+    #     regex: true
+    #   - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+    #     action: replace
+    #     target_label: __metrics_path__
+    #     regex: (.+)
+    #   - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+    #     action: replace
+    #     regex: ([^:]+)(?::\d+)?;(\d+)
+    #     replacement: $1:$2
+    #     target_label: __address__
+
+  - job_name: "invoice-billing-k8s"
+    # Alternative K8s discovery via ServiceMonitor (kube-prometheus-stack handles this).
+    # This file is for standalone Prometheus (docker-compose or bare metal).
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["invoice-billing-service.invoice-billing.svc.cluster.local:8000"]

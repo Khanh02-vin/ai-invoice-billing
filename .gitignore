@@ -12,6 +12,11 @@ venv/
 # DB & data
 *.db
 *.sqlite3
+data/
+
+# Docker / runtime
+*.log
+.env.*.local
 
 # Node
 node_modules/
