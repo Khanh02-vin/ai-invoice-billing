@@ -10,6 +10,10 @@ export default defineConfig({
   build: { outDir: "dist" },
   server: {
     port: 5173,
+    // Nghe mọi interface: cần cho điện thoại vào qua LAN / Tailscale.
+    host: true,
+    // Vite chặn host lạ mặc định — mở cho tên miền tunnel (Tailscale / Cloudflare).
+    allowedHosts: [".ts.net", ".trycloudflare.com"],
     proxy: {
       "/auth": API_TARGET,
       "/invoices": API_TARGET,

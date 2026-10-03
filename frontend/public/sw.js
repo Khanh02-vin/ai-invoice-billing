@@ -3,6 +3,10 @@
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
+// Không cache gì — fetch handler rỗng để browser dùng mạng mặc định.
+// Chrome yêu cầu service worker có fetch handler mới coi PWA là "cài được".
+self.addEventListener("fetch", () => {});
+
 self.addEventListener("push", (event) => {
   let data = {};
   try {
