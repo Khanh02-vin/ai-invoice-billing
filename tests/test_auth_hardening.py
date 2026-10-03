@@ -52,9 +52,13 @@ def client(user_repo):
     return TestClient(app_module.app)
 
 
-def _register(client, username="kien", password="matkhau123"):
-    """Helper: register, return access token."""
-    r = client.post("/auth/register", json={"username": username, "password": password})
+def _register(client, username="kien", password="matkhau123", email=None):
+    """Helper: register, return access token. Không gửi email xác minh trong tests
+    (SMTP chưa bật) — để riêng test_email_verification_flow kiểm tra gửi thật."""
+    payload = {"username": username, "password": password}
+    if email is not None:
+        payload["email"] = email
+    r = client.post("/auth/register", json=payload)
     assert r.status_code in (200, 201), r.text
     return r.json()["access_token"]
 
@@ -103,6 +107,126 @@ def test_email_verification_flow(client, user_repo):
 
 
 # ---- Tests: Password reset ----
+
+def test_register_sends_verification_email(monkeypatch, client, user_repo):
+    """Register + SMTP bật -> email xác minh gửi thật; link trong email verify được user."""
+    import re
+
+    sent: list = []
+
+    class FakeSMTP:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): pass
+        def ehlo(self): pass
+        def login(self, *a, **k): pass
+        def send_message(self, msg): sent.append(msg)
+
+    monkeypatch.setenv("EMAIL_SMTP_HOST", "smtp.test")
+    monkeypatch.setenv("EMAIL_SMTP_PORT", "587")
+    monkeypatch.setenv("EMAIL_SMTP_USER", "noreply@test")
+    monkeypatch.setenv("EMAIL_FROM", "noreply@test")
+    monkeypatch.setattr("src.mail.smtplib.SMTP", FakeSMTP)
+
+    r = client.post("/auth/register", json={
+        "username": "newuser", "password": "matkhau123", "email": "new@example.com"
+    })
+    assert r.status_code == 200
+    assert r.json()["verification_sent"] is True
+    assert user_repo.get_by_username("newuser").verified is False
+    assert len(sent) == 1
+    assert sent[0]["To"] == "new@example.com"
+
+    m = re.search(r"/auth/verify-email/confirm\?token=([\w\-]+)", sent[0].get_content())
+    assert m, sent[0].get_content()
+    assert client.get(f"/auth/verify-email/confirm?token={m.group(1)}").status_code == 200
+    assert user_repo.get_by_username("newuser").verified is True
+    # Link dùng 1 lần
+    assert client.get(f"/auth/verify-email/confirm?token={m.group(1)}").status_code == 400
+
+
+def test_register_without_smtp_reports_not_sent(client, user_repo):
+    """SMTP chưa cấu hình -> verification_sent False để frontend báo user liên hệ admin."""
+    r = client.post("/auth/register", json={
+        "username": "nosmtp", "password": "matkhau123", "email": "n@example.com"
+    })
+    assert r.status_code == 200
+    assert r.json()["verification_sent"] is False
+    assert user_repo.get_by_username("nosmtp").verified is False
+
+
+def test_forgot_password_sends_reset_email(monkeypatch, client, user_repo):
+    """SMTP cấu hình -> forgot-password gửi email chứa token reset dùng được thật."""
+    import re
+
+    sent: list = []
+
+    class FakeSMTP:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): pass
+        def ehlo(self): pass
+        def login(self, *a, **k): pass
+        def send_message(self, msg): sent.append(msg)
+
+    monkeypatch.setenv("EMAIL_SMTP_HOST", "smtp.test")
+    monkeypatch.setenv("EMAIL_SMTP_PORT", "587")
+    monkeypatch.setenv("EMAIL_FROM", "noreply@test")
+    monkeypatch.setattr("src.mail.smtplib.SMTP", FakeSMTP)
+
+    _register(client, email="kien@example.com")  # gửi luôn email xác minh
+    sent.clear()
+
+    r = client.post("/auth/forgot-password", json={"username": "kien"})
+    assert r.status_code == 200
+    assert len(sent) == 1
+    assert sent[0]["To"] == "kien@example.com"
+    body = sent[0].get_content()
+    m = re.search(r"mật khẩu mới:\s*\n\s*\n(\S+)", body)
+    assert m, body
+
+    # Token trong email dùng reset được thật -> login bằng mật khẩu mới
+    r = client.post("/auth/reset-password", json={"token": m.group(1), "new_password": "matsau123"})
+    assert r.status_code == 200, r.text
+    user_repo.set_verified(user_repo.get_by_username("kien").id, True)
+    assert client.post("/auth/login", json={"username": "kien", "password": "matsau123"}).status_code == 200
+
+
+def test_resend_verification_sends_and_reports_failure(monkeypatch, client, user_repo):
+    """Resend gửi thật khi SMTP cấu hình; SMTP lỗi -> 502 (không báo 'đã gửi' giả)."""
+    _register(client, email="kien@example.com")  # chưa bật SMTP -> không gửi
+
+    sent: list = []
+
+    class GoodSMTP:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): pass
+        def ehlo(self): pass
+        def login(self, *a, **k): pass
+        def send_message(self, msg): sent.append(msg)
+
+    class DeadSMTP(GoodSMTP):
+        def send_message(self, msg): raise OSError("smtp down")
+
+    monkeypatch.setenv("EMAIL_SMTP_HOST", "smtp.test")
+    monkeypatch.setenv("EMAIL_SMTP_PORT", "587")
+    monkeypatch.setenv("EMAIL_SMTP_USER", "noreply@test")
+    monkeypatch.setenv("EMAIL_FROM", "noreply@test")
+
+    monkeypatch.setattr("src.mail.smtplib.SMTP", GoodSMTP)
+    r = client.post("/auth/resend-verification", json={"username": "kien"})
+    assert r.status_code == 200, r.text
+    assert len(sent) == 1
+    assert sent[0]["To"] == "kien@example.com"
+
+    monkeypatch.setattr("src.mail.smtplib.SMTP", DeadSMTP)
+    r = client.post("/auth/resend-verification", json={"username": "kien"})
+    assert r.status_code == 502
+    assert r.json()["error"]["code"] == "EMAIL_SEND_FAILED"
 
 def test_password_reset_flow(client, user_repo):
     """Forgot password -> reset -> login with new password."""

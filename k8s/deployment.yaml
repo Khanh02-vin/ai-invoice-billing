@@ -95,18 +95,3 @@ spec:
           persistentVolumeClaim:
             claimName: invoice-data-pvc
       terminationGracePeriodSeconds: 30
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: invoice-data-pvc
-  namespace: invoice-billing
-  labels:
-    app: ai-invoice-billing
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 5Gi
-  # storageClassName: standard  # uncomment and set per cluster (e.g., gp2, standard)

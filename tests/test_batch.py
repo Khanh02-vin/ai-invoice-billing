@@ -7,6 +7,7 @@ import src.app as app_module
 
 def _register(c):
     r = c.post("/auth/register", json={"username": "batch_test", "password": "test1234"})
+    app_module.users.set_verified(app_module.users.get_by_username("batch_test").id, True)
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
@@ -40,3 +41,38 @@ def test_batch_too_many(client):
     h = _register(client)
     resp = client.post("/upload", files={"file": ("empty.txt", b"", "text/plain")}, headers=h)
     assert resp.status_code == 400
+
+
+def test_extract_batch_calls_extract_invoice_with_mime():
+    """extract_batch: gọi extract_invoice(content, mime_type, ...) đúng signature
+    (trước đây gọi extract_invoice(path) → TypeError mọi file)."""
+    from src.extract.batch_extractor import extract_batch
+    from src.store.repository import InvoiceRepository
+
+    repo = InvoiceRepository(":memory:")
+    a = "Số hóa đơn: HD-BATCH-1\nNgười bán: Công ty A\nTổng cộng: 1,500,000"
+    b = "Số hóa đơn: HD-BATCH-2\nNgười bán: Công ty B\nTổng cộng: 2,000,000"
+    out = extract_batch(
+        [("a.txt", a.encode()), ("b.txt", b.encode())], repo, user_id="u1"
+    )
+    assert out["failed"] == 0, out["errors"]
+    assert out["successful"] == 2
+    assert {inv.invoice_number for inv in out["results"]} == {"HD-BATCH-1", "HD-BATCH-2"}
+    assert len(repo.list(user_id="u1")) == 2
+
+
+def test_extract_batch_duplicate_number_isolated():
+    """extract_batch: cùng số hóa đơn khác file → 1 file lỗi, không ghi đè."""
+    from src.extract.batch_extractor import extract_batch
+    from src.store.repository import InvoiceRepository
+
+    repo = InvoiceRepository(":memory:")
+    a = "Số hóa đơn: HD-DUP\nNgười bán: Công ty A\nTổng cộng: 100,000"
+    b = "Số hóa đơn: HD-DUP\nNgười bán: Công ty B\nTổng cộng: 200,000"
+    out = extract_batch(
+        [("a.txt", a.encode()), ("b.txt", b.encode())], repo, user_id="u1"
+    )
+    assert out["successful"] == 1 and out["failed"] == 1, out
+    kept = repo.list(user_id="u1")
+    assert len(kept) == 1
+    assert kept[0].invoice_number == "HD-DUP"  # 1 bản giữ nguyên, bản kia bị 409

@@ -36,6 +36,7 @@ RUN apt-get update \
 COPY --from=builder /install /usr/local
 
 # Application code
+COPY ai-engine ./ai-engine
 COPY src ./src
 COPY main.py ./
 COPY requirements.txt ./

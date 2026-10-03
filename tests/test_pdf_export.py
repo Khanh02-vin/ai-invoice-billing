@@ -6,6 +6,7 @@ import src.app as app_module
 
 def _register(c):
     r = c.post("/auth/register", json={"username": "pdf_test", "password": "test1234"})
+    app_module.users.set_verified(app_module.users.get_by_username("pdf_test").id, True)
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 

@@ -94,18 +94,21 @@ class User(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     verified: bool = False
     mfa_enabled: bool = False
+    email: str = ""  # optional — IMAP routing + email push nhắc hóa đơn
 
 
 class UserCreate(BaseModel):
     """Dữ liệu đầu vào để đăng ký."""
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=6, max_length=128)
+    email: Optional[str] = Field(default=None, max_length=254)
 
 
 class UserPublic(BaseModel):
     """Thông tin người dùng công khai."""
     id: str
     username: str
+    email: str = ""
 
 
 class Token(BaseModel):
@@ -114,6 +117,9 @@ class Token(BaseModel):
     token_type: str = "bearer"
     refresh_token: Optional[str] = None
     verification_token: Optional[str] = None
+    # True nếu email xác minh đã gửi được ngay lúc đăng ký (SMTP đã cấu hình
+    # + user có email). False -> gọi POST /auth/resend-verification sau.
+    verification_sent: bool = False
 
 
 class InvoiceCreate(BaseModel):
@@ -129,10 +135,31 @@ class InvoiceCreate(BaseModel):
 
 
 class InvoiceUpdate(BaseModel):
-    """Các trường có thể cập nhật."""
+    """Các trường có thể cập nhật — gồm cả field user sửa trong màn review."""
     status: Optional[InvoiceStatus] = None
     total: Optional[float] = None
     vendor: Optional[str] = None
+    invoice_number: Optional[str] = None
+    issue_date: Optional[str] = None
+    due_date: Optional[str] = None
+    tax: Optional[float] = None
+    currency: Optional[str] = None
+
+
+class FieldCorrection(BaseModel):
+    """1 chỉnh sửa field do user sửa ở màn review — audit + data eval cho benchmark.
+
+    old_value = extractor đọc ra, new_value = user sửa (coi như ground truth),
+    confidence/source = provenance lúc máy đọc → biết ngưỡng nào là đáng ngờ.
+    """
+    invoice_id: str = ""
+    field: str
+    old_value: Optional[Any] = None
+    new_value: Any = None
+    confidence: Optional[float] = None
+    source: Optional[str] = None
+    corrected_by: str = ""
+    corrected_at: str = ""
 
 
 class MonthlyReport(BaseModel):

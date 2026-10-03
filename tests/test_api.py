@@ -1,7 +1,6 @@
 """API integration tests — luồng thật: register → login → upload → report.
 Dùng :memory: cho repo/users, không đụng DB file."""
 import os
-from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from src import app as app_module
@@ -16,8 +15,6 @@ def fresh_db(monkeypatch):
     app_module.repo = InvoiceRepository(db_path=":memory:")
     app_module.users = UserRepository(db_path=":memory:")
     yield
-    # dọn invoices.db nếu import app tạo ra
-    Path("invoices.db").unlink(missing_ok=True)
 
 
 @pytest.fixture()

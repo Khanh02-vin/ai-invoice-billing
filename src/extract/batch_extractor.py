@@ -1,9 +1,9 @@
 """Batch extractor — xử lý nhiều hóa đơn song song, cách ly lỗi."""
-import tempfile
+import mimetypes
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 
 from .extractor import extract_invoice
+from ..store.repository import DuplicateInvoiceError
 
 
 def extract_batch(files, repo, user_id: str = "", max_workers: int = 4) -> dict:
@@ -14,17 +14,14 @@ def extract_batch(files, repo, user_id: str = "", max_workers: int = 4) -> dict:
     """
     def _one(item):
         filename, data = item
-        suffix = Path(filename).suffix or ".pdf"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
-            f.write(data)
-            path = f.name
         try:
-            inv = extract_invoice(path)
+            mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            inv = extract_invoice(
+                content=data, mime_type=mime, source_file=filename, user_id=user_id
+            )
             return filename, inv, None
         except Exception as e:  # noqa: BLE001 — cách ly lỗi từng file
             return filename, None, f"{type(e).__name__}: {e}"
-        finally:
-            Path(path).unlink(missing_ok=True)
 
     results, errors = [], []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -33,10 +30,13 @@ def extract_batch(files, repo, user_id: str = "", max_workers: int = 4) -> dict:
             filename, inv, err = fut.result()
             if err:
                 errors.append({"file": filename, "error": err})
-            else:
-                inv.user_id = user_id
+                continue
+            try:
                 repo.upsert(inv)
                 results.append(inv)
+            except DuplicateInvoiceError as e:
+                # cùng số hóa đơn khác file → 409-style: báo lỗi, không ghi đè
+                errors.append({"file": filename, "error": str(e)})
 
     return {
         "total": len(files),

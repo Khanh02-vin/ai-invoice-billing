@@ -6,6 +6,7 @@ resources:
   - configmap.yaml
   - secret.yaml
   - deployment.yaml
+  - pvc.yaml
   - service.yaml
   - ingress.yaml
   - hpa.yaml

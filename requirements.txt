@@ -1,4 +1,5 @@
 fastapi>=0.100.0
+python-multipart>=0.0.9
 uvicorn>=0.23.0
 pydantic>=2.0.0
 pdfplumber>=0.10.0
@@ -11,7 +12,17 @@ pytest>=7.0.0
 # Pillow>=10.0.0
 # paddleocr>=2.7.0
 
+# QR hóa đơn điện tử + render PDF (tùy chọn — không cài vẫn chạy, chỉ mất đối chiếu QR)
+# opencv-python-headless>=4.8
+# pypdfium2>=4.0
+
 # Benchmark CORD (tests/benchmark_cord.py) — chỉ cho benchmark, không cần cho app
 # datasets>=2.0
 openai>=1.0
+# Optional production worker stack (API-only installs may omit these)
+celery>=5.3
+redis>=5.0
 reportlab
+
+# Standalone AI extraction package
+-e ./ai-engine

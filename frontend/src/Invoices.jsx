@@ -10,6 +10,13 @@ const STATUS_LABEL = {
   cancelled: "Đã hủy",
 };
 const NAV = ["Tổng quan", "Báo cáo", "Cài đặt"];
+
+// Threshold review — ô nào confidence dưới mức này thì đánh dấu cần sửa (đỏ)
+const CONF_WARN = 0.7;
+const FIELD_LABELS = {
+  invoice_number: "Số hóa đơn", vendor: "Nhà cung cấp", issue_date: "Ngày lập",
+  due_date: "Ngày đến hạn", total: "Tổng", tax: "Thuế", currency: "Tiền tệ",
+};
 const PAGE_SIZE = 8;
 
 const fmt = new Intl.NumberFormat("vi-VN");
@@ -45,11 +52,32 @@ export default function Invoices({ user, onLogout }) {
     billing: true,
     security: true,
   });
+  const [pendingTx, setPendingTx] = useState([]);
+
+  // Review panel: invoice được chọn để sửa field
+  const [reviewInvoice, setReviewInvoice] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   const showErr = useCallback((e) => {
     setError(e.message || "Lỗi không xác định");
   }, []);
   const clearMsg = useCallback(() => setMsg(null), []);
+
+  // Giao dịch ngân hàng/ví chưa có hóa đơn (widget phụ — fail thì im lặng)
+  const loadPendingTx = useCallback(() => {
+    api("/payments/transactions?status=pending_receipt")
+      .then(setPendingTx)
+      .catch(() => setPendingTx([]));
+  }, []);
+
+  const dismissTx = async (id) => {
+    try {
+      await api(`/payments/transactions/${id}/dismiss`, { method: "POST" });
+      setPendingTx((prev) => prev.filter((t) => t.id !== id));
+    } catch (e) {
+      showErr(e);
+    }
+  };
 
   // Demo data for settings
   const [teamMembers] = useState([
@@ -90,6 +118,7 @@ export default function Invoices({ user, onLogout }) {
       });
       setInvoices((prev) => [...prev, ...(data.invoices || [])]);
       setMsg({ ok: true, text: `Đã upload ${data.invoices?.length || 1} hóa đơn` });
+      loadPendingTx(); // upload có thể đã ghép xong 1 giao dịch đang chờ
     } catch (e) {
       showErr(e);
     } finally {
@@ -100,12 +129,44 @@ export default function Invoices({ user, onLogout }) {
   useEffect(() => {
     let active = true;
     setLoading(true);
-    api("/invoices/")
+    api("/invoices")
       .then((data) => { if (active) setInvoices(data); })
       .catch((e) => { if (active) showErr(e); })
       .finally(() => { if (active) setLoading(false); });
+    loadPendingTx();
     return () => { active = false; };
-  }, [showErr]);
+  }, [showErr, loadPendingTx]);
+
+  // Field máy đọc không chắc: confidence dưới ngưỡng, hoặc chưa trích được (0)
+  const needsReview = (inv) =>
+    ["vendor", "issue_date", "total"].some(
+      (k) => (inv.provenance?.[k]?.confidence ?? 0) < CONF_WARN
+    );
+
+  const saveReview = async (e) => {
+    e.preventDefault();
+    if (!reviewInvoice) return;
+    const body = {};
+    for (const k of Object.keys(FIELD_LABELS)) {
+      const v = reviewInvoice[k];
+      if (v === "" || v === null || v === undefined) continue;
+      body[k] = k === "total" || k === "tax" ? Number(v) : v;
+    }
+    setSaving(true);
+    try {
+      const updated = await api(`/invoices/${reviewInvoice.id}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      setInvoices((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      setReviewInvoice(null);
+      setMsg({ ok: true, text: "Đã lưu chỉnh sửa — dùng làm mẫu đánh giá độ chính xác" });
+    } catch (err) {
+      showErr(err);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   useEffect(() => {
     const handler = () => { setError(null); };
@@ -267,6 +328,36 @@ export default function Invoices({ user, onLogout }) {
               </div>
             </section>
 
+            {/* Giao dịch ngân hàng/ví chưa có hóa đơn */}
+            {pendingTx.length > 0 && (
+              <section className="card" aria-label="Giao dịch chờ hóa đơn">
+                <h2>Giao dịch chờ hóa đơn ({pendingTx.length})</h2>
+                <p className="muted">Tiền đã bị trừ nhưng chưa có bill — upload ảnh hóa đơn để đối soát, hoặc bỏ qua.</p>
+                <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+                  {pendingTx.map((t) => (
+                    <li
+                      key={t.id}
+                      style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        gap: 12, padding: "10px 0", borderTop: "1px solid var(--border)",
+                      }}
+                    >
+                      <div>
+                        <strong>{money(t.currency, t.amount)}</strong>
+                        <span className="muted">
+                          {" · "}{t.merchant || t.source}
+                          {t.occurred_at ? ` · ${t.occurred_at.slice(0, 10)}` : ""}
+                        </span>
+                      </div>
+                      <button className="btn-ghost" onClick={() => dismissTx(t.id)}>
+                        Bỏ qua
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
             {/* Filters */}
             <div className="filters" role="group" aria-label="Bộ lọc trạng thái hóa đơn">
               {[{ l: "Tất cả", v: "" }, { l: "Chưa thanh toán", v: "unpaid" }, { l: "Đã thanh toán", v: "paid" }, { l: "Quá hạn", v: "overdue" }].map((c) => (
@@ -321,7 +412,12 @@ export default function Invoices({ user, onLogout }) {
                       <tbody>
                         {pagedRows.map((i, idx) => (
                           <tr key={i.id} aria-rowindex={idx + 1}>
-                            <td>{i.invoice_number}</td>
+                            <td>
+                              {needsReview(i) && (
+                                <span className="dot-warn" title="Có field máy đọc không chắc — bấm Xem để sửa" />
+                              )}
+                              {i.invoice_number}
+                            </td>
                             <td>{i.vendor || "-"}</td>
                             <td>{i.issue_date || i.created_at?.slice(0, 10) || "-"}</td>
                             <td>{money(i.currency, i.total)}</td>
@@ -331,7 +427,13 @@ export default function Invoices({ user, onLogout }) {
                               </span>
                             </td>
                             <td className="col-actions">
-                              <button className="btn-ghost" aria-label={`Xem chi tiết hóa đơn ${i.invoice_number}`}>Xem</button>
+                              <button
+                                className="btn-ghost"
+                                aria-label={`Xem chi tiết hóa đơn ${i.invoice_number}`}
+                                onClick={() => setReviewInvoice({ ...i })}
+                              >
+                                Xem
+                              </button>
                             </td>
                           </tr>
                         ))}
@@ -363,6 +465,53 @@ export default function Invoices({ user, onLogout }) {
               )}
             </section>
           </>
+        )}
+
+        {/* Modal review — sửa field máy đọc không chắc */}
+        {reviewInvoice && (
+          <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Sửa hóa đơn">
+            <div className="modal" style={{ maxWidth: 560 }}>
+              <h2>Sửa hóa đơn {reviewInvoice.invoice_number}</h2>
+              <p className="muted" style={{ marginTop: 0 }}>
+                Ô đỏ là field máy đọc confidence &lt; {CONF_WARN} — sửa rồi lưu;
+                chỉnh sửa được dùng làm mẫu đánh giá độ chính xác.
+              </p>
+              <form onSubmit={saveReview}>
+                <div className="modal-fields">
+                  {Object.keys(FIELD_LABELS).map((k) => {
+                    const prov = reviewInvoice.provenance?.[k];
+                    const conf = prov?.confidence ?? 0;
+                    const low = conf < CONF_WARN;
+                    return (
+                      <div className="form-row" key={k}>
+                        <label>{FIELD_LABELS[k]}{prov?.source === "qr" ? " (QR)" : ""}</label>
+                        <input
+                          className={low ? "input-warn" : ""}
+                          value={reviewInvoice[k] ?? ""}
+                          onChange={(e) =>
+                            setReviewInvoice({ ...reviewInvoice, [k]: e.target.value })
+                          }
+                        />
+                        <small className="muted">
+                          {prov
+                            ? `confidence ${Math.round(conf * 100)}% · ${prov.source}`
+                            : "máy không trích được"}
+                        </small>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="modal-actions">
+                  <button type="button" className="btn-ghost" onClick={() => setReviewInvoice(null)}>
+                    Hủy
+                  </button>
+                  <button type="submit" className="btn-primary" disabled={saving}>
+                    {saving ? "Đang lưu…" : "Lưu chỉnh sửa"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
         )}
 
         {view === "Báo cáo" && (

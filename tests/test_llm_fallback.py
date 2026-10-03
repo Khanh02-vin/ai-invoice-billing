@@ -108,3 +108,33 @@ def test_primary_mode_overrides_regex_wrong_total(monkeypatch):
             "GST @6% INCLUDED IN TOTAL RM 1.58\n")
     inv = extract_from_text(text, llm=MockProvider('{"total": 28.0}'))
     assert inv.total == 28.0
+
+
+def test_threshold_env_override(monkeypatch):
+    """Env LLM_CALL_THRESHOLD override ngưỡng gọi LLM; giá trị rác → về default."""
+    from src.extract.extractor import _llm_threshold
+    assert _llm_threshold() == 0.7  # default đã calibrate trên SROIE
+    monkeypatch.setenv("LLM_CALL_THRESHOLD", "0.95")
+    assert _llm_threshold() == 0.95
+    monkeypatch.setenv("LLM_CALL_THRESHOLD", "not-a-float")
+    assert _llm_threshold() == 0.7
+
+
+def test_llm_called_only_below_threshold(monkeypatch):
+    """LLM chỉ gọi khi confidence < ngưỡng (không tốn token khi regex đọc đủ)."""
+    calls = {"n": 0}
+
+    class Counter:
+        def complete(self, s, u):
+            calls["n"] += 1
+            return '{"total": 100.0}'
+
+    good = ("Invoice No: INV-1\nVendor: Acme\nInvoice Date: 2024-06-15\n"
+            "Tax: 5.0\nTotal: 100.00\nCurrency: USD\nDue Date: 2024-07-15\n")
+    extract_from_text(good, llm=Counter())
+    assert calls["n"] == 0  # confidence cao → không gọi
+
+    monkeypatch.setenv("LLM_CALL_THRESHOLD", "1.1")  # > 1.0 → luôn gọi
+    calls["n"] = 0
+    extract_from_text(good, llm=Counter())
+    assert calls["n"] == 1  # ngưỡng cao hơn confidence → gọi

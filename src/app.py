@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Response
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Response, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
@@ -20,10 +20,10 @@ from fastapi.staticfiles import StaticFiles
 from .config import get_settings
 from .domain.models import (
     Invoice, InvoiceCreate, InvoiceUpdate, MonthlyReport, InvoiceStatus,
-    User, UserCreate, UserPublic, Token,
+    User, UserCreate, UserPublic, Token, FieldCorrection,
 )
 from .extract.extractor import extract_invoice
-from .store.repository import InvoiceRepository
+from .store.repository import InvoiceRepository, DuplicateInvoiceError
 from .store.users import UserRepository
 from .auth.security import hash_password, verify_password, create_token, decode_token, create_refresh_token as create_refresh_jwt
 from .errors import register_error_handlers, AppError
@@ -35,8 +35,10 @@ from .store.storage import LocalFileStorage, generate_storage_key, compute_finge
 from .routers.orgs import router as orgs_router
 from .routers.search import router as search_router
 from .routers.billing import router as billing_router
-from .routers.auth_ext import router as auth_ext_router
+from .routers.auth_ext import router as auth_ext_router, send_verification_email
+from .routers.payments import router as payments_router
 from .observability import metrics as obs_metrics
+from .security.idempotency import InMemoryCache, compute_content_hash, generate_idempotency_key
 
 settings = get_settings()
 settings.ensure_production_readiness()
@@ -57,18 +59,41 @@ app.include_router(orgs_router)
 app.include_router(search_router)
 app.include_router(billing_router)
 app.include_router(auth_ext_router)
+app.include_router(payments_router)
+
+# --- IMAP poller (tùy chọn): đọc email báo giao dịch bank/ví -> /payments/ingest ---
+# Chỉ chạy khi cấu hình IMAP_HOST + IMAP_USER; app vẫn boot bình thường khi thiếu.
+from .payments.imap_poller import ImapPoller
+
+_imap_poller = ImapPoller()
+
+
+@app.on_event("startup")
+async def _start_imap_poller():
+    _imap_poller.start()
+
+
+@app.on_event("shutdown")
+async def _stop_imap_poller():
+    _imap_poller.stop()
 
 # --- Observability (Phase 4) ---
 @app.get("/metrics")
 async def metrics_endpoint():
     return obs_metrics.metrics_response()
 
-repo = InvoiceRepository()
-users = UserRepository()
+repo = InvoiceRepository(settings.database_path)
+users = UserRepository(settings.database_path)
 bearer = HTTPBearer(auto_error=False)
+
+# Giao dịch ngân hàng/ví — chờ ghép với hóa đơn
+from .store.transactions import TransactionRepository
+from .payments.service import match_invoice_saved
+tx_repo = TransactionRepository(settings.database_path)
 
 # --- Storage ---
 storage = LocalFileStorage(settings.storage_dir)
+_upload_idempotency = InMemoryCache()
 
 
 def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> User:
@@ -121,18 +146,31 @@ async def ready():
 # Mở bằng env OPEN_REGISTRATION=1 khi cần tạo tài khoản mới.
 
 @app.post("/auth/register", response_model=Token)
-async def register(data: UserCreate):
+async def register(data: UserCreate, request: Request):
     # Đọc settings tại request time để test monkeypatch có hiệu lực
     _settings = get_settings()
     if not _settings.open_registration:
         raise AppError("REGISTRATION_CLOSED", "Đng ký đang tắt.", status=403)
     if users.get_by_username(data.username):
         raise AppError("USERNAME_EXISTS", "Tên người dùng đã tồn tại.", status=409)
-    user = users.create(data.username, hash_password(data.password))
+    if data.email and "@" not in data.email:
+        raise AppError("INVALID_EMAIL", "Email không hợp lệ.", status=400)
+    user = users.create(data.username, hash_password(data.password), email=data.email or "")
     jti = secrets.token_urlsafe(24)
     refresh_token = create_refresh_jwt(user.id, jti)
     users.store_refresh_token(jti, user.id, (datetime.now(timezone.utc) + timedelta(days=30)).isoformat())
-    return {"access_token": create_token(user.id), "refresh_token": refresh_token}
+    # Gửi email xác minh ngay (best-effort): SMTP chưa cấu hình hoặc user không có
+    # email -> verification_sent=False; user gọi /auth/resend-verification sau khi
+    # quản trị viên cấu hình SMTP.
+    verification_sent = False
+    if user.email:
+        base_url = _settings.app_url or str(request.base_url).rstrip("/")
+        verification_sent = send_verification_email(user, users, base_url=base_url)
+    return {
+        "access_token": create_token(user.id),
+        "refresh_token": refresh_token,
+        "verification_sent": verification_sent,
+    }
 
 
 @app.post("/auth/login", response_model=Token)
@@ -150,7 +188,7 @@ async def login(data: UserCreate):
 
 @app.get("/auth/me", response_model=UserPublic)
 async def me(user: User = Depends(current_user)):
-    return UserPublic(id=user.id, username=user.username)
+    return UserPublic(id=user.id, username=user.username, email=user.email)
 
 
 # ---------- Invoices ----------
@@ -178,7 +216,17 @@ async def get_invoice(invoice_id: str, user: User = Depends(current_user)):
 
 @app.post("/invoices", response_model=Invoice)
 async def create_invoice(data: InvoiceCreate, user: User = Depends(current_user)):
-    invoice = repo.create(data, user_id=user.id)
+    try:
+        invoice = repo.create(data, user_id=user.id)
+    except DuplicateInvoiceError as e:
+        raise AppError(
+            "DUPLICATE_INVOICE",
+            f"Hóa đơn số {e.invoice_number} đã tồn tại.",
+            status=409,
+            details={"existing_id": e.existing_id},
+        )
+    # Giao dịch đã đến trước? Ghép ngay nếu số tiền khớp
+    match_invoice_saved(tx_repo, repo, invoice)
     return invoice
 
 
@@ -204,14 +252,59 @@ async def delete_invoice(invoice_id: str, user: User = Depends(current_user)):
     return {"deleted": True}
 
 
+# ---------- Review: user sửa field máy đọc sai → data eval ----------
+@app.get("/invoices/{invoice_id}/corrections", response_model=List[FieldCorrection])
+async def list_corrections(invoice_id: str, user: User = Depends(current_user)):
+    """Lịch sử sửa field của 1 hóa đơn (old→new + provenance lúc máy đọc)."""
+    invoice = repo.get(invoice_id, user_id=user.id)
+    if not invoice:
+        raise AppError("NOT_FOUND", "Không tìm thấy hóa đơn.", status=404)
+    return [FieldCorrection(**c) for c in invoice.review_history]
+
+
+@app.get("/eval/corrections", response_model=List[FieldCorrection])
+async def export_corrections(limit: int = 500, user: User = Depends(current_user)):
+    """Export toàn bộ corrections của user — data eval cho benchmark.
+
+    Mỗi dòng: field, old_value (máy đọc), new_value (user sửa = ground truth),
+    confidence/source lúc máy đọc → đo được ngưỡng nào là đáng ngờ.
+    """
+    out: List[FieldCorrection] = []
+    for inv in repo.list(user_id=user.id, limit=1000):
+        for c in inv.review_history:
+            out.append(FieldCorrection(
+                invoice_id=inv.id,
+                field=c.get("field", ""),
+                old_value=c.get("old_value"),
+                new_value=c.get("new_value"),
+                confidence=c.get("confidence"),
+                source=c.get("source"),
+                corrected_by=c.get("corrected_by", ""),
+                corrected_at=c.get("corrected_at", ""),
+            ))
+    out.sort(key=lambda c: c.corrected_at or "", reverse=True)
+    return out[:max(1, min(limit, 5000))]
+
+
 # ---------- Upload + Extraction ----------
 @app.post("/upload", response_model=Invoice)
 async def upload_invoice(
     file: UploadFile = File(...),
+    request: Request = None,
     user: User = Depends(current_user),
 ):
     """Upload file hóa đơn → validate → trích xuất → lưu."""
     content = await file.read()
+
+    # Idempotency: explicit key is preferred; content-derived fallback protects retries.
+    idem_key = request.headers.get("Idempotency-Key") if request else None
+    if not idem_key:
+        idem_key = generate_idempotency_key(
+            user.id, file.filename or "upload", len(content), compute_content_hash(content)
+        )
+    cached = _upload_idempotency.get(idem_key)
+    if cached:
+        return JSONResponse(content=cached, status_code=200, headers={"X-Idempotent-Replay": "true"})
 
     # Validate upload
     validated = validate_upload(
@@ -249,7 +342,18 @@ async def upload_invoice(
     invoice.source_file = file.filename or "upload"
 
     # Lưu invoice
-    saved = repo.upsert(invoice)
+    try:
+        saved = repo.upsert(invoice)
+    except DuplicateInvoiceError as e:
+        raise AppError(
+            "DUPLICATE_INVOICE",
+            f"Hóa đơn số {e.invoice_number} đã tồn tại.",
+            status=409,
+            details={"existing_id": e.existing_id},
+        )
+    # Giao dịch đã đến trước? Ghép ngay nếu số tiền khớp
+    match_invoice_saved(tx_repo, repo, saved)
+    _upload_idempotency.set(idem_key, saved.model_dump(mode="json"))
     return saved
 
 

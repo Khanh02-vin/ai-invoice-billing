@@ -7,7 +7,9 @@ export default function Login({ onLogin }) {
   const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
 
   const errorRef = useRef(null);
@@ -20,17 +22,34 @@ export default function Login({ onLogin }) {
     }
   }, [error]);
 
+  const isLogin = mode === "login";
+
   async function submit(e) {
     e.preventDefault();
     setLoading(true);
     setError("");
+    setNotice("");
     try {
-      const { access_token } = await api("/auth/" + mode, {
+      const payload = { username, password };
+      if (!isLogin && email) payload.email = email;
+      const res = await api("/auth/" + mode, {
         method: "POST",
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify(payload),
       });
-      setToken(access_token);
-      onLogin();
+      if (isLogin) {
+        setToken(res.access_token);
+        onLogin();
+        return;
+      }
+      // Đăng ký: tài khoản phải xác minh email trước khi gọi được API,
+      // nên không vào app ngay — báo user kiểm tra hộp thư.
+      setMode("login");
+      setPassword("");
+      setNotice(
+        res.verification_sent
+          ? "Tài khoản đã tạo. Kiểm tra email, bấm link xác nhận rồi quay lại đăng nhập."
+          : "Tài khoản đã tạo nhưng chưa gửi được email xác nhận (máy chủ chưa cấu hình SMTP). Liên hệ quản trị viên để kích hoạt."
+      );
     } catch (err) {
       setError(err.message);
       // Focus username field on error for better keyboard navigation
@@ -41,8 +60,6 @@ export default function Login({ onLogin }) {
       setLoading(false);
     }
   }
-
-  const isLogin = mode === "login";
 
   return (
     <div className="auth-wrap">
@@ -92,6 +109,26 @@ export default function Login({ onLogin }) {
             />
           </div>
 
+          {!isLogin && (
+            <div className="form-group">
+              <label htmlFor="login-email" id="login-email-label">
+                Email <span className="required" aria-hidden="true">*</span>
+                <span className="sr-only">(bắt buộc, để nhận link xác minh)</span>
+              </label>
+              <input
+                id="login-email"
+                type="email"
+                placeholder="ban@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                aria-required="true"
+                aria-describedby="login-email-label"
+                autoComplete="email"
+              />
+            </div>
+          )}
+
           {error && (
             <div
               id="login-error"
@@ -105,6 +142,12 @@ export default function Login({ onLogin }) {
             </div>
           )}
 
+          {notice && (
+            <div className="msg ok" role="status" aria-live="polite">
+              {notice}
+            </div>
+          )}
+
           <button type="submit" disabled={loading} aria-busy={loading}>
             {loading ? "Đang xử lý..." : isLogin ? "Đăng nhập" : "Tạo tài khoản"}
           </button>
@@ -113,7 +156,7 @@ export default function Login({ onLogin }) {
             {isLogin ? "Chưa có tài khoản? " : "Đã có tài khoản? "}
             <button
               type="button"
-              onClick={() => { setMode(isLogin ? "register" : "login"); setError(""); }}
+              onClick={() => { setMode(isLogin ? "register" : "login"); setError(""); setNotice(""); }}
               className="link-button"
               aria-label={isLogin ? "Chuyển sang chế độ đăng ký" : "Chuyển sang chế độ đăng nhập"}
             >

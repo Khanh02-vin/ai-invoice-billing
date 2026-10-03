@@ -48,9 +48,15 @@ class UserRepository(SQLiteRepo):
                 password_hash TEXT NOT NULL,
                 created_at TEXT,
                 verified INTEGER DEFAULT 0,
-                mfa_enabled INTEGER DEFAULT 0
+                mfa_enabled INTEGER DEFAULT 0,
+                email TEXT DEFAULT ''
             )
         """)
+        # Migration: thêm cột email cho DB cũ (dùng cho IMAP routing + email push)
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # cột đã có
         # MFA TOTP secrets (one per user).
         conn.execute("""
             CREATE TABLE IF NOT EXISTS mfa_secrets (
@@ -64,18 +70,20 @@ class UserRepository(SQLiteRepo):
         # Note: email_verifications, password_resets, refresh_tokens
         # are managed by RefreshTokenRepository (hashed token system).
 
-    def create(self, username: str, password_hash: str) -> User:
+    def create(self, username: str, password_hash: str, email: str = "") -> User:
         """Tạo người dùng mới. Raise ValueError nếu username đã tồn tại."""
         user = User(
             id=hashlib.md5(username.encode()).hexdigest()[:12],
             username=username,
             password_hash=password_hash,
+            email=email or "",
         )
         with self._connect() as conn:
             try:
                 conn.execute(
-                    "INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
-                    (user.id, user.username, user.password_hash, user.created_at.isoformat()),
+                    "INSERT INTO users (id, username, password_hash, created_at, email) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (user.id, user.username, user.password_hash, user.created_at.isoformat(), user.email),
                 )
             except sqlite3.IntegrityError:
                 raise ValueError("Tên người dùng đã tồn tại")
@@ -93,6 +101,12 @@ class UserRepository(SQLiteRepo):
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return self._row_to_user(row) if row else None
 
+    def list_verified(self) -> list["User"]:
+        """Danh sách user đã xác minh email — dùng cho IMAP poller gán giao dịch."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM users WHERE verified = 1").fetchall()
+        return [self._row_to_user(r) for r in rows]
+
     def _row_to_user(self, row: sqlite3.Row) -> User:
         return User(
             id=row["id"],
@@ -101,6 +115,7 @@ class UserRepository(SQLiteRepo):
             created_at=datetime.fromisoformat(row["created_at"]),
             verified=bool(row["verified"]) if "verified" in row.keys() else False,
             mfa_enabled=bool(row["mfa_enabled"]) if "mfa_enabled" in row.keys() else False,
+            email=row["email"] if "email" in row.keys() else "",
         )
 
     def hard_delete(self, user_id: str) -> bool:

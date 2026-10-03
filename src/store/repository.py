@@ -2,13 +2,68 @@
 
 Schema versioned: hỗ trợ line items, tax IDs, provenance, job status.
 Migration cho DB cũ: tự thêm cột mới nếu thiếu.
+Chống trùng: unique index (user, invoice_number) + (user, file_checksum),
+check trước mỗi insert — bản trùng cùng file gộp, cùng số khác file báo lỗi.
 """
 import json
+import logging
 import sqlite3
-from datetime import datetime
-from typing import List, Optional
-from ..domain.models import Invoice, InvoiceStatus, InvoiceUpdate, MonthlyReport, JobStatus, LineItem
+from datetime import datetime, timezone
+from typing import List, Optional, Tuple
+from ..domain.models import (Invoice, InvoiceStatus, InvoiceUpdate, MonthlyReport,
+                             JobStatus, LineItem, FieldCorrection, FieldProvenance)
 from .db import SQLiteRepo
+
+logger = logging.getLogger(__name__)
+_dup_index_warned = False
+
+# Trường user có thể sửa trong UI review (dùng để ghi correction + export eval)
+_UPDATABLE_FIELDS = {
+    "invoice_number", "vendor", "buyer", "issue_date", "due_date",
+    "total", "tax", "currency", "status",
+}
+
+
+class DuplicateInvoiceError(Exception):
+    """Trùng invoice_number trong cùng user — không ghi đè âm thầm bản cũ."""
+
+    def __init__(self, existing_id: str, invoice_number: str):
+        super().__init__(f"Invoice số {invoice_number} đã tồn tại")
+        self.existing_id = existing_id
+        self.invoice_number = invoice_number
+
+
+def _same_value(a, b) -> bool:
+    """So sánh giá trị cũ/mới — client gửi lại nguyên giá trị không tính là correction."""
+    if a is None or b is None:
+        return a is None and b is None
+    if isinstance(a, (int, float)) or isinstance(b, (int, float)):
+        try:
+            return abs(float(a) - float(b)) < 1e-9
+        except (TypeError, ValueError):
+            return False
+    return str(a).strip() == str(b).strip()
+
+
+_INSERT_INVOICE_SQL = """INSERT INTO invoices (id, invoice_number, vendor, buyer, issue_date, due_date,
+    currency, subtotal, total, tax, tax_rate, discount, amount_due, status,
+    source_file, raw_snippet, confidence, user_id, created_at,
+    schema_version, supplier_tax_id, customer_tax_id, line_items, provenance,
+    job_status, finalized_at, finalized_by, file_checksum, file_size, page_count,
+    extraction_provider, review_history)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      invoice_number=excluded.invoice_number,
+      vendor=excluded.vendor,
+      buyer=excluded.buyer,
+      total=excluded.total,
+      tax=excluded.tax,
+      discount=excluded.discount,
+      status=excluded.status,
+      job_status=excluded.job_status,
+      line_items=excluded.line_items,
+      provenance=excluded.provenance,
+      review_history=excluded.review_history"""
 
 
 class InvoiceRepository(SQLiteRepo):
@@ -86,6 +141,23 @@ class InvoiceRepository(SQLiteRepo):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_invoices_date ON invoices(issue_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_invoices_user ON invoices(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_invoices_job_status ON invoices(job_status)")
+        # Chống trùng mỗi user: 1 file, 1 số hóa đơn thật — 'unknown'/'' là số
+        # chưa trích được (mọi bill không có số đều mang) nên không được chặn.
+        for ddl in (
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_invoices_user_no "
+            "ON invoices(user_id, invoice_number) WHERE invoice_number NOT IN ('', 'unknown')",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_invoices_user_fp "
+            "ON invoices(user_id, file_checksum) WHERE file_checksum <> ''",
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.Error as exc:
+                # DB cũ đã chứa bản trùng → không chặn khởi động; upsert() vẫn
+                # check trước mỗi insert nên bản trùng mới không lọt vào.
+                global _dup_index_warned
+                if not _dup_index_warned:
+                    logger.warning("Không tạo index chống trùng: %s", exc)
+                    _dup_index_warned = True
 
     def _serialize_invoice(self, invoice: Invoice) -> tuple:
         """Serialize Invoice model -> tuple cho DB."""
@@ -158,31 +230,58 @@ class InvoiceRepository(SQLiteRepo):
         )
         return self.upsert(invoice)
 
+    def _find_duplicate(self, conn, invoice: Invoice) -> Optional[Tuple[str, bool]]:
+        """Tìm bản trùng của invoice trong cùng user.
+
+        Trả (id bản trùng, cùng_file?): cùng file (checksum) → chắc chắn cùng bill
+        → gộp; cùng invoice_number khác file → mâu thuẫn, để caller báo lỗi.
+        """
+        if invoice.file_checksum:
+            row = conn.execute(
+                "SELECT id FROM invoices WHERE user_id = ? AND file_checksum = ? AND id <> ? LIMIT 1",
+                (invoice.user_id, invoice.file_checksum, invoice.id),
+            ).fetchone()
+            if row:
+                return row["id"], True
+        if invoice.invoice_number not in ("", "unknown"):
+            row = conn.execute(
+                "SELECT id FROM invoices WHERE user_id = ? AND invoice_number = ? AND id <> ? LIMIT 1",
+                (invoice.user_id, invoice.invoice_number, invoice.id),
+            ).fetchone()
+            if row:
+                return row["id"], False
+        return None
+
     def upsert(self, invoice: Invoice) -> Invoice:
-        """Lưu hóa đơn (thêm mới hoặc cập nhật theo id)."""
+        """Lưu hóa đơn (thêm mới hoặc cập nhật theo id).
+
+        Chống trùng khi TẠO mới: cùng file → gộp vào bản cũ (trả id cũ);
+        cùng invoice_number khác file → DuplicateInvoiceError (409 ở API).
+        """
+        if not invoice.id:
+            import uuid
+            invoice.id = str(uuid.uuid4())
         with self._connect() as conn:
-            conn.execute(
-                """INSERT INTO invoices (id, invoice_number, vendor, buyer, issue_date, due_date,
-                   currency, subtotal, total, tax, tax_rate, discount, amount_due, status,
-                   source_file, raw_snippet, confidence, user_id, created_at,
-                   schema_version, supplier_tax_id, customer_tax_id, line_items, provenance,
-                   job_status, finalized_at, finalized_by, file_checksum, file_size, page_count,
-                   extraction_provider, review_history)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                     invoice_number=excluded.invoice_number,
-                     vendor=excluded.vendor,
-                     buyer=excluded.buyer,
-                     total=excluded.total,
-                     tax=excluded.tax,
-                     discount=excluded.discount,
-                     status=excluded.status,
-                     job_status=excluded.job_status,
-                     line_items=excluded.line_items,
-                     provenance=excluded.provenance,
-                     review_history=excluded.review_history""",
-                self._serialize_invoice(invoice),
-            )
+            is_new = not conn.execute(
+                "SELECT 1 FROM invoices WHERE id = ?", (invoice.id,)
+            ).fetchone()
+            if is_new:
+                dup = self._find_duplicate(conn, invoice)
+                if dup and not dup[1]:
+                    raise DuplicateInvoiceError(dup[0], invoice.invoice_number)
+                if dup:
+                    invoice.id = dup[0]
+            try:
+                conn.execute(_INSERT_INVOICE_SQL, self._serialize_invoice(invoice))
+            except sqlite3.IntegrityError:
+                # Hai request trùng lọt qua check cùng lúc → check lại lần nữa
+                conn.rollback()
+                dup = self._find_duplicate(conn, invoice)
+                if dup and not dup[1]:
+                    raise DuplicateInvoiceError(dup[0], invoice.invoice_number)
+                if dup:
+                    invoice.id = dup[0]
+                conn.execute(_INSERT_INVOICE_SQL, self._serialize_invoice(invoice))
         return invoice
 
     def get(self, invoice_id: str, user_id: str = "") -> Optional[Invoice]:
@@ -207,16 +306,48 @@ class InvoiceRepository(SQLiteRepo):
         return [self._row_to_invoice(r) for r in rows]
 
     def update(self, invoice_id: str, data: InvoiceUpdate, user_id: str = "") -> Optional[Invoice]:
-        """Cập nhật hóa đơn."""
+        """Cập nhật hóa đơn — field user sửa được ghi lại thành correction (audit/eval).
+
+        Mỗi thay đổi thật (giá trị khác cũ) ghi 1 dòng review_history: old → new +
+        confidence/source lúc máy đọc (để biết ngưỡng nào là đáng ngờ), và đổi
+        provenance field đó thành manual. Chỉ gửi lại giá trị cũ → không ghi gì.
+        """
         invoice = self.get(invoice_id, user_id=user_id)
         if not invoice:
             return None
-        if data.status is not None:
-            invoice.status = data.status
-        if data.total is not None:
-            invoice.total = data.total
-        if data.vendor is not None:
-            invoice.vendor = data.vendor
+        corrections: List[FieldCorrection] = []
+        for field, value in data.model_dump(exclude_unset=True).items():
+            if value is None or field not in _UPDATABLE_FIELDS:
+                continue
+            col = field
+            old = getattr(invoice, col)
+            if isinstance(value, str) and col == "status":
+                value = InvoiceStatus(value)
+            # chỉ ghi correction khi giá trị thực sự đổi (tránh rác cho benchmark)
+            if _same_value(old, value):
+                continue
+            setattr(invoice, col, value)
+            if field != "status":
+                prov = invoice.provenance.get(field)
+                corrections.append(FieldCorrection(
+                    invoice_id=invoice.id,
+                    field=field,
+                    old_value=old,
+                    new_value=value,
+                    confidence=prov.confidence if prov else None,
+                    source=prov.source if prov else None,
+                    corrected_by=user_id,
+                    corrected_at=datetime.now(timezone.utc).isoformat(),
+                ))
+                # User đã sửa → field này đã review: provenance manual, chắc chắn
+                invoice.provenance[field] = FieldProvenance(
+                    value=value, confidence=1.0, source="manual",
+                    evidence=f"user-corrected (was {old!r})",
+                )
+        if corrections:
+            invoice.review_history = (invoice.review_history or []) + [
+                c.model_dump() for c in corrections
+            ]
         return self.upsert(invoice)
 
     def delete(self, invoice_id: str, user_id: str = "") -> bool:

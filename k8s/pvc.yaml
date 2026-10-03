@@ -1,0 +1,18 @@
+# PersistentVolumeClaim for SQLite database and file storage
+# This ensures data survives pod restarts/crashes
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: invoice-data-pvc
+  namespace: invoice-billing
+  labels:
+    app: ai-invoice-billing
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce  # SQLite only supports single-writer
+  resources:
+    requests:
+      storage: 10Gi
+  # Use standard storage class (GKE, EKS, AKS all have default)
+  storageClassName: standard-rwo

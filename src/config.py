@@ -52,10 +52,31 @@ class Settings:
     smtp_pass: str = field(default_factory=lambda: os.getenv("EMAIL_SMTP_PASS", ""))
     email_from: str = field(default_factory=lambda: os.getenv("EMAIL_FROM", ""))
 
+    # Base URL công khai của API, dùng dựng link trong email (xác minh / reset).
+    # Bỏ trống -> lấy request.base_url (đúng khi request tới thẳng API, nhưng sau
+    # reverse proxy phải set tường minh, VD http://127.0.0.1:8000).
+    app_url: str = field(default_factory=lambda: os.getenv("APP_URL", ""))
+
     @property
     def email_enabled(self) -> bool:
         """Email transport is considered enabled when SMTP host is configured."""
         return bool(self.smtp_host and self.smtp_port)
+
+    # IMAP poller — đọc email thông báo giao dịch ngân hàng/ví -> /payments/ingest
+    imap_host: str = field(default_factory=lambda: os.getenv("IMAP_HOST", ""))
+    imap_port: int = field(default_factory=lambda: int(os.getenv("IMAP_PORT", "993")))
+    imap_user: str = field(default_factory=lambda: os.getenv("IMAP_USER", ""))
+    imap_pass: str = field(default_factory=lambda: os.getenv("IMAP_PASS", ""))
+    imap_folder: str = field(default_factory=lambda: os.getenv("IMAP_FOLDER", "INBOX"))
+    imap_interval_seconds: int = field(default_factory=lambda: int(os.getenv("IMAP_INTERVAL_SECONDS", "60")))
+    # Gắn email -> user (VD "linh@gmail.com,user1"); rỗng: mọi email gán cho
+    # mọi user verified (chỉ dùng khi inbox là của chính người dùng).
+    imap_user_map: str = field(default_factory=lambda: os.getenv("IMAP_USER_MAP", ""))
+
+    @property
+    def imap_enabled(self) -> bool:
+        """IMAP poller bật khi có host + user."""
+        return bool(self.imap_host and self.imap_user)
 
     # Billing
     billing_provider: str = field(default_factory=lambda: os.getenv("BILLING_PROVIDER", "mock"))
