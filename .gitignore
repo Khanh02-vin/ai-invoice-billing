@@ -8,6 +8,7 @@ venv/
 # Env & secrets
 .env
 *.env
+vapid_*.pem
 
 # DB & data
 *.db

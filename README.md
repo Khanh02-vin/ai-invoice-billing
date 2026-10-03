@@ -19,6 +19,7 @@
 - ⚛️ **UI React** — SPA hiện đại, build bằng Vite
 - 🎨 **Design system** — tokens tập trung trong `design.md` + `frontend/src/styles.css` (`:root`), dark theme
 - 🔔 **Nhắc chụp hóa đơn** — đẩy text thông báo giao dịch (SMS ngân hàng/MoMo/ZaloPay/email) vào `POST /payments/ingest` → parser đọc số tiền, tự ghép hóa đơn cùng số tiền (đánh dấu PAID); chưa có bill thì hiện card "Giao dịch chờ hóa đơn" trên Dashboard + gửi email nhắc (cấu hình `EMAIL_SMTP_*`). Tùy chọn: `IMAP_*` để poller nền tự đọc email báo giao dịch từ inbox mỗi 60s, tự gán user theo cột `users.email` hoặc `IMAP_USER_MAP`; email lỗi giữ nguyên UNSEEN để chu kỳ sau đọc lại
+- 📱 **PWA + push notification** — cài UI lên màn hình chính điện thoại (manifest + service worker), nhận thông báo native trên màn hình khóa khi có giao dịch chờ hóa đơn (Web Push, `VAPID_*`; xem [Thông báo đẩy](#thông-báo-đẩy-trên-điện-thoại-pwa))
 - 🖼️ **Mockup tham khảo** — `mockup/invoice-dashboard.html` (generate bằng open-design, model qwen3-coder-next)
 
 ## Giao diện
@@ -138,14 +139,52 @@ Hoặc gọi thẳng `POST /auth/verify-email` với `token` nếu nhận đư�
 
 > Email không bắt buộc — nếu không cấu hình SMTP, register trả về
 > `verification_sent: false`; admin có thể verify tay trong DB
-> (`UPDATE users SET verified=1 WHERE username='...`) để demo.
+> (`UPDATE users SET verified=1 WHERE username='...'`) để demo.
 
+## Thông báo đẩy trên điện thoại (PWA)
+
+UI là PWA: "Thêm vào màn hình chính" là dùng như app, và khi bật thông báo
+thì có **push native trên màn hình khóa** mỗi khi có giao dịch chờ chụp hóa đơn
+(cùng lúc với email nhắc). Server gửi qua Web Push chuẩn (VAPID).
+
+**1. Sinh VAPID key + điền `.env`:**
+
+```bash
+python3 scripts/gen_vapid_keys.py     # in ra 3 dòng, dán vào .env
+# VAPID_PUBLIC_KEY=BNVB...
+# VAPID_PRIVATE_KEY=./vapid_private.pem   (file PEM, đã gitignore — không commit)
+# VAPID_SUBJECT=mailto:ban@example.com
+```
+
+Restart backend. Không cấu hình VAPID → app vẫn chạy, chỉ không gửi push được
+(nút "Bật thông báo đẩy" sẽ báo lỗi rõ ràng).
+
+**2. Điều kiện bắt buộc — HTTPS:**
+Service worker + push chỉ hoạt động trên `https://` hoặc `http://localhost`.
+Mở app qua IP LAN kiểu `http://192.168.x.x:5173` sẽ **không** bật được push.
+Cách nhanh không cần cấu hình gì thêm: cài [Tailscale](https://tailscale.com)
+trên laptop + điện thoại rồi chạy `tailscale serve --bg 5173` (hoặc Caddy/Nginx
+nếu deploy VPS) — điện thoại mở URL `https://<máy>.<tailnet>.ts.net`.
+
+**3. Trên điện thoại:**
+- **Android (Chrome):** mở URL HTTPS → menu ⋮ → *Thêm vào màn hình chính* →
+  mở từ icon → *Cài đặt* → **Bật thông báo đẩy** → cho phép quyền thông báo.
+- **iPhone (iOS 16.4+):** bắt buộc *Safari → Chia sẻ → Thêm vào màn hình chính*,
+  mở từ icon rồi mới bật được (Safari thường không có Web Push).
+- Bấm **Gửi thử** để kiểm tra ngay — nếu thấy thông báo hiện trên màn hình khóa
+  là xong. Lúc có giao dịch chưa ghép hóa đơn, server tự đẩy cùng nội dung với
+  email nhắc (`[Nhắc] Chụp hóa đơn cho giao dịch 350,000 VND`).
+
+Vận hành: subscription của thiết bị lưu trong bảng `push_subscriptions`;
+thiết bị gỡ app / hết hạn (push service trả 404/410) tự bị xoá khỏi DB.
+
+## Tests
 
 ```bash
 pytest tests/ -v
 ```
 
-184 tests: trích xuất (Anh + GTGT Việt), OCR, layout-aware total (chọn theo bbox: số dưới "Tổng cộng", phân biệt SUB-TOTAL vs TOTAL), parse số đa locale (comma/dot-thousands chọn quy ước theo ngữ cảnh receipt), chống trùng invoice (upload cùng file → gộp, cùng số hóa đơn → 409), line items (bắt bảng Mã SP/SL/Đơn giá/Thành tiền, SL×Đơn giá≈Thành tiền lọc rác), QR hóa đơn điện tử (decode ảnh/PDF → đối chiếu total/vendor: khớp tăng confidence, OCR sai QR sửa), provenance theo từng field (confidence + source) + UI review tô đỏ field confidence thấp để user sửa nhanh, chỉnh sửa ghi review_history + export `GET /eval/corrections` làm data eval, calibrate ngưỡng gọi LLM bằng script `scripts/calibrate_llm_threshold.py` (`LLM_CALL_THRESHOLD` env, default 0.7 = knee đo trên SROIE 987 receipt thật), batch extract (đúng signature `mime_type`, cách ly lỗi từng file), nhiều mức thuế, chiết khấu, CRUD, auth JWT, cách ly đa user, LLM fallback + grounding chống hallucinate, regression trên receipt thật, payments (parse SMS bank/MoMo + auto-match 2 chiều), IMAP poller + email push, PDF scan fallback OCR.
+198 tests: trích xuất (Anh + GTGT Việt), OCR, layout-aware total (chọn theo bbox: số dưới "Tổng cộng", phân biệt SUB-TOTAL vs TOTAL), parse số đa locale (comma/dot-thousands chọn quy ước theo ngữ cảnh receipt), chống trùng invoice (upload cùng file → gộp, cùng số hóa đơn → 409), line items (bắt bảng Mã SP/SL/Đơn giá/Thành tiền, SL×Đơn giá≈Thành tiền lọc rác), QR hóa đơn điện tử (decode ảnh/PDF → đối chiếu total/vendor: khớp tăng confidence, OCR sai QR sửa), provenance theo từng field (confidence + source) + UI review tô đỏ field confidence thấp để user sửa nhanh, chỉnh sửa ghi review_history + export `GET /eval/corrections` làm data eval, calibrate ngưỡng gọi LLM bằng script `scripts/calibrate_llm_threshold.py` (`LLM_CALL_THRESHOLD` env, default 0.7 = knee đo trên SROIE 987 receipt thật), batch extract (đúng signature `mime_type`, cách ly lỗi từng file), nhiều mức thuế, chiết khấu, CRUD, auth JWT, cách ly đa user, LLM fallback + grounding chống hallucinate, regression trên receipt thật, payments (parse SMS bank/MoMo + auto-match 2 chiều), IMAP poller + email push + web push (subscribe/unsubscribe, gửi khi pending, dọn subscription 410), PDF scan fallback OCR.
 
 ## Phạm vi milestone Phase 0+1
 

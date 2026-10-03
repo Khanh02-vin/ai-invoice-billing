@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { api, clearToken } from "./api";
 import LineSidebar from "./components/react-bits/LineSidebar.jsx";
 import { CountUp, Sparkline } from "./components/mini";
+import { pushSupported, pushStatus, enablePush, disablePush, sendTestPush } from "./push.js";
 
 const STATUS_LABEL = {
   unpaid: "Chưa thanh toán",
@@ -51,8 +52,42 @@ export default function Invoices({ user, onLogout }) {
     team: true,
     billing: true,
     security: true,
+    notifications: true,
   });
   const [pendingTx, setPendingTx] = useState([]);
+
+  // Push notification (PWA) — trạng thái thiết bị hiện tại
+  const [pushState, setPushState] = useState(pushSupported() ? "off" : "unsupported");
+  const [pushBusy, setPushBusy] = useState(false);
+
+  useEffect(() => {
+    pushStatus().then(setPushState).catch(() => {});
+  }, []);
+
+  const togglePush = async () => {
+    setPushBusy(true);
+    try {
+      const next = pushState === "on" ? await disablePush() : await enablePush();
+      setPushState(next);
+      setMsg({ ok: true, text: next === "on" ? "Đã bật thông báo đẩy trên thiết bị này." : "Đã tắt thông báo đẩy." });
+    } catch (e) {
+      showErr(e);
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  const testPush = async () => {
+    setPushBusy(true);
+    try {
+      const { sent } = await sendTestPush();
+      setMsg({ ok: true, text: sent > 0 ? `Đã gửi thông báo thử tới ${sent} thiết bị.` : "Chưa có thiết bị nào nhận — hãy bấm Bật thông báo trước." });
+    } catch (e) {
+      showErr(e);
+    } finally {
+      setPushBusy(false);
+    }
+  };
 
   // Review panel: invoice được chọn để sửa field
   const [reviewInvoice, setReviewInvoice] = useState(null);
@@ -679,6 +714,51 @@ export default function Invoices({ user, onLogout }) {
                     <button className="btn-ghost" aria-label="Thay đổi mật khẩu tài khoản">
                       Thay đổi mật khẩu
                     </button>
+                  </div>
+                )}
+              </section>
+
+              <section className="card settings-card" aria-labelledby="settings-notifications-heading">
+                <button
+                  className="settings-header"
+                  onClick={() => toggleSection("notifications")}
+                  aria-expanded={settingsSections.notifications}
+                  aria-controls="settings-notifications-content"
+                  id="settings-notifications-heading"
+                >
+                  <span className="settings-icon" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+                      <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+                    </svg>
+                  </span>
+                  <h2>Thông báo</h2>
+                  <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
+                </button>
+                {settingsSections.notifications && (
+                  <div id="settings-notifications-content" role="region" aria-labelledby="settings-notifications-heading">
+                    <p className="muted">Nhận thông báo ngay trên màn hình khóa khi có giao dịch chờ hóa đơn (PWA native push).</p>
+                    {pushState === "unsupported" && (
+                      <p className="muted">
+                        Thiết bị/trình duyệt chưa hỗ trợ push. Trên điện thoại: mở app qua HTTPS, iPhone cần
+                        "Thêm vào màn hình chính" (iOS 16.4+) rồi mở từ icon — xem README.
+                      </p>
+                    )}
+                    {pushState === "blocked" && (
+                      <p className="muted">
+                        Quyền thông báo đang bị chặn — vào cài đặt trình duyệt để cho phép, rồi thử lại.
+                      </p>
+                    )}
+                    {pushState !== "unsupported" && (
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button className="btn-ghost" onClick={togglePush} disabled={pushBusy}>
+                          {pushState === "on" ? "🔕 Tắt thông báo đẩy" : "🔔 Bật thông báo đẩy (mobile)"}
+                        </button>
+                        {pushState === "on" && (
+                          <button className="btn-ghost" onClick={testPush} disabled={pushBusy}>Gửi thử</button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </section>

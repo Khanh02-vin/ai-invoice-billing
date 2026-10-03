@@ -23,6 +23,8 @@ openai>=1.0
 celery>=5.3
 redis>=5.0
 reportlab
+# Web Push — thông báo native PWA (tùy chọn: thiếu lib vẫn chạy, chỉ mất push)
+pywebpush>=2.0
 
 # Standalone AI extraction package
 -e ./ai-engine

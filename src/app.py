@@ -37,6 +37,7 @@ from .routers.search import router as search_router
 from .routers.billing import router as billing_router
 from .routers.auth_ext import router as auth_ext_router, send_verification_email
 from .routers.payments import router as payments_router
+from .routers.push import router as push_router
 from .observability import metrics as obs_metrics
 from .security.idempotency import InMemoryCache, compute_content_hash, generate_idempotency_key
 
@@ -60,6 +61,7 @@ app.include_router(search_router)
 app.include_router(billing_router)
 app.include_router(auth_ext_router)
 app.include_router(payments_router)
+app.include_router(push_router)
 
 # --- IMAP poller (tùy chọn): đọc email báo giao dịch bank/ví -> /payments/ingest ---
 # Chỉ chạy khi cấu hình IMAP_HOST + IMAP_USER; app vẫn boot bình thường khi thiếu.
@@ -88,8 +90,12 @@ bearer = HTTPBearer(auto_error=False)
 
 # Giao dịch ngân hàng/ví — chờ ghép với hóa đơn
 from .store.transactions import TransactionRepository
+from .store.push import PushSubscriptionRepository
 from .payments.service import match_invoice_saved
 tx_repo = TransactionRepository(settings.database_path)
+
+# --- Push subscription (PWA/Web Push) ---
+push_repo = PushSubscriptionRepository(settings.database_path)
 
 # --- Storage ---
 storage = LocalFileStorage(settings.storage_dir)

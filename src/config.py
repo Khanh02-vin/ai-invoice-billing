@@ -78,6 +78,19 @@ class Settings:
         """IMAP poller bật khi có host + user."""
         return bool(self.imap_host and self.imap_user)
 
+    # Web Push (PWA) — thông báo native khi có giao dịch chờ chụp hóa đơn.
+    # Sinh key: python3 scripts/gen_vapid_keys.py
+    vapid_public_key: str = field(default_factory=lambda: os.getenv("VAPID_PUBLIC_KEY", ""))
+    vapid_private_key: str = field(default_factory=lambda: os.getenv("VAPID_PRIVATE_KEY", ""))
+    vapid_subject: str = field(
+        default_factory=lambda: os.getenv("VAPID_SUBJECT", "mailto:admin@localhost")
+    )
+
+    @property
+    def push_enabled(self) -> bool:
+        """Push bật khi có đủ cặp VAPID key."""
+        return bool(self.vapid_public_key and self.vapid_private_key)
+
     # Billing
     billing_provider: str = field(default_factory=lambda: os.getenv("BILLING_PROVIDER", "mock"))
 
