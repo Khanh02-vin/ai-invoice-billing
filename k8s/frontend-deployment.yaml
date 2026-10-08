@@ -1,0 +1,88 @@
+# Frontend (React SPA + PWA) phục vụ bằng Caddy, kèm proxy API sang backend.
+#
+# Kiến trúc: Ingress (nginx + cert-manager TLS) -> Service :80 -> Caddy.
+# Caddy phục vụ file tĩnh ở / và proxy các path API sang backend ClusterIP.
+# Vì TLS do Ingress lo, container chỉ chạy HTTP (:80).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: invoice-billing-frontend
+  namespace: invoice-billing
+  labels:
+    app: ai-invoice-billing
+    component: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-invoice-billing
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: ai-invoice-billing
+        component: frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: frontend
+          image: ai-invoice-billing-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            # HTTP thuần — TLS kết thúc ở Ingress
+            - name: SITE_ADDRESS
+              value: ":80"
+            # Caddy proxy API sang backend ClusterIP (xem service.yaml)
+            - name: BACKEND_UPSTREAM
+              value: "invoice-billing-service:8000"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Caddy cần ghi /data /config -> không bật readOnlyRootFilesystem
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: caddy-data
+              mountPath: /data
+            - name: caddy-config
+              mountPath: /config
+      volumes:
+        - name: caddy-data
+          emptyDir: {}
+        - name: caddy-config
+          emptyDir: {}
+      terminationGracePeriodSeconds: 15

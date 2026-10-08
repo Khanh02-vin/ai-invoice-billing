@@ -13,7 +13,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential libffi-dev \
  && rm -rf /var/lib/apt/lists/*
 
+# ai-engine phải có mặt trước khi pip đọc requirements (-e ./ai-engine)
 COPY requirements.txt ./
+COPY ai-engine ./ai-engine
 RUN pip install --upgrade pip \
  && pip install --prefix=/install -r requirements.txt
 
@@ -28,8 +30,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Runtime system deps
+# - libmagic1: MIME sniff upload
+# - tesseract-ocr + tesseract-ocr-vie: OCR dự phòng ảnh scan (tiếng Việt có dấu)
+# - libglib2.0-0 + libgomp1: thư viện runtime của opencv-python-headless
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libmagic1 tesseract-ocr \
+ && apt-get install -y --no-install-recommends \
+      libmagic1 tesseract-ocr tesseract-ocr-vie libglib2.0-0 libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from builder

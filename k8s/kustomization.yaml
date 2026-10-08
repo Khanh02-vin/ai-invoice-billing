@@ -8,7 +8,10 @@ resources:
   - deployment.yaml
   - pvc.yaml
   - service.yaml
+  - frontend-deployment.yaml
+  - frontend-service.yaml
   - ingress.yaml
+  - cluster-issuer.yaml
   - hpa.yaml
   - servicemonitor.yaml
 commonLabels:
@@ -16,4 +19,7 @@ commonLabels:
 images:
   - name: ai-invoice-billing-backend
     newName: ai-invoice-billing-backend
+    newTag: latest
+  - name: ai-invoice-billing-frontend
+    newName: ai-invoice-billing-frontend
     newTag: latest

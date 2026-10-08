@@ -86,18 +86,26 @@ services:
         condition: service_healthy
 
   frontend:
-    image: node:20-alpine
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: ai-invoice-billing-frontend:latest
     container_name: invoice-frontend
-    working_dir: /app
     restart: unless-stopped
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
-    volumes:
-      - ./frontend:/app
-      - frontend-node-modules:/app/node_modules
-    ports:
-      - "5173:5173"
     environment:
-      VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
+      # ":80" = HTTP thuần. Đặt domain thật (VD invoice.example.com) để Caddy tự
+      # lấy + gia hạn cert Let's Encrypt — cần port 80/443 trỏ về máy này và
+      # firewall mở. Không cần certbot riêng.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      BACKEND_UPSTREAM: backend:8000
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Caddy lưu cert + account Let's Encrypt trong /data. Mất volume này thì
+      # phải xin lại cert (dễ dính rate-limit) — đừng xoá.
+      - caddy-data:/data
+      - caddy-config:/config
     depends_on:
       backend:
         condition: service_healthy
@@ -107,5 +115,7 @@ volumes:
     driver: local
   redis-data:
     driver: local
-  frontend-node-modules:
+  caddy-data:
+    driver: local
+  caddy-config:
     driver: local

@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: invoice-billing-frontend
+  namespace: invoice-billing
+  labels:
+    app: ai-invoice-billing
+    component: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-invoice-billing
+    component: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

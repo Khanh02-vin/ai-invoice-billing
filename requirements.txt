@@ -7,14 +7,17 @@ PyPDF2>=3.0.0
 PyJWT>=2.8.0
 pytest>=7.0.0
 
-# OCR cho ảnh scan hóa đơn (tùy chọn — không cài vẫn chạy, chỉ mất tính năng đọc ảnh)
-# pytesseract>=0.3.10
-# Pillow>=10.0.0
+# OCR ảnh scan hóa đơn. Docker image đã cài tesseract-ocr + tesseract-ocr-vie
+# (xem Dockerfile); thiếu python wrapper thì tính năng đọc ảnh im lặng tắt.
+pytesseract>=0.3.10
+Pillow>=10.0.0
+# paddleocr nặng (~500 MB model) và code tự fallback sang tesseract khi thiếu,
+# nên mặc định TẮT. Bật nếu cần OCR chất lượng cao hơn trên hóa đơn khó.
 # paddleocr>=2.7.0
 
-# QR hóa đơn điện tử + render PDF (tùy chọn — không cài vẫn chạy, chỉ mất đối chiếu QR)
-# opencv-python-headless>=4.8
-# pypdfium2>=4.0
+# QR hóa đơn điện tử + render PDF scan (đối chiếu total/vendor qua QR)
+opencv-python-headless>=4.8
+pypdfium2>=4.0
 
 # Benchmark CORD (tests/benchmark_cord.py) — chỉ cho benchmark, không cần cho app
 # datasets>=2.0

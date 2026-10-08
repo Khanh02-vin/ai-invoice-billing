@@ -72,11 +72,19 @@ Mở http://localhost:5173. Frontend dùng `VITE_API_BASE=http://localhost:8000`
 
 ```bash
 cp .env.example .env
-# thay JWT_SECRET bằng một secret ngẫu nhiên trước khi chạy production
+# Điền đầy đủ các biến production:
+#   - JWT_SECRET: một secret ngẫu nhiên mạnh
+#   - APP_URL: https://yourdomain.com  (dùng để dựng link trong email)
+#   - CORS_ORIGINS: cùng domain
+#   - EMAIL_SMTP_*: provider thật (Gmail/App Password, SendGrid, SES, Mailgun...)
+#   - VAPID_*: chạy python3 scripts/gen_vapid_keys.py
+#   - (tùy chọn) IMAP_*: poller tự động đọc email báo giao dịch ngân hàng
 JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" docker compose up --build
 ```
+Compose chạy backend tại http://localhost:8000 và **frontend (nginx/Caddy) tại http://localhost**, đồng thời lưu SQLite/upload data trong volume `invoice-data`.
 
-Compose chạy backend tại http://localhost:8000 và frontend tại http://localhost:5173, đồng thời lưu SQLite/upload data trong volume `invoice-data`.
+> Docker không auto-reload `.env` khi đang chạy — sửa `.env` xong `docker compose up -d --build` lại.
+> Production nên có reverse proxy TLS phía trước (Caddy/Traefik/Nginx): Caddy trong image chủ động lấy Let's Encrypt khi đặt `SITE_ADDRESS=invoice.example.com`, hoặc dùng nginx bên ngoài. Đặt `SITE_ADDRESS` + mở port 80/443 để Caddy tự lấy cert.
 
 ### Demo end-to-end
 

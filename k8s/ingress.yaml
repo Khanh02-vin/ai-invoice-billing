@@ -10,19 +10,23 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # cert-manager tự xin + gia hạn cert Let's Encrypt qua HTTP-01 (xem cluster-issuer.yaml)
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
   ingressClassName: nginx
   rules:
     - host: invoice.example.com
       http:
         paths:
+          # Tất cả vào frontend (Caddy): phục vụ file tĩnh + tự proxy các path API
+          # sang backend ClusterIP. Một điểm vào duy nhất -> không cần CORS.
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: invoice-billing-service
+                name: invoice-billing-frontend
                 port:
-                  number: 8000
+                  number: 80
   tls:
     - hosts:
         - invoice.example.com
