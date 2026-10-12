@@ -33,7 +33,6 @@ from .middleware import (
 from .upload import validate_upload
 from .store.storage import LocalFileStorage, generate_storage_key, compute_fingerprint
 from .routers.search import router as search_router
-from .routers.billing import router as billing_router
 from .routers.auth_ext import router as auth_ext_router, send_verification_email
 from .routers.payments import router as payments_router
 from .routers.push import router as push_router
@@ -56,7 +55,6 @@ register_error_handlers(app)
 
 # --- Routers (Phase 2-4) ---
 app.include_router(search_router)
-app.include_router(billing_router)
 app.include_router(auth_ext_router)
 app.include_router(payments_router)
 app.include_router(push_router)
