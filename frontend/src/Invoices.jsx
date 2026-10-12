@@ -774,7 +774,6 @@ export default function Invoices({ user, onLogout }) {
       </div>
         )}
       </main>
-      <LineSidebar />
     </div>
   );
 }

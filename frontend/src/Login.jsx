@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef } from "react";
 import { api, setToken } from "./api";
-import Aurora from "./components/react-bits/Aurora.jsx";
-import SpotlightCard from "./components/react-bits/SpotlightCard.jsx";
 
 export default function Login({ onLogin }) {
   const [mode, setMode] = useState("login");
@@ -63,8 +61,7 @@ export default function Login({ onLogin }) {
 
   return (
     <div className="auth-wrap">
-      <Aurora />
-      <SpotlightCard className="auth-card">
+      <div className="auth-card">
         <form onSubmit={submit} noValidate>
           <h1>🧾 Invoice &amp; Billing</h1>
           <h2>{isLogin ? "Đăng nhập" : "Đăng ký"}</h2>

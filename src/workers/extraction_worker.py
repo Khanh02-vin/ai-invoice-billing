@@ -10,7 +10,6 @@ Architecture:
 - Tasks are idempotent (check status before processing)
 - Exponential backoff on transient failures
 - Dead letter queue for permanent failures
-- Cost tracking for LLM usage
 """
 from __future__ import annotations
 
@@ -21,6 +20,9 @@ import time
 from pathlib import Path
 
 from .celery_app import app
+from ..config import get_settings
+from ..store.repository import InvoiceRepository
+from ..extract.extractor import extract_invoice as extract_fn
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +45,8 @@ def extract_invoice(self, invoice_id: str, file_path: str, user_id: str = ""):
         file_path: Path to uploaded file
         user_id: Owner user ID
     """
-    from ..config import get_settings
-    from ..store.repository import InvoiceRepository
-    from ..store.transactions import TransactionRepository
-    from ..extract.extractor import extract_invoice as extract_fn
-    from ..observability.cost_tracker import cost_tracker
-
-    # Cùng DATABASE_PATH với app — 2 repo trỏ 1 file DB
     _db_path = get_settings().database_path
     repo = InvoiceRepository(_db_path)
-    tx_repo = TransactionRepository(_db_path)
 
     # Idempotency check — skip if already processed
     existing = repo.get(invoice_id)
@@ -84,22 +78,6 @@ def extract_invoice(self, invoice_id: str, file_path: str, user_id: str = ""):
         repo.upsert(invoice)
         elapsed = time.time() - start_time
         logger.info(f"Extracted invoice {invoice_id} in {elapsed:.2f}s")
-
-        # Ghép với giao dịch ngân hàng/ví đang chờ nếu số tiền khớp
-        try:
-            from ..payments.service import match_invoice_saved
-            match_invoice_saved(tx_repo, repo, invoice)
-        except Exception as exc:  # match fail không làm hỏng kết quả extract
-            logger.warning(f"Transaction match skipped for {invoice_id}: {exc}")
-
-        # Track cost if LLM was used
-        if hasattr(invoice, "extraction_cost_usd"):
-            cost_tracker.record(
-                user_id=user_id,
-                operation="llm_extraction",
-                tokens=getattr(invoice, "llm_tokens_used", 0),
-                cost_usd=invoice.extraction_cost_usd,
-            )
 
         return {
             "status": "success",
