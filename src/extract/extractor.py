@@ -848,32 +848,6 @@ def _normalize_date(s: str) -> str:
     return s
 
 
-def _guess_vendor(text: str) -> str:
-    """Đoán vendor từ text — dùng VENDOR_RE hoặc tìm chain name."""
-    m = _VENDOR_RE.search(text)
-    if m:
-        return m.group(1).strip()
-    chain = _find_chain_in_text(text)
-    if chain:
-        return chain
-    return "unknown"
-
-
-def _find_chain_in_text(text: str) -> Optional[str]:
-    """Tìm tên chuỗi cửa hàng trong text."""
-    text_lower = text.lower()
-    for chain in _VN_CHAINS:
-        if chain.lower() in text_lower:
-            return chain
-    return None
-
-
-_VN_CHAINS = (
-    "VinMart", "Circle K", "FamilyMart", "Ministop", "7-Eleven",
-    "GS25", "CU", "Emart", "Lotte Mart", "Big C", "Tops",
-)
-
-
 _NUM_TOKEN_RE = re.compile(r"\d[\d.,]*")
 
 
