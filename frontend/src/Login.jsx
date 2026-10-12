@@ -161,7 +161,7 @@ export default function Login({ onLogin }) {
             </button>
           </p>
         </form>
-      </SpotlightCard>
+      </div>
     </div>
   );
 }
