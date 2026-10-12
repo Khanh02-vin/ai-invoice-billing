@@ -19,6 +19,7 @@ class TxStatus(str, Enum):
     PENDING_RECEIPT = "pending_receipt"  # chờ upload hóa đơn
     MATCHED = "matched"                  # đã ghép với hóa đơn
     DISMISSED = "dismissed"              # user bỏ qua
+    RECORDED = "recorded"                # thu nhập hoặc chi phí đã ghi sổ
 
 
 class PaymentEvent(BaseModel):
@@ -45,4 +46,9 @@ class PaymentTransaction(BaseModel):
     status: TxStatus = TxStatus.PENDING_RECEIPT
     matched_invoice_id: str = ""
     raw_text: str = ""
+    note: str = ""
+    category: str = ""
+    location_lat: Optional[float] = None
+    location_lon: Optional[float] = None
+    location_captured_at: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)

@@ -58,9 +58,11 @@ def ingest(
         source=event.source,
         external_ref=ref,
         raw_text=raw_text,
-        status=TxStatus.PENDING_RECEIPT,
+        status=TxStatus.RECORDED if event.direction.value == "credit" else TxStatus.PENDING_RECEIPT,
     )
     tx = tx_repo.create(tx)
+    if event.direction.value == "credit":
+        return tx, None, False
     invoice = pick_invoice(tx, invoice_repo.list(user_id=user_id, limit=200))
     if invoice:
         link(tx_repo, invoice_repo, tx, invoice)

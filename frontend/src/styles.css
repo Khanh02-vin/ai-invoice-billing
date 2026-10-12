@@ -1,3 +1,21 @@
+/* --- Expense ledger --- */
+.app-top-nav { display: flex; gap: 10px; padding: 10px 24px; background: var(--sidebar-bg); border-bottom: 1px solid var(--border); }
+.ledger-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; align-items: end; }
+.ledger-form label, .card-head label { display: flex; flex-direction: column; gap: 6px; color: var(--text-dim); font-size: var(--fs-sm); }
+.ledger-form input, .ledger-form select, .card-head input, .ledger-details input { min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); color: var(--text); }
+.ledger-wide { grid-column: 1 / -1; }
+.ledger-hint { color: var(--text-dim); font-size: var(--fs-sm); }
+.ledger-detail { width: min(720px, 94vw); overflow-y: auto; }
+.ledger-details { display: grid; grid-template-columns: minmax(120px, 1fr) 2fr; gap: 10px; margin: 10px 0 18px; }
+.ledger-details dt { color: var(--text-dim); }
+.ledger-details dd { overflow-wrap: anywhere; }
+.ledger-attachments, .ledger-suggestions { display: grid; gap: 10px; padding: 14px 0; border-top: 1px solid var(--border); }
+.ledger-attachments h3 { font-size: var(--fs-md); }
+.ledger-share { display: flex; gap: 8px; align-items: flex-start; padding: 12px 0; color: var(--text-dim); font-size: var(--fs-sm); }
+.ledger-suggestions > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; }
+.ledger-suggestions span { color: var(--text-dim); font-size: var(--fs-sm); }
+@media (max-width: 760px) { .app-top-nav { padding: 8px 12px; } .ledger-details { grid-template-columns: 1fr; gap: 4px; } }
+
 /* Design tokens — nguồn chuẩn: design.md. Đổi màu toàn app tại đây. */
 :root {
   --bg: #0f1117;

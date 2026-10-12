@@ -16,7 +16,7 @@ export function clearToken() {
 export async function api(path, options = {}) {
   // Không gán Content-Type khi body là FormData — fetch tự thêm boundary multipart.
   const headers = { ...(options.headers || {}) };
-  if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
+  if (!(options.body instanceof FormData) && !(options.body instanceof Blob)) headers["Content-Type"] = "application/json";
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 

@@ -49,7 +49,8 @@ class UserRepository(SQLiteRepo):
                 created_at TEXT,
                 verified INTEGER DEFAULT 0,
                 mfa_enabled INTEGER DEFAULT 0,
-                email TEXT DEFAULT ''
+                email TEXT DEFAULT '',
+                share_place_visits INTEGER NOT NULL DEFAULT 0
             )
         """)
         # Migration: thêm cột email cho DB cũ (dùng cho IMAP routing + email push)
@@ -57,6 +58,10 @@ class UserRepository(SQLiteRepo):
             conn.execute("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # cột đã có
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN share_place_visits INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         # MFA TOTP secrets (one per user).
         conn.execute("""
             CREATE TABLE IF NOT EXISTS mfa_secrets (
@@ -123,6 +128,26 @@ class UserRepository(SQLiteRepo):
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
             return cur.rowcount > 0
+
+    def get_place_sharing(self, user_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute("SELECT share_place_visits FROM users WHERE id = ?", (user_id,)).fetchone()
+        return bool(row[0]) if row else False
+
+    def list_place_sharing_ids(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id FROM users WHERE share_place_visits = 1").fetchall()
+        return [row[0] for row in rows]
+
+    def set_place_sharing(self, user_id: str, enabled: bool) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("UPDATE users SET share_place_visits = ? WHERE id = ?", (int(enabled), user_id))
+            if not enabled:
+                try:
+                    conn.execute("DELETE FROM shared_place_visits WHERE user_id = ?", (user_id,))
+                except sqlite3.OperationalError:
+                    pass
+        return cur.rowcount > 0
 
     def update_password(self, user_id: str, new_hash: str) -> bool:
         """Cập nhật mật khẩu. Trả về True nếu user tồn tại."""

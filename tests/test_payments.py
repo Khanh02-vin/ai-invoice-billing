@@ -133,7 +133,7 @@ def test_ingest_unparseable_422(client):
     assert r.json()["error"]["code"] == "UNPARSEABLE"
 
 
-def test_ingest_credit_not_stored(client):
+def test_ingest_credit_is_stored(client):
     token = _register(client)
     r = client.post(
         "/payments/ingest",
@@ -141,10 +141,95 @@ def test_ingest_credit_not_stored(client):
         headers=_auth(token),
     )
     assert r.status_code == 200
-    assert r.json()["stored"] is False
-    assert r.json()["reason"] == "credit_not_tracked"
-    r2 = client.get("/payments/transactions", headers=_auth(token))
-    assert r2.json() == []
+    assert r.json()["stored"] is True
+    assert r.json()["transaction"]["direction"] == "credit"
+    assert r.json()["transaction"]["status"] == "recorded"
+    txs = client.get("/payments/transactions", headers=_auth(token)).json()
+    assert len(txs) == 1
+
+
+def test_manual_record_location_update_filter_and_isolation(client):
+    token_a = _register(client, username="ledger_a")
+    r = client.post("/payments/transactions", json={
+        "amount": 25000, "direction": "debit", "merchant": "Cafe", "note": "Ăn sáng",
+        "category": "food", "location_lat": 10.77, "location_lon": 106.69,
+        "location_captured_at": "2026-10-12T10:00:00Z",
+    }, headers=_auth(token_a))
+    assert r.status_code == 200, r.text
+    tx = r.json()
+    assert tx["location_lat"] == 10.77
+
+    assert client.get("/payments/transactions?direction=debit&start_date=2026-10-12T00:00:00&end_date=2026-10-13T00:00:00", headers=_auth(token_a)).json()[0]["id"] == tx["id"]
+    assert client.get("/payments/transactions?direction=credit", headers=_auth(token_a)).json() == []
+
+    token_b = _register(client, username="ledger_b")
+    assert client.get("/payments/transactions", headers=_auth(token_b)).json() == []
+    assert client.put(f"/payments/transactions/{tx['id']}", json={"note": "x"}, headers=_auth(token_b)).status_code == 404
+
+    updated = client.put(f"/payments/transactions/{tx['id']}", json={
+        "note": "Đã sửa", "category": "food", "location_lat": None,
+        "location_lon": None, "location_captured_at": None,
+    }, headers=_auth(token_a))
+    assert updated.status_code == 200
+    assert updated.json()["note"] == "Đã sửa"
+    assert updated.json()["location_lat"] is None
+
+
+def test_manual_record_requires_coordinate_pair(client):
+    token = _register(client)
+    r = client.post("/payments/transactions", json={"amount": 100, "direction": "credit", "location_lat": 10}, headers=_auth(token))
+    assert r.status_code == 422
+
+
+def test_invalid_date_range_rejected(client):
+    token = _register(client)
+    r = client.get("/payments/transactions?start_date=2026-10-13T00:00:00&end_date=2026-10-12T00:00:00", headers=_auth(token))
+    assert r.status_code == 422
+
+
+def test_attachment_upload_download_delete_is_user_scoped(client, monkeypatch, tmp_path):
+    from src.store.storage import LocalFileStorage
+
+    owner = _register(client, username="receipt_owner")
+    tx = client.post("/payments/transactions", json={"amount": 500, "direction": "debit"}, headers=_auth(owner)).json()
+    monkeypatch.setattr(app_module, "storage", LocalFileStorage(str(tmp_path)))
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    uploaded = client.post(
+        f"/payments/transactions/{tx['id']}/attachments",
+        files={"file": ("receipt.png", png, "image/png")}, headers=_auth(owner),
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    attachment = uploaded.json()
+    assert "storage_key" not in attachment
+    assert client.get(f"/payments/transactions/{tx['id']}/attachments", headers=_auth(owner)).json()[0]["id"] == attachment["id"]
+    content = client.get(f"/payments/attachments/{attachment['id']}/content", headers=_auth(owner))
+    assert content.content == png
+
+    other = _register(client, username="receipt_other")
+    assert client.get(f"/payments/attachments/{attachment['id']}/content", headers=_auth(other)).status_code == 404
+    assert client.delete(f"/payments/attachments/{attachment['id']}", headers=_auth(other)).status_code == 404
+    assert client.delete(f"/payments/attachments/{attachment['id']}", headers=_auth(owner)).json()["deleted"] is True
+    assert client.get(f"/payments/attachments/{attachment['id']}/content", headers=_auth(owner)).status_code == 404
+
+
+def test_place_sharing_is_opt_in_and_shared_projection_is_safe(client):
+    token_a = _register(client, username="place_a")
+    token_b = _register(client, username="place_b")
+    visit = {"name": "Cafe X", "kind": "cafe", "lat": 10.776, "lon": 106.701}
+    assert client.get("/payments/preferences/place-sharing", headers=_auth(token_a)).json() == {"share_place_visits": False}
+    assert client.post("/payments/places/share", json=visit, headers=_auth(token_a)).status_code == 403
+    client.put("/payments/preferences/place-sharing?enabled=true", headers=_auth(token_a))
+    client.put("/payments/preferences/place-sharing?enabled=true", headers=_auth(token_b))
+    assert client.post("/payments/places/share", json=visit, headers=_auth(token_a)).json()["shared"] is True
+    assert client.post("/payments/places/share", json=visit, headers=_auth(token_b)).json()["shared"] is True
+    token_c = _register(client, username="place_c")
+    client.put("/payments/preferences/place-sharing?enabled=true", headers=_auth(token_c))
+    assert client.post("/payments/places/share", json=visit, headers=_auth(token_c)).json()["shared"] is True
+    places = client.get("/payments/places/shared?lat=10.776&lon=106.701", headers=_auth(token_a)).json()["places"]
+    assert places and places[0]["name"] == "Cafe X"
+    assert "amount" not in places[0] and "user_id" not in places[0]
+    client.put("/payments/preferences/place-sharing?enabled=false", headers=_auth(token_b))
+    assert client.get("/payments/places/shared?lat=10.776&lon=106.701", headers=_auth(token_a)).json()["places"] == []
 
 
 def test_ingest_dedupe_same_text(client):
