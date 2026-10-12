@@ -14,9 +14,12 @@ Dùng current_user_local (copy pattern từ billing.py) để tránh import cycl
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from datetime import datetime
 from typing import Optional
+
+import httpx
 
 from fastapi import APIRouter, Body, Depends, Query, UploadFile, File, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -35,6 +38,8 @@ from ..payments.service import ingest as service_ingest, link
 from ..store.users import UserRepository
 
 router = APIRouter(prefix="/payments", tags=["payments"])
+
+_PLACE_CACHE: dict = {}  # key -> (timestamp, places)
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -192,19 +197,28 @@ def suggest_places(lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-180
     """Tìm POI lân cận qua Overpass; không gửi thông tin giao dịch."""
     import httpx
     radius = max(100, min(radius, 5000))
-    query = f"[out:json][timeout:10];(node(around:{radius},{lat},{lon})[amenity];node(around:{radius},{lat},{lon})[shop];node(around:{radius},{lat},{lon})[tourism];);out center 30;"
-    try:
-        response = httpx.post("https://overpass-api.de/api/interpreter", data={"data": query}, timeout=12)
-        response.raise_for_status()
-        elements = response.json().get("elements", [])
-    except Exception:
-        raise AppError("PLACES_UNAVAILABLE", "Không lấy được địa điểm lân cận lúc này.", status=503)
-    places = [{
-        "id": str(item.get("id")), "name": item.get("tags", {}).get("name", ""),
-        "kind": next((item["tags"][key] for key in ("amenity", "shop", "tourism") if key in item.get("tags", {})), "place"),
-        "lat": item.get("lat") or item.get("center", {}).get("lat"),
-        "lon": item.get("lon") or item.get("center", {}).get("lon"),
-    } for item in elements if item.get("tags", {}).get("name")]
+    cache_key = (lat, lon, radius)
+    cached = _PLACE_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < 300:
+        places = cached[1]
+    else:
+        query = f"[out:json][timeout:10];(node(around:{radius},{lat},{lon})[amenity];node(around:{radius},{lat},{lon})[shop];node(around:{radius},{lat},{lon})[tourism];);out center 30;"
+        try:
+            response = httpx.post("https://overpass-api.de/api/interpreter", data={"data": query}, timeout=12)
+            response.raise_for_status()
+            elements = response.json().get("elements", [])
+            places = [{
+                "id": str(item.get("id")), "name": item.get("tags", {}).get("name", ""),
+                "kind": next((item["tags"][key] for key in ("amenity", "shop", "tourism") if key in item.get("tags", {})), "place"),
+                "lat": item.get("lat") or item.get("center", {}).get("lat"),
+                "lon": item.get("lon") or item.get("center", {}).get("lon"),
+            } for item in elements if item.get("tags", {}).get("name")]
+        except Exception:
+            if cached:
+                places = cached[1]  # fallback to stale cache when Overpass rate-limited down
+            else:
+                raise AppError("PLACES_UNAVAILABLE", "Không lấy được địa điểm lân cận lúc này.", status=503)
+        _PLACE_CACHE[cache_key] = (time.time(), places)
     return {"places": places}
 
 

@@ -4,7 +4,7 @@ import { api, clearToken, getToken } from "./api";
 const money = (tx) => new Intl.NumberFormat("vi-VN", { style: "currency", currency: tx.currency || "VND", maximumFractionDigits: 0 }).format(tx.amount || 0);
 const dateValue = (value) => value ? new Date(value).toISOString().slice(0, 10) : "";
 
-export default function Ledger({ onBack, onLogout }) {
+export default function Ledger({ onBack, onShowLedger }) {
   const [transactions, setTransactions] = useState([]);
   const [places, setPlaces] = useState([]);
   const [attachments, setAttachments] = useState([]);
