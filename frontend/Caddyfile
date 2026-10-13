@@ -9,7 +9,10 @@
 {$SITE_ADDRESS::80}
 
 # API -> backend (giữ nguyên path; backend không có prefix)
-@api path /api/* /auth/* /invoices/* /upload/* /reports/* /payments/* /push/* /billing/* /orgs/* /search/* /eval/* /health /ready /metrics /docs /redoc /openapi.json
+# Phải liệt kê cả path gốc không có hậu tố (vd /invoices, /upload, /search):
+# `path /invoices/*` KHÔNG khớp `/invoices`, và route rơi vào SPA fallback trả
+# index.html → frontend nhận HTML thay vì JSON rồi crash.
+@api path /api/* /auth /auth/* /invoices /invoices/* /upload /upload/* /reports /reports/* /payments /payments/* /push /push/* /billing /billing/* /orgs /orgs/* /search /search/* /eval /eval/* /health /ready /metrics /docs /redoc /openapi.json
 handle @api {
 	# docker-compose: backend:8000 (mặc định)
 	# k8s: đặt BACKEND_UPSTREAM=invoice-billing-service:8000

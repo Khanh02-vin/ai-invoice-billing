@@ -11,18 +11,17 @@ Architecture:
 - Exponential backoff on transient failures
 - Dead letter queue for permanent failures
 """
+
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 import time
 from pathlib import Path
 
-from .celery_app import app
 from ..config import get_settings
-from ..store.repository import InvoiceRepository
 from ..extract.extractor import extract_invoice as extract_fn
+from ..store.repository import InvoiceRepository
+from .celery_app import app
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +78,7 @@ def extract_invoice(self, invoice_id: str, file_path: str, user_id: str = ""):
         elapsed = time.time() - start_time
         logger.info(f"Extracted invoice {invoice_id} in {elapsed:.2f}s")
 
-        return {
-            "status": "success",
-            "invoice_id": invoice_id,
-            "elapsed_seconds": elapsed,
-        }
+        return {"status": "success", "invoice_id": invoice_id, "elapsed_seconds": elapsed}
 
     except Exception as exc:
         logger.error(f"Extraction failed for {invoice_id}: {exc}")
@@ -94,7 +89,7 @@ def extract_invoice(self, invoice_id: str, file_path: str, user_id: str = ""):
             repo.upsert(existing)
 
         # Retry with exponential backoff
-        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+        raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
 
 
 @app.task(
@@ -121,7 +116,8 @@ def extract_batch(self, batch_id: str, file_paths: list, user_id: str):
     for filename, file_path in file_paths:
         try:
             # Create invoice record
-            from ..domain.models import Invoice
+            from ..models import Invoice
+
             invoice = Invoice(user_id=user_id, source_file=filename, job_status="pending")
             invoice = repo.upsert(invoice)
 

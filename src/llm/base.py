@@ -1,6 +1,7 @@
 """Nhà cung cấp LLM cho fallback trích xuất hóa đơn.
 Mặc định: qwencoder (tương thích OpenAI). Cấu hình qua env:
 LLM_BASE_URL, LLM_API_KEY (hoặc OPENAI_API_KEY), LLM_MODEL."""
+
 import json
 import os
 import re
@@ -41,13 +42,11 @@ class OpenAIProvider(LLMProvider):
 
     def complete(self, system: str, user: str) -> str:
         from openai import OpenAI
+
         client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         r = client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0,
         )
         # qwencoder trả JSON kèm "data: [DONE]" → SDK trả str thay vì object

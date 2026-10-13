@@ -2,11 +2,12 @@
 
 Nguyên tắc (PLAN mục 3): tạo error contract JSON ổn định; không trả stack trace/PII.
 """
+
 from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -20,11 +21,7 @@ class AppError(Exception):
     """Lỗi ứng dụng có mã và status cố định."""
 
     def __init__(
-        self,
-        code: str,
-        message: str,
-        status: int = 400,
-        details: Optional[Dict[str, Any]] = None,
+        self, code: str, message: str, status: int = 400, details: dict[str, Any] | None = None
     ):
         super().__init__(message)
         self.code = code
@@ -33,15 +30,11 @@ class AppError(Exception):
         self.details = details or {}
 
 
-def _public_body(code: str, message: str, request_id: str, details: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def _public_body(
+    code: str, message: str, request_id: str, details: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Body lỗi trả cho client — không chứa stack trace hay dữ liệu nhạy cảm."""
-    body: Dict[str, Any] = {
-        "error": {
-            "code": code,
-            "message": message,
-            "request_id": request_id,
-        }
-    }
+    body: dict[str, Any] = {"error": {"code": code, "message": message, "request_id": request_id}}
     if details:
         body["error"]["details"] = details
     return body
@@ -73,7 +66,9 @@ def register_error_handlers(app: FastAPI) -> None:
     async def _handle_http(request: Request, exc: StarletteHTTPException):
         request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:12])
         code = _http_status_code(exc.status_code)
-        logger.warning("http_error status=%s request_id=%s: %s", exc.status_code, request_id, exc.detail)
+        logger.warning(
+            "http_error status=%s request_id=%s: %s", exc.status_code, request_id, exc.detail
+        )
         return JSONResponse(
             status_code=exc.status_code,
             content=_public_body(code, _safe_message(exc, exc.status_code), request_id),

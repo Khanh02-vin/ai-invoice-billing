@@ -2,11 +2,11 @@
 
 Lưu trữ tất cả token dưới dạng hash (token_hash) để tránh lộ token gốc khi DB bị xâm nhập.
 Sử dụng SQLiteRepo cơ sở giống UserRepository."""
+
 import hashlib
 import json
 import sqlite3
 from datetime import datetime
-from typing import Optional
 
 from .db import SQLiteRepo
 
@@ -69,7 +69,7 @@ class RefreshTokenRepository(SQLiteRepo):
                 (token_hash, user_id, expires_at, datetime.utcnow().isoformat(), family),
             )
 
-    def get_token(self, token: str) -> Optional[dict]:
+    def get_token(self, token: str) -> dict | None:
         """Lấy thông tin token theo hash."""
         token_hash = _hash_token(token)
         with self._connect() as conn:
@@ -100,8 +100,7 @@ class RefreshTokenRepository(SQLiteRepo):
         """Thu hồi toàn bộ token trong một family (phát hiện reuse)."""
         with self._connect() as conn:
             cur = conn.execute(
-                "UPDATE refresh_tokens SET revoked = 1 WHERE family = ? AND revoked = 0",
-                (family,),
+                "UPDATE refresh_tokens SET revoked = 1 WHERE family = ? AND revoked = 0", (family,)
             )
             return cur.rowcount
 
@@ -115,7 +114,7 @@ class RefreshTokenRepository(SQLiteRepo):
                 (token_hash, user_id, expires_at, datetime.utcnow().isoformat()),
             )
 
-    def verify_email(self, token: str) -> Optional[str]:
+    def verify_email(self, token: str) -> str | None:
         """Đánh dấu token đã dùng và trả về user_id nếu hợp lệ."""
         token_hash = _hash_token(token)
         with self._connect() as conn:
@@ -144,7 +143,7 @@ class RefreshTokenRepository(SQLiteRepo):
                 (token_hash, user_id, expires_at, datetime.utcnow().isoformat()),
             )
 
-    def verify_password_reset(self, token: str) -> Optional[str]:
+    def verify_password_reset(self, token: str) -> str | None:
         """Kiểm tra token hợp lệ và đánh dấu đã dùng."""
         token_hash = _hash_token(token)
         with self._connect() as conn:
@@ -158,9 +157,7 @@ class RefreshTokenRepository(SQLiteRepo):
             expires_at = datetime.fromisoformat(row["expires_at"])
             if datetime.utcnow() > expires_at:
                 return None
-            conn.execute(
-                "UPDATE password_resets SET used = 1 WHERE token_hash = ?", (token_hash,)
-            )
+            conn.execute("UPDATE password_resets SET used = 1 WHERE token_hash = ?", (token_hash,))
             return row["user_id"]
 
     # ---- MFA ----
@@ -174,16 +171,16 @@ class RefreshTokenRepository(SQLiteRepo):
                 (user_id, secret, codes_json, datetime.utcnow().isoformat()),
             )
 
-    def get_mfa_secret(self, user_id: str) -> Optional[dict]:
+    def get_mfa_secret(self, user_id: str) -> dict | None:
         """Lấy thông tin MFA của user."""
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM mfa_secrets WHERE user_id = ?", (user_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM mfa_secrets WHERE user_id = ?", (user_id,)).fetchone()
         if not row:
             return None
         result = dict(row)
-        result["backup_codes"] = json.loads(result["backup_codes"]) if result["backup_codes"] else []
+        result["backup_codes"] = (
+            json.loads(result["backup_codes"]) if result["backup_codes"] else []
+        )
         return result
 
     def enable_mfa(self, user_id: str) -> bool:

@@ -11,9 +11,11 @@ Features:
 - Rate limiting per task type
 - Task priority queue
 """
+
 from __future__ import annotations
 
 import os
+
 try:
     from celery import Celery
     from celery.signals import task_failure
@@ -31,6 +33,7 @@ WORKER_ENABLED = os.getenv("WORKER_ENABLED", "0").strip().lower() in {"1", "true
 if Celery is not None:
     app = Celery("invoice_workers")
 else:
+
     class _UnavailableTask:
         def delay(self, *args, **kwargs):
             raise RuntimeError("Celery is not installed; configure the worker image first")
@@ -53,48 +56,40 @@ else:
 
 if Celery is not None:
     app.conf.update(
-    # Broker
-    broker_url=REDIS_URL,
-    result_backend=RESULT_BACKEND,
-
-    # Serialization
-    task_serializer="json",
-    result_serializer="json",
-    accept_content=["json"],
-
-    # Timeouts
-    task_soft_time_limit=300,  # 5 minutes soft limit
-    task_time_limit=600,       # 10 minutes hard limit
-
-    # Retry policy
-    task_default_retry_delay=60,  # 1 minute
-    task_max_retries=3,
-
-    # Worker settings
-    worker_prefetch_multiplier=1,  # Fair scheduling
-    worker_max_tasks_per_child=100,  # Recycle workers
-
-    # Task routes — separate queues for different task types
-    task_routes={
-        "src.workers.extraction_worker.*": {"queue": "extraction"},
-        "src.workers.billing_worker.*": {"queue": "billing"},
-        "src.workers.pdf_worker.*": {"queue": "pdf"},
-    },
-
-    # Default queue
-    task_default_queue="default",
-
-    # Result expiration
-    result_expires=3600,  # 1 hour
-
-    # Beat schedule (for periodic tasks)
-    beat_schedule={
-        "cleanup-expired-tasks": {
-            "task": "src.workers.cleanup_worker.cleanup_expired",
-            "schedule": 3600.0,  # Every hour
+        # Broker
+        broker_url=REDIS_URL,
+        result_backend=RESULT_BACKEND,
+        # Serialization
+        task_serializer="json",
+        result_serializer="json",
+        accept_content=["json"],
+        # Timeouts
+        task_soft_time_limit=300,  # 5 minutes soft limit
+        task_time_limit=600,  # 10 minutes hard limit
+        # Retry policy
+        task_default_retry_delay=60,  # 1 minute
+        task_max_retries=3,
+        # Worker settings
+        worker_prefetch_multiplier=1,  # Fair scheduling
+        worker_max_tasks_per_child=100,  # Recycle workers
+        # Task routes — separate queues for different task types
+        task_routes={
+            "src.workers.extraction_worker.*": {"queue": "extraction"},
+            "src.workers.billing_worker.*": {"queue": "billing"},
+            "src.workers.pdf_worker.*": {"queue": "pdf"},
         },
-    },
-)
+        # Default queue
+        task_default_queue="default",
+        # Result expiration
+        result_expires=3600,  # 1 hour
+        # Beat schedule (for periodic tasks)
+        beat_schedule={
+            "cleanup-expired-tasks": {
+                "task": "src.workers.cleanup_worker.cleanup_expired",
+                "schedule": 3600.0,  # Every hour
+            }
+        },
+    )
 
 # ---------------------------------------------------------------------------
 # Auto-discover tasks
@@ -106,12 +101,11 @@ app.autodiscover_tasks(["src.workers"])
 # Error handling
 # ---------------------------------------------------------------------------
 if task_failure is not None:
+
     @task_failure.connect
     def handle_task_failure(sender, task_id, exception, traceback, **kwargs):
         """Log task failures and optionally send alerts."""
         import logging
+
         logger = logging.getLogger(__name__)
-        logger.error(
-            f"Task {sender.name}[{task_id}] failed: {exception}",
-            exc_info=True,
-        )
+        logger.error(f"Task {sender.name}[{task_id}] failed: {exception}", exc_info=True)

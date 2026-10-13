@@ -6,9 +6,8 @@
 Link = transaction matched_invoice_id + hóa đơn chuyển sang PAID
 (nhắc user chụp bill chỉ xẩy ra khi KHÔNG ghép được).
 """
-from typing import Optional, Tuple
 
-from ..domain.models import Invoice, InvoiceStatus, InvoiceUpdate
+from ..models import Invoice, InvoiceStatus, InvoiceUpdate
 from ..domain.payments import PaymentEvent, PaymentTransaction, TxStatus
 from .matching import pick_invoice, pick_transaction
 from .parser import derive_ref
@@ -27,13 +26,8 @@ def link(tx_repo, invoice_repo, tx: PaymentTransaction, invoice: Invoice) -> Non
 
 
 def ingest(
-    tx_repo,
-    invoice_repo,
-    user_id: str,
-    event: PaymentEvent,
-    raw_text: str,
-    external_ref: str = "",
-) -> Tuple[PaymentTransaction, Optional[Invoice], bool]:
+    tx_repo, invoice_repo, user_id: str, event: PaymentEvent, raw_text: str, external_ref: str = ""
+) -> tuple[PaymentTransaction, Invoice | None, bool]:
     """Lưu 1 giao dịch và tự ghép hóa đơn.
 
     Trả về (transaction, invoice_ghep_neu_co, la_duplicate).
@@ -69,7 +63,7 @@ def ingest(
     return tx, invoice, False
 
 
-def match_invoice_saved(tx_repo, invoice_repo, invoice: Invoice) -> Optional[PaymentTransaction]:
+def match_invoice_saved(tx_repo, invoice_repo, invoice: Invoice) -> PaymentTransaction | None:
     """Gọi sau khi lưu hóa đơn — ghép với giao dịch đang chờ nếu số tiền khớp."""
     if not invoice.user_id or invoice.total <= 0:
         return None

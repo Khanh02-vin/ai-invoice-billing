@@ -4,22 +4,21 @@ Nguyên tắc (PLAN mục 3):
 - Lưu file gốc và artifact qua object-storage interface; không phụ thuộc temp path.
 - SQLite vẫn được giữ cho local/demo, nhưng phải có repository abstraction.
 """
+
 from __future__ import annotations
 
 import hashlib
-import os
-import shutil
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
 class StoredObject:
     """Đối tượng đã lưu."""
+
     key: str
     path: str
     size: int
@@ -31,20 +30,16 @@ class StorageBackend(ABC):
     """Interface cho object storage — có thể thay bằng S3/MinIO sau."""
 
     @abstractmethod
-    def put(self, key: str, content: bytes) -> StoredObject:
-        ...
+    def put(self, key: str, content: bytes) -> StoredObject: ...
 
     @abstractmethod
-    def get(self, key: str) -> Optional[bytes]:
-        ...
+    def get(self, key: str) -> bytes | None: ...
 
     @abstractmethod
-    def delete(self, key: str) -> bool:
-        ...
+    def delete(self, key: str) -> bool: ...
 
     @abstractmethod
-    def exists(self, key: str) -> bool:
-        ...
+    def exists(self, key: str) -> bool: ...
 
 
 class LocalFileStorage(StorageBackend):
@@ -67,10 +62,10 @@ class LocalFileStorage(StorageBackend):
             path=str(path),
             size=len(content),
             checksum_sha256=hashlib.sha256(content).hexdigest(),
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
         )
 
-    def get(self, key: str) -> Optional[bytes]:
+    def get(self, key: str) -> bytes | None:
         path = self._full_path(key)
         if not path.exists():
             return None

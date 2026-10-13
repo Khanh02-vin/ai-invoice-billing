@@ -5,6 +5,7 @@ Architecture:
 - Tasks: extraction, billing webhook, PDF generation
 - Result backend: Redis or RPC (for simple status tracking)
 """
+
 from .celery_app import app as celery_app
 
 __all__ = ["celery_app"]

@@ -2,12 +2,12 @@
 
 Pure functions where possible for testability. Uses only stdlib (re, datetime).
 """
+
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
-
+from datetime import UTC, datetime
+from typing import Any
 
 # ---------- constants ----------
 
@@ -22,18 +22,10 @@ PRIVACY_CONTACT_EMAIL = "privacy@invoice.local"
 # ---------- PII redaction ----------
 
 # Order matters: match more specific patterns first.
-_EMAIL_RE = re.compile(
-    r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
-)
-_PHONE_RE = re.compile(
-    r"(?:\+?\d{1,3}[\s\-.]?)?(?:\(?\d{2,4}\)?[\s\-.]?)?\d{3,4}[\s\-.]?\d{3,4}"
-)
-_CREDIT_CARD_RE = re.compile(
-    r"\b(?:\d{4}[\s\-]?){3}\d{4}\b"
-)
-_SSN_RE = re.compile(
-    r"\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b"
-)
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_PHONE_RE = re.compile(r"(?:\+?\d{1,3}[\s\-.]?)?(?:\(?\d{2,4}\)?[\s\-.]?)?\d{3,4}[\s\-.]?\d{3,4}")
+_CREDIT_CARD_RE = re.compile(r"\b(?:\d{4}[\s\-]?){3}\d{4}\b")
+_SSN_RE = re.compile(r"\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b")
 
 
 def redact_pii(text: str) -> str:
@@ -54,11 +46,12 @@ def redact_pii(text: str) -> str:
 
 # ---------- policy / sla metadata ----------
 
-def get_privacy_policy() -> Dict[str, Any]:
+
+def get_privacy_policy() -> dict[str, Any]:
     """Return the current privacy policy metadata."""
     return {
         "version": PRIVACY_POLICY_VERSION,
-        "last_updated": datetime.now(timezone.utc).date().isoformat(),
+        "last_updated": datetime.now(UTC).date().isoformat(),
         "data_retention_days": DATA_RETENTION_DAYS,
         "contact": PRIVACY_CONTACT_EMAIL,
         "summary": (
@@ -68,7 +61,7 @@ def get_privacy_policy() -> Dict[str, Any]:
     }
 
 
-def get_sla() -> Dict[str, Any]:
+def get_sla() -> dict[str, Any]:
     """Return the current SLA metadata."""
     return {
         "uptime_target": SLA_UPTIME_PERCENT,
@@ -79,23 +72,19 @@ def get_sla() -> Dict[str, Any]:
 
 # ---------- GDPR-style export / erasure ----------
 
+
 class PrivacyManager:
     """GDPR-style data export and erasure.
 
     Works against the existing repository interfaces so it can be tested with :memory: repos.
     """
 
-    def __init__(
-        self,
-        repo: Any,
-        user_repo: Any,
-        org_repo: Optional[Any] = None,
-    ):
+    def __init__(self, repo: Any, user_repo: Any, org_repo: Any | None = None):
         self.repo = repo
         self.user_repo = user_repo
         self.org_repo = org_repo
 
-    def export_user_data(self, user_id: str) -> Dict[str, Any]:
+    def export_user_data(self, user_id: str) -> dict[str, Any]:
         """Export all data related to a user (GDPR data portability).
 
         Returns a dict with user profile, invoices, memberships, entitlements.
@@ -106,17 +95,13 @@ class PrivacyManager:
 
         invoices = self.repo.list(user_id=user_id, limit=100_000)
 
-        memberships: List[Dict[str, Any]] = []
+        memberships: list[dict[str, Any]] = []
         if self.org_repo is not None:
             orgs = self.org_repo.list_for_user(user_id)
             for org in orgs:
                 role = self.org_repo.get_member_role(org.id, user_id)
                 memberships.append(
-                    {
-                        "org_id": org.id,
-                        "org_name": org.name,
-                        "role": role.value if role else None,
-                    }
+                    {"org_id": org.id, "org_name": org.name, "role": role.value if role else None}
                 )
 
         return {
@@ -128,7 +113,7 @@ class PrivacyManager:
             "invoices": [inv.model_dump() for inv in invoices],
             "memberships": memberships,
             "entitlements": [],
-            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_at": datetime.now(UTC).isoformat(),
         }
 
     def delete_user_data(self, user_id: str) -> bool:

@@ -7,11 +7,11 @@ Changelog v3.1.0:
 - Connection pooling cho file DB
 - Periodic checkpoint support
 """
+
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from typing import Optional
 
 
 class SQLiteRepo:
@@ -26,7 +26,7 @@ class SQLiteRepo:
 
     def __init__(self, db_path: str = "invoices.db"):
         self.db_path = db_path
-        self._mem_conn: Optional[sqlite3.Connection] = None
+        self._mem_conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
         self._init_db()
 

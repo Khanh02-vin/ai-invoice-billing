@@ -5,16 +5,14 @@ Nguyên tắc (PLAN mục 3):
   số trang và thời gian xử lý.
 - File quá lớn, sai MIME, file hỏng và file độc hại mẫu bị từ chối.
 """
+
 from __future__ import annotations
 
-import io
 import re
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 from .errors import AppError
-from .security.malware import MalwareScanner, ScanResult
-
+from .security.malware import MalwareScanner
 
 # Magic bytes cho các loại file được phép
 _MAGIC_BYTES = {
@@ -32,19 +30,20 @@ _MAX_MAGIC_READ = 16
 @dataclass
 class ValidatedFile:
     """File đã được validate."""
+
     filename: str
     content: bytes
     mime_type: str
     size: int
     is_pdf: bool = False
-    page_count: Optional[int] = None
+    page_count: int | None = None
 
 
 def _sniff_mime(content: bytes, declared_mime: str) -> str:
     """Xác định MIME thực sự từ magic bytes — không tin extension."""
     for mime, signatures in _MAGIC_BYTES.items():
         for sig in signatures:
-            if content[:len(sig)] == sig:
+            if content[: len(sig)] == sig:
                 return mime
     # text/plain fallback: nếu declared là text và content parseable như text
     if declared_mime == "text/plain":
@@ -56,7 +55,7 @@ def _sniff_mime(content: bytes, declared_mime: str) -> str:
     return ""
 
 
-def _count_pdf_pages(content: bytes) -> Optional[int]:
+def _count_pdf_pages(content: bytes) -> int | None:
     """Đếm số trang PDF từ content — đọc pattern /Type /Page."""
     try:
         text = content.decode("latin-1", errors="ignore")
@@ -74,7 +73,7 @@ def validate_upload(
     max_bytes: int,
     allowed_mimes: list[str],
     max_pdf_pages: int,
-    malware_scanner: Optional[MalwareScanner] = None,
+    malware_scanner: MalwareScanner | None = None,
 ) -> ValidatedFile:
     """Validate file upload — raise AppError nếu vi phạm.
 
@@ -109,7 +108,7 @@ def validate_upload(
     elif not actual_mime:
         raise AppError(
             "INVALID_FILE_TYPE",
-            f"Không thể xác định loại file. File có thể bị hỏng hoặc không được hỗ trợ.",
+            "Không thể xác định loại file. File có thể bị hỏng hoặc không được hỗ trợ.",
             status=415,
         )
     elif actual_mime != declared_mime:
@@ -139,11 +138,7 @@ def validate_upload(
                 details={"max_pages": max_pdf_pages, "pages": page_count},
             )
         if page_count is not None and page_count == 0:
-            raise AppError(
-                "PDF_NO_PAGES",
-                "PDF không có trang hợp lệ.",
-                status=400,
-            )
+            raise AppError("PDF_NO_PAGES", "PDF không có trang hợp lệ.", status=400)
 
     scan_for_malware(content, filename, malware_scanner)
 
@@ -158,9 +153,7 @@ def validate_upload(
 
 
 def scan_for_malware(
-    content: bytes,
-    filename: str,
-    malware_scanner: Optional[MalwareScanner] = None,
+    content: bytes, filename: str, malware_scanner: MalwareScanner | None = None
 ) -> None:
     """Scan file content for malware. Raises AppError if malware detected.
 

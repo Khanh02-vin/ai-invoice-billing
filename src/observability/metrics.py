@@ -25,17 +25,16 @@ Helpers:
 from __future__ import annotations
 
 import threading
-from typing import Dict, Tuple
 
 # ---------------------------------------------------------------------------
 # Try prometheus_client first
 # ---------------------------------------------------------------------------
 _USE_PROM = False
 try:
-    from prometheus_client import Counter as PromCounter  # type: ignore
-    from prometheus_client import Histogram as PromHistogram  # type: ignore
     from prometheus_client import CONTENT_TYPE_LATEST as _PROM_CONTENT_TYPE  # type: ignore
     from prometheus_client import REGISTRY as _PROM_REGISTRY  # type: ignore
+    from prometheus_client import Counter as PromCounter  # type: ignore
+    from prometheus_client import Histogram as PromHistogram  # type: ignore
     from prometheus_client import generate_latest as _prom_generate_latest  # type: ignore
 
     _USE_PROM = True
@@ -52,15 +51,15 @@ _HTTP_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
 _EXTRACTION_BUCKETS = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30]
 
 # http_requests_total{method,path,status} -> count
-_http_requests_total: Dict[Tuple[str, str, str], int] = {}
+_http_requests_total: dict[tuple[str, str, str], int] = {}
 
 # histogram state: bucket_counts, sum, count
-_http_bucket_counts: Dict[float, int] = {b: 0 for b in _HTTP_BUCKETS}
+_http_bucket_counts: dict[float, int] = dict.fromkeys(_HTTP_BUCKETS, 0)
 _http_bucket_counts[float("inf")] = 0
 _http_sum: float = 0.0
 _http_count: int = 0
 
-_extraction_bucket_counts: Dict[float, int] = {b: 0 for b in _EXTRACTION_BUCKETS}
+_extraction_bucket_counts: dict[float, int] = dict.fromkeys(_EXTRACTION_BUCKETS, 0)
 _extraction_bucket_counts[float("inf")] = 0
 _extraction_sum: float = 0.0
 _extraction_count: int = 0
@@ -87,9 +86,7 @@ if _USE_PROM:
             return PromHistogram(name, doc, labelnames=labelnames, buckets=buckets)
 
     _prom_http_requests_total = _get_or_create_counter(
-        "http_requests_total",
-        "Total number of HTTP requests",
-        ["method", "path", "status"],
+        "http_requests_total", "Total number of HTTP requests", ["method", "path", "status"]
     )
     _prom_http_duration = _get_or_create_histogram(
         "http_request_duration_seconds",
@@ -105,19 +102,13 @@ if _USE_PROM:
         buckets=_EXTRACTION_BUCKETS,
     )
     _prom_invoices_created = _get_or_create_counter(
-        "invoices_created_total",
-        "Total number of invoices created",
-        [],
+        "invoices_created_total", "Total number of invoices created", []
     )
     _prom_uploads_failed = _get_or_create_counter(
-        "uploads_failed_total",
-        "Total number of failed uploads",
-        [],
+        "uploads_failed_total", "Total number of failed uploads", []
     )
     _prom_llm_fallback = _get_or_create_counter(
-        "llm_fallback_total",
-        "Total number of LLM fallback invocations",
-        [],
+        "llm_fallback_total", "Total number of LLM fallback invocations", []
     )
     CONTENT_TYPE = _PROM_CONTENT_TYPE
 else:
@@ -129,7 +120,7 @@ else:
 # ---------------------------------------------------------------------------
 def _escape_label_value(v: str) -> str:
     # Prometheus exposition escaping for label values
-    return v.replace("\\", r"\\").replace("\n", r"\n").replace('"', r'\"')
+    return v.replace("\\", r"\\").replace("\n", r"\n").replace('"', r"\"")
 
 
 def _normalize_path(path: str) -> str:
@@ -259,11 +250,11 @@ def reset_metrics() -> None:
         global _extraction_bucket_counts, _extraction_sum, _extraction_count
         global _invoices_created_total, _uploads_failed_total, _llm_fallback_total
         _http_requests_total.clear()
-        _http_bucket_counts = {b: 0 for b in _HTTP_BUCKETS}
+        _http_bucket_counts = dict.fromkeys(_HTTP_BUCKETS, 0)
         _http_bucket_counts[float("inf")] = 0
         _http_sum = 0.0
         _http_count = 0
-        _extraction_bucket_counts = {b: 0 for b in _EXTRACTION_BUCKETS}
+        _extraction_bucket_counts = dict.fromkeys(_EXTRACTION_BUCKETS, 0)
         _extraction_bucket_counts[float("inf")] = 0
         _extraction_sum = 0.0
         _extraction_count = 0
@@ -311,7 +302,9 @@ def _generate_fallback_text() -> str:
     for b in _HTTP_BUCKETS:
         cnt = h_buckets.get(b, 0)
         lines.append(f'http_request_duration_seconds_bucket{{le="{b}"}} {cnt}')
-    lines.append(f'http_request_duration_seconds_bucket{{le="+Inf"}} {h_buckets.get(float("inf"), 0)}')
+    lines.append(
+        f'http_request_duration_seconds_bucket{{le="+Inf"}} {h_buckets.get(float("inf"), 0)}'
+    )
     lines.append(f"http_request_duration_seconds_sum {h_sum}")
     lines.append(f"http_request_duration_seconds_count {h_count}")
 
@@ -326,7 +319,9 @@ def _generate_fallback_text() -> str:
     for b in _EXTRACTION_BUCKETS:
         cnt = e_buckets.get(b, 0)
         lines.append(f'extraction_duration_seconds_bucket{{le="{b}"}} {cnt}')
-    lines.append(f'extraction_duration_seconds_bucket{{le="+Inf"}} {e_buckets.get(float("inf"), 0)}')
+    lines.append(
+        f'extraction_duration_seconds_bucket{{le="+Inf"}} {e_buckets.get(float("inf"), 0)}'
+    )
     lines.append(f"extraction_duration_seconds_sum {e_sum}")
     lines.append(f"extraction_duration_seconds_count {e_count}")
 
@@ -382,15 +377,15 @@ def metrics_response():
 
 
 __all__ = [
-    "track_request",
-    "inc_invoices_created",
-    "observe_extraction_duration",
-    "inc_uploads_failed",
-    "inc_llm_fallback",
-    "generate_metrics_text",
-    "generate_metrics",
-    "metrics_response",
-    "reset_metrics",
-    "reset",
     "CONTENT_TYPE",
+    "generate_metrics",
+    "generate_metrics_text",
+    "inc_invoices_created",
+    "inc_llm_fallback",
+    "inc_uploads_failed",
+    "metrics_response",
+    "observe_extraction_duration",
+    "reset",
+    "reset_metrics",
+    "track_request",
 ]

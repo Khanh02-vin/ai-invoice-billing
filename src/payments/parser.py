@@ -11,10 +11,10 @@ Chiến lược:
 3. Direction: có dấu trừ hoặc từ khóa chi -> debit; từ khóa credit -> credit;
    mặc định debit (phần lớn alert là chi tiêu).
 """
+
 import hashlib
 import re
 from datetime import datetime
-from typing import Optional
 
 from ..domain.payments import PaymentEvent, TxDirection
 from ..extract.extractor import _parse_number
@@ -58,7 +58,9 @@ _DEBIT_RE = re.compile(
 # Merchant: ưu tiên nhãn có sẵn (GDV/ND/nội dung), sau đó "tại/at"
 _MERCHANT_RES = (
     re.compile(r"GDV\s*[:=]?\s*([A-Za-z0-9][^,;\n]{1,50})", re.I),
-    re.compile(r"(?:\bND\b|nội\s*dung|noi\s*dung|description|memo)\s*[:=]?\s*([^,;\n]{2,50})", re.I),
+    re.compile(
+        r"(?:\bND\b|nội\s*dung|noi\s*dung|description|memo)\s*[:=]?\s*([^,;\n]{2,50})", re.I
+    ),
     re.compile(
         r"\b(?:at|tại|tai|thanh\s*toán\s*tại|thanh\s*toan\s*tai|mua\s*tại|mua\s*tai|"
         r"cửa\s*hàng|cua\s*hang)\s+([A-Za-z0-9À-ỹ][^,;\n]{1,45})",
@@ -81,10 +83,20 @@ _DATE_RE = re.compile(
 )
 
 _UNIT_CURRENCY = {
-    "đ": "VND", "₫": "VND", "vnd": "VND", "vnđ": "VND",
-    "$": "USD", "usd": "USD", "€": "EUR", "eur": "EUR",
-    "£": "GBP", "gbp": "GBP", "jpy": "JPY", "aud": "AUD",
-    "thb": "THB", "rm": "MYR",
+    "đ": "VND",
+    "₫": "VND",
+    "vnd": "VND",
+    "vnđ": "VND",
+    "$": "USD",
+    "usd": "USD",
+    "€": "EUR",
+    "eur": "EUR",
+    "£": "GBP",
+    "gbp": "GBP",
+    "jpy": "JPY",
+    "aud": "AUD",
+    "thb": "THB",
+    "rm": "MYR",
 }
 
 
@@ -92,7 +104,7 @@ def _currency(unit: str) -> str:
     return _UNIT_CURRENCY.get(unit.lower(), unit.upper())
 
 
-def _parse_when(text: str) -> Optional[str]:
+def _parse_when(text: str) -> str | None:
     """Đọc ngày/giờ đầu tiên trong text -> ISO string (None nếu thiếu năm)."""
     m = _DATE_RE.search(text)
     if not m:
@@ -143,7 +155,7 @@ def _valid_amount(num_str: str, value: float) -> bool:
     return 1.0 <= value <= 1e15
 
 
-def parse_payment_text(text: str, source: str = "sms") -> Optional[PaymentEvent]:
+def parse_payment_text(text: str, source: str = "sms") -> PaymentEvent | None:
     """Parse text thô thông báo giao dịch. Trả None nếu không đọc được số tiền."""
     text = (text or "").strip()
     if not text:
@@ -154,7 +166,7 @@ def parse_payment_text(text: str, source: str = "sms") -> Optional[PaymentEvent]
     minus = False
     ctx = ""
     for m in _AMOUNT_RE.finditer(text):
-        before = text[max(0, m.start() - 30):m.start()]
+        before = text[max(0, m.start() - 30) : m.start()]
         if _BALANCE_RE.search(before):
             continue
         num_str = m.group("num") or m.group("num_pre") or ""
@@ -173,7 +185,7 @@ def parse_payment_text(text: str, source: str = "sms") -> Optional[PaymentEvent]
     # 2) Fallback: số sau từ khóa giao dịch (VD "GD -2.000.000" không có đơn vị)
     if amount is None:
         for m in _KEYWORD_RE.finditer(text):
-            before = text[max(0, m.start() - 30):m.start()]
+            before = text[max(0, m.start() - 30) : m.start()]
             if _BALANCE_RE.search(before):
                 continue
             num_str = m.group("num")

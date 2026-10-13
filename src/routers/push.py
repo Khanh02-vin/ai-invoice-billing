@@ -8,44 +8,42 @@ Routes:
 
 Dùng current_user_local (copy pattern từ billing.py/payments.py) để tránh import cycle.
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from ..auth.security import decode_token
 from ..config import get_settings
-from ..domain.models import User
 from ..errors import AppError
+from ..models import User
 from ..push import push_available, send_push_to_user
-from ..store.push import PushSubscriptionRepository
-from ..store.users import UserRepository
+from ..store.sql_repository import Database, PushSubscriptionRepository, get_database
 
 router = APIRouter(prefix="/push", tags=["push"])
 bearer = HTTPBearer(auto_error=False)
 
 # Lazy: resolve qua app module khi request time (pattern payments.py) để test patch được
-user_repo: UserRepository | None = None
-push_repo: PushSubscriptionRepository | None = None
+_db: Database | None = None
 
 
-def _canonical(module_attr: str, fallback_import: str):
-    repo = globals()[module_attr]
-    if repo is not None:
-        return repo
-    from .. import app as app_module
-    return getattr(app_module, fallback_import)
+def _get_db() -> Database:
+    global _db
+    if _db is None:
+        _db = get_database(get_settings().database_path)
+    return _db
 
 
-def current_user_local(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer),
-) -> User:
+def current_user_local(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> User:
     if not credentials:
         raise AppError("UNAUTHORIZED", "Cần đăng nhập.", status=401)
     user_id = decode_token(credentials.credentials)
-    repo = _canonical("user_repo", "users")
-    user = repo.get(user_id) if user_id else None
+    if not user_id:
+        raise AppError("UNAUTHORIZED", "Token không hợp lệ.", status=401)
+    repo = _get_db()
+    user = repo.get_session().get(User, user_id)
     if not user:
         raise AppError("UNAUTHORIZED", "Token không hợp lệ.", status=401)
     if not user.verified:
@@ -75,20 +73,18 @@ def vapid_public_key(user: User = Depends(current_user_local)) -> dict:
 
 
 @router.post("/subscribe")
-def subscribe(
-    body: PushSubscribeRequest, user: User = Depends(current_user_local)
-) -> dict:
-    _canonical("push_repo", "push_repo").save(
+def subscribe(body: PushSubscribeRequest, user: User = Depends(current_user_local)) -> dict:
+    db = _get_db()
+    PushSubscriptionRepository(db).save(
         user.id, {"endpoint": body.endpoint, "keys": body.keys.model_dump()}
     )
     return {"ok": True}
 
 
 @router.post("/unsubscribe")
-def unsubscribe(
-    body: PushUnsubscribeRequest, user: User = Depends(current_user_local)
-) -> dict:
-    removed = _canonical("push_repo", "push_repo").delete(user.id, body.endpoint)
+def unsubscribe(body: PushUnsubscribeRequest, user: User = Depends(current_user_local)) -> dict:
+    db = _get_db()
+    removed = PushSubscriptionRepository(db).delete(user.id, body.endpoint)
     return {"ok": True, "removed": removed}
 
 
@@ -102,9 +98,6 @@ def send_test(user: User = Depends(current_user_local)) -> dict:
             status=503,
         )
     sent = send_push_to_user(
-        user.id,
-        "Invoice & Billing",
-        "Thông báo thử — cấu hình push đã hoạt động!",
-        url="/",
+        user.id, "Invoice & Billing", "Thông báo thử — cấu hình push đã hoạt động!", url="/"
     )
     return {"sent": sent}

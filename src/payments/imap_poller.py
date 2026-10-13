@@ -10,23 +10,23 @@ Cách hoạt động:
 Không bật khi thiếu IMAP_HOST/IMAP_USER — app chạy bình thường không có poller.
 Chỉ stdlib (imaplib + email) — không thêm dependency.
 """
+
 from __future__ import annotations
 
 import email
 import imaplib
 import logging
 import threading
+from collections.abc import Callable
 from email.header import decode_header
 from email.message import Message
-from typing import Callable, Dict, List, Optional
 
 from ..config import Settings, get_settings
 from ..domain.payments import PaymentEvent, TxDirection
 from ..payments.notify import send_receipt_reminder
 from ..payments.parser import parse_payment_text
 from ..payments.service import ingest
-from ..store.transactions import TransactionRepository
-from ..store.users import UserRepository
+from ..store.sql_repository import TransactionRepository, UserRepository, get_database
 
 logger = logging.getLogger("invoice.imap")
 
@@ -52,8 +52,8 @@ def decode_mime_header(value: str) -> str:
 
 def get_body_text(msg: Message) -> str:
     """Lấy body text/plain (decode quoted-printable/base64); fallback HTML strip tag."""
-    plain: Optional[str] = None
-    html: Optional[str] = None
+    plain: str | None = None
+    html: str | None = None
     for part in msg.walk():
         if part.get_content_maintype() != "text":
             continue
@@ -70,6 +70,7 @@ def get_body_text(msg: Message) -> str:
         return plain
     if html:
         import re
+
         return re.sub(r"<[^>]+>", " ", html)
     return ""
 
@@ -81,9 +82,9 @@ def build_event_text(msg: Message) -> str:
     return f"{subject}\n{body}".strip()
 
 
-def parse_recipients(raw: str) -> Dict[str, str]:
+def parse_recipients(raw: str) -> dict[str, str]:
     """Parse IMAP_USER_MAP "email1,user2" -> {email.lower(): username}."""
-    mapping: Dict[str, str] = {}
+    mapping: dict[str, str] = {}
     for pair in (raw or "").split(","):
         pair = pair.strip()
         if not pair:
@@ -98,7 +99,9 @@ def parse_recipients(raw: str) -> Dict[str, str]:
     return mapping
 
 
-def resolve_user_ids(msg: Message, user_repo: UserRepository, user_map: Dict[str, str]) -> List[str]:
+def resolve_user_ids(
+    msg: Message, user_repo: UserRepository, user_map: dict[str, str]
+) -> list[str]:
     """Quyết định email này thuộc về user nào.
 
     Thứ tự: IMAP_USER_MAP (nếu cấu hình — chỉ match map, không broadcast)
@@ -110,7 +113,7 @@ def resolve_user_ids(msg: Message, user_repo: UserRepository, user_map: Dict[str
     ).lower()
 
     if user_map:
-        ids: List[str] = []
+        ids: list[str] = []
         for known, username in user_map.items():
             if known in headers:
                 user = user_repo.get_by_username(username)
@@ -133,18 +136,18 @@ class ImapPoller:
 
     def __init__(
         self,
-        settings: Optional[Settings] = None,
-        user_repo: Optional[UserRepository] = None,
-        tx_repo: Optional[TransactionRepository] = None,
-        invoice_repo_getter: Optional[Callable] = None,
+        settings: Settings | None = None,
+        user_repo: UserRepository | None = None,
+        tx_repo: TransactionRepository | None = None,
+        invoice_repo_getter: Callable | None = None,
     ):
         s = settings or get_settings()
         self._settings = s
-        self._user_repo = user_repo or UserRepository(s.database_path)
-        self._tx_repo = tx_repo or TransactionRepository(s.database_path)
+        self._user_repo = user_repo or UserRepository(get_database(s.database_path))
+        self._tx_repo = tx_repo or TransactionRepository(get_database(s.database_path))
         # Invoice repo lấy qua callable để test patch được (app_module.repo)
         self._invoice_getter = invoice_repo_getter
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
     @property
@@ -182,7 +185,7 @@ class ImapPoller:
             if self._stop.wait(timeout=max(5, self._settings.imap_interval_seconds)):
                 return
 
-    def poll_once(self, fetch_fn: Optional[Callable] = None) -> int:
+    def poll_once(self, fetch_fn: Callable | None = None) -> int:
         """Quét 1 lần. Trả về số giao dịch đã ingest.
 
         fetch_fn -> ([(num, raw_bytes)], mark_seen(nums)) — inject được cho test.
@@ -213,11 +216,13 @@ class ImapPoller:
             try:
                 mark_seen(handled)
             except Exception:
-                logger.warning("IMAP: không đánh dấu seen được (email sẽ bị đọc lại — dedupe chặn trùng)")
+                logger.warning(
+                    "IMAP: không đánh dấu seen được (email sẽ bị đọc lại — dedupe chặn trùng)"
+                )
         return count
 
     def _ingest_for_recipients(
-        self, msg: Message, event: PaymentEvent, ref: str, user_map: Dict[str, str]
+        self, msg: Message, event: PaymentEvent, ref: str, user_map: dict[str, str]
     ) -> int:
         user_ids = resolve_user_ids(msg, self._user_repo, user_map)
         if not user_ids:
@@ -226,6 +231,7 @@ class ImapPoller:
         invoice_repo = self._invoice_getter() if self._invoice_getter else None
         if invoice_repo is None:
             from .. import app as app_module
+
             invoice_repo = app_module.repo
         done = 0
         errors = 0
@@ -260,7 +266,7 @@ class ImapPoller:
             if status != "OK":
                 return [], None
             nums = (data[0] or b"").split()[:50]  # giới hạn mỗi vòng
-            messages: List[tuple] = []
+            messages: list[tuple] = []
             for num in nums:
                 status, msg_data = client.fetch(num, "(RFC822)")
                 if status == "OK" and msg_data and msg_data[0]:

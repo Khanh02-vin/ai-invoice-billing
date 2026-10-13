@@ -5,6 +5,7 @@ Nguyên tắc (PLAN mục 3 — vận hành):
 - Dùng SQLite backup API cho nhất quán, fallback to file copy.
 - Restore giải nén về đúng đường dẫn.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,10 +14,8 @@ import shutil
 import sqlite3
 import tarfile
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import List, Optional
-
 
 META_FILENAME = "backup_meta.json"
 
@@ -39,11 +38,7 @@ class BackupManager:
     """Backup and restore manager."""
 
     def backup(
-        self,
-        db_path: str,
-        storage_dir: str,
-        backup_dir: str,
-        label: Optional[str] = None,
+        self, db_path: str, storage_dir: str, backup_dir: str, label: str | None = None
     ) -> str:
         """Create a backup archive (.tar.gz).
 
@@ -70,7 +65,7 @@ class BackupManager:
 
         backup_p.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         name = f"backup_{timestamp}"
         if label:
             name += f"_{label}"
@@ -91,14 +86,13 @@ class BackupManager:
 
             # 3. Metadata
             meta = {
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
                 "label": label or "",
                 "db_filename": db_p.name,
                 "storage_dirname": storage_p.name,
             }
             (staging_root / META_FILENAME).write_text(
-                json.dumps(meta, indent=2, ensure_ascii=False),
-                encoding="utf-8",
+                json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
             )
 
             # 4. Create tar.gz
@@ -111,12 +105,7 @@ class BackupManager:
 
         return str(archive_path)
 
-    def restore(
-        self,
-        backup_path: str,
-        db_path: str,
-        storage_dir: str,
-    ) -> None:
+    def restore(self, backup_path: str, db_path: str, storage_dir: str) -> None:
         """Restore from a backup archive.
 
         Args:
@@ -158,12 +147,16 @@ class BackupManager:
 
             db_filename = meta.get("db_filename", "invoices.db")
             storage_dirname = meta.get("storage_dirname", "storage")
-            if not self._is_safe_basename(db_filename) or not self._is_safe_basename(storage_dirname):
+            if not self._is_safe_basename(db_filename) or not self._is_safe_basename(
+                storage_dirname
+            ):
                 raise SecurityError("Invalid backup path metadata")
 
             db_src = extract_root / "db" / db_filename
             storage_src = extract_root / "storage"
-            if not _is_safe_path(extract_root, db_src) or not _is_safe_path(extract_root, storage_src):
+            if not _is_safe_path(extract_root, db_src) or not _is_safe_path(
+                extract_root, storage_src
+            ):
                 raise SecurityError("Backup payload escapes staging directory")
             if not db_src.is_file() or not storage_src.is_dir():
                 raise ValueError("Invalid backup: missing database or storage")
@@ -184,9 +177,7 @@ class BackupManager:
 
     @staticmethod
     def _validate_members(
-        tar: tarfile.TarFile,
-        members: list[tarfile.TarInfo],
-        staging_dir: Path,
+        tar: tarfile.TarFile, members: list[tarfile.TarInfo], staging_dir: Path
     ) -> None:
         for member in members:
             name = member.name
@@ -205,7 +196,7 @@ class BackupManager:
                 if not _is_safe_path(staging_dir, link_target):
                     raise SecurityError(f"Unsafe archive link: {name!r}")
 
-    def list_backups(self, backup_dir: str) -> List[dict]:
+    def list_backups(self, backup_dir: str) -> list[dict]:
         """List all backup archives in a directory.
 
         Args:
@@ -219,7 +210,7 @@ class BackupManager:
         if not backup_p.exists():
             return []
 
-        backups: List[dict] = []
+        backups: list[dict] = []
         for entry in sorted(backup_p.iterdir()):
             if entry.is_file() and entry.suffix == ".gz" and entry.name.startswith("backup_"):
                 stat = entry.stat()
@@ -228,9 +219,7 @@ class BackupManager:
                         "path": str(entry),
                         "name": entry.name,
                         "size": stat.st_size,
-                        "created_at": datetime.fromtimestamp(
-                            stat.st_mtime, tz=timezone.utc
-                        ).isoformat(),
+                        "created_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
                         "label": self._extract_label(entry.name),
                     }
                 )
@@ -245,7 +234,7 @@ class BackupManager:
             src_conn.backup(dst_conn)
             dst_conn.close()
             src_conn.close()
-        except sqlite3.Error as e:
+        except sqlite3.Error:
             # Fallback: simple file copy
             shutil.copy2(db_path, dest)
             # Log the fallback in case callers want to know

@@ -4,16 +4,17 @@ Stores one row per invoice with a JSON dense vector. Search is brute-force
 cosine over the caller's scope (user/org) — fine for small-to-mid invoice sets
 and keeps the project dependency-free.
 """
+
 from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Iterable, List, Optional, Tuple
 
-from ..domain.models import Invoice
+from ..models import Invoice
 from ..store.db import SQLiteRepo
-from .embeddings import SimpleEmbedding, cosine_similarity, tokenize
+from .embeddings import SimpleEmbedding, cosine_similarity
 
 
 def _invoice_text(inv: Invoice) -> str:
@@ -48,12 +49,8 @@ class InvoiceVectorStore(SQLiteRepo):
                 updated_at TEXT NOT NULL
             )
         """)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_emb_user ON invoice_embeddings(user_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_emb_org ON invoice_embeddings(org_id)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_emb_user ON invoice_embeddings(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_emb_org ON invoice_embeddings(org_id)")
 
     # ---------- indexing ----------
 
@@ -73,14 +70,7 @@ class InvoiceVectorStore(SQLiteRepo):
                      vector=excluded.vector,
                      text=excluded.text,
                      updated_at=excluded.updated_at""",
-                (
-                    inv.id,
-                    inv.user_id,
-                    org_id,
-                    json.dumps(vec),
-                    text,
-                    datetime.utcnow().isoformat(),
-                ),
+                (inv.id, inv.user_id, org_id, json.dumps(vec), text, datetime.utcnow().isoformat()),
             )
 
     def index_many(self, invoices: Iterable[Invoice], org_id: str = "") -> int:
@@ -119,12 +109,8 @@ class InvoiceVectorStore(SQLiteRepo):
     # ---------- search ----------
 
     def search(
-        self,
-        query: str,
-        user_id: str = "",
-        org_id: str = "",
-        top_k: int = 5,
-    ) -> List[Tuple[str, float, str]]:
+        self, query: str, user_id: str = "", org_id: str = "", top_k: int = 5
+    ) -> list[tuple[str, float, str]]:
         """Return top (invoice_id, score, text) for the query within scope."""
         if not query or not self._embedder._is_fit:
             return []
@@ -132,7 +118,7 @@ class InvoiceVectorStore(SQLiteRepo):
         if not q_vec:
             return []
         rows = self._fetch_candidates(user_id=user_id, org_id=org_id)
-        scored: List[Tuple[str, float, str]] = []
+        scored: list[tuple[str, float, str]] = []
         for inv_id, vec_json, text in rows:
             try:
                 vec = json.loads(vec_json)
@@ -144,12 +130,8 @@ class InvoiceVectorStore(SQLiteRepo):
         return scored[:top_k]
 
     def hybrid_search(
-        self,
-        query: str,
-        user_id: str = "",
-        org_id: str = "",
-        top_k: int = 5,
-    ) -> List[Tuple[str, float, str]]:
+        self, query: str, user_id: str = "", org_id: str = "", top_k: int = 5
+    ) -> list[tuple[str, float, str]]:
         """Vector search first; fall back to LIKE if embeddings missing."""
         results = self.search(query, user_id=user_id, org_id=org_id, top_k=top_k)
         if results:
@@ -169,9 +151,7 @@ class InvoiceVectorStore(SQLiteRepo):
 
     # ---------- helpers ----------
 
-    def _fetch_candidates(
-        self, user_id: str, org_id: str
-    ) -> List[Tuple[str, str, str]]:
+    def _fetch_candidates(self, user_id: str, org_id: str) -> list[tuple[str, str, str]]:
         with self._connect() as conn:
             if org_id:
                 rows = conn.execute(

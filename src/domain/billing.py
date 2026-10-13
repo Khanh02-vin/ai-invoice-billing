@@ -4,10 +4,12 @@ Nguyên tắc:
 - Provider-agnostic: Plan/Subscription/Entitlement không phụ thuộc Stripe/Paddle.
 - Schema đầy đủ để map trực tiếp từ webhook events (Stripe/Paddle).
 """
-from enum import Enum
-from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field
+
 from datetime import datetime
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 
 # --- Enums ---
@@ -27,13 +29,14 @@ class SubscriptionStatus(str, Enum):
 # --- Domain models ---
 class Plan(BaseModel):
     """Gói đăng ký (plan/product) — provider-agnostic."""
+
     id: str = ""
     tier: PlanTier = PlanTier.FREE
     name: str = ""
     price_cents: int = 0
     currency: str = "USD"
     interval: str = "month"  # month | year
-    features: Dict[str, Any] = Field(default_factory=dict)
+    features: dict[str, Any] = Field(default_factory=dict)
     invoice_limit: int = 10  # số hóa đơn tối đa / kỳ
     llm_enabled: bool = False
     pdf_export: bool = False
@@ -41,13 +44,14 @@ class Plan(BaseModel):
 
 class Subscription(BaseModel):
     """Subscription map từ Stripe `customer.subscription.*` / Paddle `subscription.*`."""
+
     id: str = ""
     user_id: str = ""
     org_id: str = ""
     plan_id: str = ""
     status: SubscriptionStatus = SubscriptionStatus.ACTIVE
-    current_period_start: Optional[str] = None
-    current_period_end: Optional[str] = None
+    current_period_start: str | None = None
+    current_period_end: str | None = None
     provider: str = "mock"  # mock | stripe | paddle
     provider_subscription_id: str = ""
     created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
@@ -55,6 +59,7 @@ class Subscription(BaseModel):
 
 class Entitlement(BaseModel):
     """Quyền lợi hiện tại của user/org — derived từ active subscription."""
+
     user_id: str = ""
     org_id: str = ""
     plan_tier: PlanTier = PlanTier.FREE
@@ -66,6 +71,7 @@ class Entitlement(BaseModel):
 
 class CheckoutSession(BaseModel):
     """Phiên checkout — trả từ provider.create_checkout_session."""
+
     id: str = ""
     user_id: str = ""
     plan_id: str = ""
@@ -76,9 +82,10 @@ class CheckoutSession(BaseModel):
 
 class WebhookEvent(BaseModel):
     """Webhook event raw — lưu lại để audit & idempotency."""
+
     id: str = ""
     provider: str = "mock"
     event_type: str = ""
-    payload: Dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
     processed: bool = False
     created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())

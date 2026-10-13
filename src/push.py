@@ -4,11 +4,11 @@ Cùng triết lý với `src/mail.py`: best-effort, không raise, thiếu cấu 
 im lặng bỏ qua. Cần `pip install pywebpush` + cặp VAPID key trong .env
 (sinh bằng `python3 scripts/gen_vapid_keys.py`).
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
 
 from .config import get_settings
 from .store.push import PushSubscriptionRepository
@@ -21,10 +21,10 @@ except ImportError:  # pragma: no cover
     webpush = None
 
 # Test hook: ép repo riêng (memory) — None nghĩa là dùng repo mặc định.
-_repo_override: Optional[PushSubscriptionRepository] = None
+_repo_override: PushSubscriptionRepository | None = None
 
 
-def set_repo(repo: Optional[PushSubscriptionRepository]) -> None:
+def set_repo(repo: PushSubscriptionRepository | None) -> None:
     global _repo_override
     _repo_override = repo
 
@@ -35,6 +35,7 @@ def _repo() -> PushSubscriptionRepository:
     # Ưu tiên repo gắn ở app module (pattern tx_repo) để test patch được.
     try:
         from . import app as app_module
+
         repo = getattr(app_module, "push_repo", None)
         if repo is not None:
             return repo

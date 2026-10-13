@@ -2,36 +2,41 @@
 
 GET /search?q=...&top_k=5  -> vector search over the caller's invoices.
 """
+
 from __future__ import annotations
 
-from typing import List
-
 from fastapi import APIRouter, Depends, Query
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..auth.security import decode_token
-from ..domain.models import User
 from ..errors import AppError
+from ..models import User
 from ..search.vector_store import InvoiceVectorStore
-from ..store.repository import InvoiceRepository
-from ..store.users import UserRepository
+from ..store.sql_repository import Database, InvoiceRepository, get_database
 
 router = APIRouter(prefix="/search", tags=["search"])
 
 bearer = HTTPBearer(auto_error=False)
 
 search_store = InvoiceVectorStore()
-invoice_repo = InvoiceRepository()
-user_repo = UserRepository()
+_db: Database | None = None
 
 
-def current_user_local(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer),
-) -> User:
+def _get_db() -> Database:
+    global _db
+    if _db is None:
+        _db = get_database()
+    return _db
+
+
+def current_user_local(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> User:
     if not credentials:
         raise AppError("UNAUTHORIZED", "Cần đăng nhập.", status=401)
     user_id = decode_token(credentials.credentials)
-    user = user_repo.get(user_id) if user_id else None
+    if not user_id:
+        raise AppError("UNAUTHORIZED", "Token không hợp lệ.", status=401)
+    db = _get_db()
+    user = db.get_session().get(User, user_id)
     if not user:
         raise AppError("UNAUTHORIZED", "Token không hợp lệ.", status=401)
     return user
@@ -46,7 +51,7 @@ async def search_invoices(
     """Vector search over the caller's invoices. Auto-indexes if needed."""
     # Lazy index: if store has no rows for this user, build from repo.
     if not search_store._embedder._is_fit:
-        invoices = invoice_repo.list(user_id=user.id, limit=1000)
+        invoices = InvoiceRepository(_get_db()).list(user_id=user.id, limit=1000)
         if invoices:
             search_store.index_many(invoices)
     results = search_store.search(q, user_id=user.id, top_k=top_k)

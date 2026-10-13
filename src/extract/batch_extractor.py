@@ -1,9 +1,10 @@
 """Batch extractor — xử lý nhiều hóa đơn song song, cách ly lỗi."""
+
 import mimetypes
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .extractor import extract_invoice
 from ..store.repository import DuplicateInvoiceError
+from .extractor import extract_invoice
 
 
 def extract_batch(files, repo, user_id: str = "", max_workers: int = 4) -> dict:
@@ -12,6 +13,7 @@ def extract_batch(files, repo, user_id: str = "", max_workers: int = 4) -> dict:
     Mỗi file chạy thread riêng; file lỗi bị skip (log error), file thành công
     được upsert. Trả về: {total, successful, failed, results, errors}.
     """
+
     def _one(item):
         filename, data = item
         try:
@@ -20,7 +22,7 @@ def extract_batch(files, repo, user_id: str = "", max_workers: int = 4) -> dict:
                 content=data, mime_type=mime, source_file=filename, user_id=user_id
             )
             return filename, inv, None
-        except Exception as e:  # noqa: BLE001 — cách ly lỗi từng file
+        except Exception as e:
             return filename, None, f"{type(e).__name__}: {e}"
 
     results, errors = [], []

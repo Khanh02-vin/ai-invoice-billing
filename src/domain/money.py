@@ -3,11 +3,10 @@
 Nguyên tắc (PLAN mục 3): dùng Decimal, UTC-aware datetime và schema versioned.
 Báo cáo dùng Decimal và currency-aware aggregation.
 """
+
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
-from typing import Dict, List
-
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 # Số chữ thập phân theo loại tiền (ISO 4217 minor unit).
 # VND/KRW/JPY không có phần thập phân; USD/EUR có 2 chữ số.
@@ -45,7 +44,7 @@ def parse_money(value, currency: str = "USD") -> Decimal:
     return quantize(to_decimal(value), currency)
 
 
-def add_amounts(amounts: List, currency: str = "USD") -> Decimal:
+def add_amounts(amounts: list, currency: str = "USD") -> Decimal:
     """Cộng danh sách tiền an toàn, trả về Decimal đã làm tròn."""
     total = sum(to_decimal(a) for a in amounts)
     return quantize(total, currency)
@@ -59,15 +58,13 @@ def format_money(amount: Decimal, currency: str) -> str:
     return f"{amount:,.2f} {currency}"
 
 
-def aggregate_by_currency(
-    items: List[tuple],
-) -> Dict[str, Decimal]:
+def aggregate_by_currency(items: list[tuple]) -> dict[str, Decimal]:
     """Tổng hợp tiền theo loại tiền.
 
     items: list của (amount, currency) — amount có thể là str/int/float/Decimal.
     Trả về dict currency -> Decimal đã làm tròn.
     """
-    buckets: Dict[str, Decimal] = {}
+    buckets: dict[str, Decimal] = {}
     for amount, currency in items:
         cur = currency.upper()
         buckets[cur] = buckets.get(cur, Decimal("0")) + to_decimal(amount)

@@ -6,37 +6,58 @@ Nguyên tắc (PLAN mục 3):
 - Upload validation: dung lượng, MIME sniff, số trang.
 - Health/readiness phân biệt process sống và dependency sẵn sàng.
 """
+
 import secrets
-import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Response, Request
+from fastapi import Depends, FastAPI, File, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
+bearer = HTTPBearer(auto_error=False)
+
+from .auth.security import create_refresh_token as create_refresh_jwt
+from .auth.security import create_token, decode_token, hash_password, verify_password
 from .config import get_settings
 from .domain.models import (
-    Invoice, InvoiceCreate, InvoiceUpdate, MonthlyReport, InvoiceStatus,
-    User, UserCreate, UserPublic, Token, FieldCorrection,
+    FieldCorrection,
+    InvoiceCreate,
+    InvoiceStatus,
+    InvoiceUpdate,
+    MonthlyReport,
+    Token,
+    UserCreate,
+    UserPublic,
 )
+from .errors import AppError, register_error_handlers
 from .extract.extractor import extract_invoice
-from .store.repository import InvoiceRepository, DuplicateInvoiceError
-from .store.users import UserRepository
-from .auth.security import hash_password, verify_password, create_token, decode_token, create_refresh_token as create_refresh_jwt
-from .errors import register_error_handlers, AppError
 from .middleware import (
-    RequestIdMiddleware, SecurityHeadersMiddleware, StructuredLoggingMiddleware, configure_cors,
+    RequestIdMiddleware,
+    SecurityHeadersMiddleware,
+    StructuredLoggingMiddleware,
+    configure_cors,
 )
-from .upload import validate_upload
-from .store.storage import LocalFileStorage, generate_storage_key, compute_fingerprint
-from .routers.search import router as search_router
-from .routers.auth_ext import router as auth_ext_router, send_verification_email
-from .routers.push import router as push_router
+from .models import Invoice, User
 from .observability import metrics as obs_metrics
-from .security.idempotency import InMemoryCache, compute_content_hash, generate_idempotency_key
+from .routers.auth_ext import router as auth_ext_router
+from .routers.auth_ext import send_verification_email
+from .routers.payments import router as payments_router
+from .routers.push import router as push_router
+from .routers.search import router as search_router
+from .security.idempotency import compute_content_hash, generate_idempotency_key
+from .store.sql_repository import (
+    DuplicateInvoiceError,
+    InvoiceRepository,
+    PushSubscriptionRepository,
+    TransactionRepository,
+    UserRepository,
+    init_database,
+)
+from .store.storage import compute_fingerprint, generate_storage_key
+from .upload import validate_upload
 
 settings = get_settings()
 settings.ensure_production_readiness()
@@ -56,6 +77,7 @@ register_error_handlers(app)
 app.include_router(search_router)
 app.include_router(auth_ext_router)
 app.include_router(push_router)
+app.include_router(payments_router)
 
 # --- IMAP poller (tùy chọn): đọc email báo giao dịch bank/ví -> /payments/ingest ---
 # Chỉ chạy khi cấu hình IMAP_HOST + IMAP_USER; app vẫn boot bình thường khi thiếu.
@@ -73,27 +95,19 @@ async def _start_imap_poller():
 async def _stop_imap_poller():
     _imap_poller.stop()
 
+
+# --- Initialize Database ---
+db = init_database(settings.database_path)
+repo = InvoiceRepository(db)
+users = UserRepository(db)
+tx_repo = TransactionRepository(db)
+push_repo = PushSubscriptionRepository(db)
+
+
 # --- Observability (Phase 4) ---
 @app.get("/metrics")
 async def metrics_endpoint():
     return obs_metrics.metrics_response()
-
-repo = InvoiceRepository(settings.database_path)
-users = UserRepository(settings.database_path)
-bearer = HTTPBearer(auto_error=False)
-
-# Giao dịch ngân hàng/ví — chờ ghép với hóa đơn
-from .store.transactions import TransactionRepository
-from .store.push import PushSubscriptionRepository
-from .payments.service import match_invoice_saved
-tx_repo = TransactionRepository(settings.database_path)
-
-# --- Push subscription (PWA/Web Push) ---
-push_repo = PushSubscriptionRepository(settings.database_path)
-
-# --- Storage ---
-storage = LocalFileStorage(settings.storage_dir)
-_upload_idempotency = InMemoryCache()
 
 
 def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> User:
@@ -135,15 +149,13 @@ async def ready():
         pass
     all_ready = all(checks.values())
     status_code = 200 if all_ready else 503
-    return JSONResponse(
-        status_code=status_code,
-        content={"ready": all_ready, "checks": checks},
-    )
+    return JSONResponse(status_code=status_code, content={"ready": all_ready, "checks": checks})
 
 
 # ---------- Auth ----------
 # Đăng ký mặc định TẮT khi deploy (ai có link public đều gọi được API).
 # Mở bằng env OPEN_REGISTRATION=1 khi cần tạo tài khoản mới.
+
 
 @app.post("/auth/register", response_model=Token)
 async def register(data: UserCreate, request: Request):
@@ -158,7 +170,7 @@ async def register(data: UserCreate, request: Request):
     user = users.create(data.username, hash_password(data.password), email=data.email or "")
     jti = secrets.token_urlsafe(24)
     refresh_token = create_refresh_jwt(user.id, jti)
-    users.store_refresh_token(jti, user.id, (datetime.now(timezone.utc) + timedelta(days=30)).isoformat())
+    users.store_refresh_token(jti, user.id, (datetime.now(UTC) + timedelta(days=30)).isoformat())
     # Gửi email xác minh ngay (best-effort): SMTP chưa cấu hình hoặc user không có
     # email -> verification_sent=False; user gọi /auth/resend-verification sau khi
     # quản trị viên cấu hình SMTP.
@@ -182,7 +194,7 @@ async def login(data: UserCreate):
         raise AppError("EMAIL_NOT_VERIFIED", "Vui lòng xác minh email trước.", status=403)
     jti = secrets.token_urlsafe(24)
     refresh_token = create_refresh_jwt(user.id, jti)
-    users.store_refresh_token(jti, user.id, (datetime.now(timezone.utc) + timedelta(days=30)).isoformat())
+    users.store_refresh_token(jti, user.id, (datetime.now(UTC) + timedelta(days=30)).isoformat())
     return {"access_token": create_token(user.id), "refresh_token": refresh_token}
 
 
@@ -199,9 +211,7 @@ def _can_access(invoice: Invoice, user: User) -> bool:
 
 @app.get("/invoices", response_model=List[Invoice])
 async def list_invoices(
-    status: Optional[InvoiceStatus] = None,
-    limit: int = 100,
-    user: User = Depends(current_user),
+    status: InvoiceStatus | None = None, limit: int = 100, user: User = Depends(current_user)
 ):
     return repo.list(user_id=user.id, status=status, limit=limit)
 
@@ -231,9 +241,7 @@ async def create_invoice(data: InvoiceCreate, user: User = Depends(current_user)
 
 
 @app.put("/invoices/{invoice_id}", response_model=Invoice)
-async def update_invoice(
-    invoice_id: str, data: InvoiceUpdate, user: User = Depends(current_user),
-):
+async def update_invoice(invoice_id: str, data: InvoiceUpdate, user: User = Depends(current_user)):
     invoice = repo.get(invoice_id, user_id=user.id)
     if not invoice:
         raise AppError("NOT_FOUND", "Không tìm thấy hóa đơn.", status=404)
@@ -272,26 +280,26 @@ async def export_corrections(limit: int = 500, user: User = Depends(current_user
     out: List[FieldCorrection] = []
     for inv in repo.list(user_id=user.id, limit=1000):
         for c in inv.review_history:
-            out.append(FieldCorrection(
-                invoice_id=inv.id,
-                field=c.get("field", ""),
-                old_value=c.get("old_value"),
-                new_value=c.get("new_value"),
-                confidence=c.get("confidence"),
-                source=c.get("source"),
-                corrected_by=c.get("corrected_by", ""),
-                corrected_at=c.get("corrected_at", ""),
-            ))
+            out.append(
+                FieldCorrection(
+                    invoice_id=inv.id,
+                    field=c.get("field", ""),
+                    old_value=c.get("old_value"),
+                    new_value=c.get("new_value"),
+                    confidence=c.get("confidence"),
+                    source=c.get("source"),
+                    corrected_by=c.get("corrected_by", ""),
+                    corrected_at=c.get("corrected_at", ""),
+                )
+            )
     out.sort(key=lambda c: c.corrected_at or "", reverse=True)
-    return out[:max(1, min(limit, 5000))]
+    return out[: max(1, min(limit, 5000))]
 
 
 # ---------- Upload + Extraction ----------
 @app.post("/upload", response_model=Invoice)
 async def upload_invoice(
-    file: UploadFile = File(...),
-    request: Request = None,
-    user: User = Depends(current_user),
+    file: UploadFile = File(...), request: Request = None, user: User = Depends(current_user)
 ):
     """Upload file hóa đơn → validate → trích xuất → lưu."""
     content = await file.read()
@@ -304,7 +312,9 @@ async def upload_invoice(
         )
     cached = _upload_idempotency.get(idem_key)
     if cached:
-        return JSONResponse(content=cached, status_code=200, headers={"X-Idempotent-Replay": "true"})
+        return JSONResponse(
+            content=cached, status_code=200, headers={"X-Idempotent-Replay": "true"}
+        )
 
     # Validate upload
     validated = validate_upload(
@@ -329,11 +339,7 @@ async def upload_invoice(
             user_id=user.id,
         )
     except Exception as e:
-        raise AppError(
-            "EXTRACTION_FAILED",
-            f"Trích xuất thất bại: {str(e)}",
-            status=422,
-        )
+        raise AppError("EXTRACTION_FAILED", f"Trích xuất thất bại: {e!s}", status=422)
 
     # Cập nhật provenance với file metadata
     invoice.file_checksum = compute_fingerprint(content)
@@ -374,11 +380,12 @@ async def monthly_report_pdf(period: str, user: User = Depends(current_user)):
         raise AppError("NOT_FOUND", "Không có hóa đơn trong kỳ này.", status=404)
     try:
         from .reports.pdf_exporter import export_monthly_pdf
+
         invoices = repo.list(user_id=user.id)
         pdf_bytes = export_monthly_pdf(report, invoices)
         return Response(content=pdf_bytes, media_type="application/pdf")
     except Exception as e:
-        raise AppError("PDF_EXPORT_FAILED", f"Xuất PDF thất bại: {str(e)}", status=500)
+        raise AppError("PDF_EXPORT_FAILED", f"Xuất PDF thất bại: {e!s}", status=500)
 
 
 # ---------- Static frontend ----------

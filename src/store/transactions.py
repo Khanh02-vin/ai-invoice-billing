@@ -1,8 +1,8 @@
 """Lưu trữ giao dịch thanh toán (bank/wallet) trên SQLite — chờ ghép hóa đơn."""
+
 import math
 import uuid
 from datetime import datetime
-from typing import List, Optional
 
 from ..domain.payments import PaymentTransaction, TxDirection, TxStatus
 from .db import SQLiteRepo
@@ -40,9 +40,13 @@ class TransactionRepository(SQLiteRepo):
             )
         """)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(payment_transactions)")}
-        for name, sql_type in (("note", "TEXT DEFAULT ''"), ("category", "TEXT DEFAULT ''"),
-                               ("location_lat", "REAL"), ("location_lon", "REAL"),
-                               ("location_captured_at", "TEXT")):
+        for name, sql_type in (
+            ("note", "TEXT DEFAULT ''"),
+            ("category", "TEXT DEFAULT ''"),
+            ("location_lat", "REAL"),
+            ("location_lon", "REAL"),
+            ("location_captured_at", "TEXT"),
+        ):
             if name not in columns:
                 conn.execute(f"ALTER TABLE payment_transactions ADD COLUMN {name} {sql_type}")
         conn.execute("""
@@ -56,7 +60,9 @@ class TransactionRepository(SQLiteRepo):
                 created_at TEXT NOT NULL
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_attachment_owner ON transaction_attachments(user_id, transaction_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_attachment_owner ON transaction_attachments(user_id, transaction_id)"
+        )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS shared_place_visits (
                 id TEXT PRIMARY KEY,
@@ -68,7 +74,9 @@ class TransactionRepository(SQLiteRepo):
                 created_at TEXT NOT NULL
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_shared_place_user ON shared_place_visits(user_id, created_at)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shared_place_user ON shared_place_visits(user_id, created_at)"
+        )
         # Dedupe: mỗi user không có 2 transaction cùng ref
         conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_tx_user_ref
@@ -81,10 +89,23 @@ class TransactionRepository(SQLiteRepo):
 
     def _serialize(self, tx: PaymentTransaction) -> tuple:
         return (
-            tx.id, tx.user_id, tx.amount, tx.currency, tx.direction.value,
-            tx.merchant, tx.occurred_at, tx.source, tx.external_ref,
-            tx.status.value, tx.matched_invoice_id, tx.raw_text, tx.note, tx.category,
-            tx.location_lat, tx.location_lon, tx.location_captured_at,
+            tx.id,
+            tx.user_id,
+            tx.amount,
+            tx.currency,
+            tx.direction.value,
+            tx.merchant,
+            tx.occurred_at,
+            tx.source,
+            tx.external_ref,
+            tx.status.value,
+            tx.matched_invoice_id,
+            tx.raw_text,
+            tx.note,
+            tx.category,
+            tx.location_lat,
+            tx.location_lon,
+            tx.location_captured_at,
             tx.created_at.isoformat(),
         )
 
@@ -93,7 +114,9 @@ class TransactionRepository(SQLiteRepo):
         data["direction"] = TxDirection(data.get("direction", "debit"))
         data["status"] = TxStatus(data.get("status", "pending_receipt"))
         data["created_at"] = (
-            datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.utcnow()
+            datetime.fromisoformat(data["created_at"])
+            if data.get("created_at")
+            else datetime.utcnow()
         )
         return PaymentTransaction(**data)
 
@@ -115,8 +138,15 @@ class TransactionRepository(SQLiteRepo):
             )
         return tx
 
-    def add_attachment(self, attachment_id: str, transaction_id: str, user_id: str,
-                       storage_key: str, mime_type: str, size: int) -> dict:
+    def add_attachment(
+        self,
+        attachment_id: str,
+        transaction_id: str,
+        user_id: str,
+        storage_key: str,
+        mime_type: str,
+        size: int,
+    ) -> dict:
         created_at = datetime.utcnow().isoformat()
         with self._connect() as conn:
             conn.execute(
@@ -125,19 +155,25 @@ class TransactionRepository(SQLiteRepo):
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (attachment_id, transaction_id, user_id, storage_key, mime_type, size, created_at),
             )
-        return {"id": attachment_id, "transaction_id": transaction_id, "mime_type": mime_type,
-                "size": size, "created_at": created_at}
+        return {
+            "id": attachment_id,
+            "transaction_id": transaction_id,
+            "mime_type": mime_type,
+            "size": size,
+            "created_at": created_at,
+        }
 
     def list_attachments(self, transaction_id: str, user_id: str) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT id, transaction_id, mime_type, size, created_at
                    FROM transaction_attachments WHERE transaction_id = ? AND user_id = ?
-                   ORDER BY created_at DESC""", (transaction_id, user_id),
+                   ORDER BY created_at DESC""",
+                (transaction_id, user_id),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def get_attachment(self, attachment_id: str, user_id: str) -> Optional[dict]:
+    def get_attachment(self, attachment_id: str, user_id: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM transaction_attachments WHERE id = ? AND user_id = ?",
@@ -145,24 +181,38 @@ class TransactionRepository(SQLiteRepo):
             ).fetchone()
         return dict(row) if row else None
 
-    def delete_attachment(self, attachment_id: str, user_id: str) -> Optional[dict]:
+    def delete_attachment(self, attachment_id: str, user_id: str) -> dict | None:
         attachment = self.get_attachment(attachment_id, user_id)
         if not attachment:
             return None
         with self._connect() as conn:
-            conn.execute("DELETE FROM transaction_attachments WHERE id = ? AND user_id = ?", (attachment_id, user_id))
+            conn.execute(
+                "DELETE FROM transaction_attachments WHERE id = ? AND user_id = ?",
+                (attachment_id, user_id),
+            )
         return attachment
 
-    def add_shared_place_visit(self, user_id: str, place_name: str, place_kind: str,
-                               lat: float, lon: float) -> None:
+    def add_shared_place_visit(
+        self, user_id: str, place_name: str, place_kind: str, lat: float, lon: float
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO shared_place_visits (id, user_id, place_name, place_kind, lat, lon, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (uuid.uuid4().hex, user_id, place_name, place_kind, lat, lon, datetime.utcnow().isoformat()),
+                (
+                    uuid.uuid4().hex,
+                    user_id,
+                    place_name,
+                    place_kind,
+                    lat,
+                    lon,
+                    datetime.utcnow().isoformat(),
+                ),
             )
 
-    def list_shared_places(self, lat: float, lon: float, radius: int, user_ids: list[str], exclude_user_id: str = "") -> list[dict]:
+    def list_shared_places(
+        self, lat: float, lon: float, radius: int, user_ids: list[str], exclude_user_id: str = ""
+    ) -> list[dict]:
         user_ids = list(set(user_ids) - ({exclude_user_id} if exclude_user_id else set()))
         if len(user_ids) < 2:
             return []
@@ -182,9 +232,17 @@ class TransactionRepository(SQLiteRepo):
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def update_details(self, tx_id: str, user_id: str, *, note: str, category: str,
-                       location_lat: Optional[float], location_lon: Optional[float],
-                       location_captured_at: Optional[str]) -> bool:
+    def update_details(
+        self,
+        tx_id: str,
+        user_id: str,
+        *,
+        note: str,
+        category: str,
+        location_lat: float | None,
+        location_lon: float | None,
+        location_captured_at: str | None,
+    ) -> bool:
         with self._connect() as conn:
             cur = conn.execute(
                 """UPDATE payment_transactions
@@ -194,7 +252,7 @@ class TransactionRepository(SQLiteRepo):
             )
             return cur.rowcount > 0
 
-    def get(self, tx_id: str, user_id: str = "") -> Optional[PaymentTransaction]:
+    def get(self, tx_id: str, user_id: str = "") -> PaymentTransaction | None:
         query = "SELECT * FROM payment_transactions WHERE id = ?"
         params: list = [tx_id]
         if user_id:
@@ -204,7 +262,7 @@ class TransactionRepository(SQLiteRepo):
             row = conn.execute(query, params).fetchone()
         return self._row_to_tx(row) if row else None
 
-    def get_by_ref(self, user_id: str, external_ref: str) -> Optional[PaymentTransaction]:
+    def get_by_ref(self, user_id: str, external_ref: str) -> PaymentTransaction | None:
         if not external_ref:
             return None
         with self._connect() as conn:
@@ -217,12 +275,12 @@ class TransactionRepository(SQLiteRepo):
     def list(
         self,
         user_id: str = "",
-        status: Optional[TxStatus] = None,
-        direction: Optional[TxDirection] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
+        status: TxStatus | None = None,
+        direction: TxDirection | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
         limit: int = 50,
-    ) -> List[PaymentTransaction]:
+    ) -> list[PaymentTransaction]:
         query = "SELECT * FROM payment_transactions WHERE user_id = ?"
         params: list = [user_id]
         if status:

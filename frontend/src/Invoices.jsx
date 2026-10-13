@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { api, clearToken } from "./api";
-import Ledger from "./Ledger";
-import LineSidebar from "./components/react-bits/LineSidebar.jsx";
+import Sidebar from "./components/Sidebar";
+import QuickActions from "./components/QuickActions";
+import HistoryTimeline from "./views/HistoryTimeline";
+import PlaceRecommendations from "./views/PlaceRecommendations";
 import { CountUp, Sparkline } from "./components/mini";
 import { pushSupported, pushStatus, enablePush, disablePush, sendTestPush } from "./push.js";
 
@@ -11,9 +13,7 @@ const STATUS_LABEL = {
   overdue: "Quá hạn",
   cancelled: "Đã hủy",
 };
-const NAV = ["Tổng quan", "Báo cáo", "Cài đặt"];
 
-// Threshold review — ô nào confidence dưới mức này thì đánh dấu cần sửa (đỏ)
 const CONF_WARN = 0.7;
 const FIELD_LABELS = {
   invoice_number: "Số hóa đơn", vendor: "Nhà cung cấp", issue_date: "Ngày lập",
@@ -25,7 +25,6 @@ const fmt = new Intl.NumberFormat("vi-VN");
 const fmtNum = (v) => fmt.format(Math.round(v || 0));
 const money = (currency, v) => (currency === "VND" ? "₫" : currency + " ") + fmt.format(v || 0);
 
-// Icon SVG nhỏ, inline — không thêm thư viện
 const Icon = {
   upload: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M8 11V3m0 0L4.5 6.5M8 3l3.5 3.5M2.5 12.5h11" strokeLinecap="round" strokeLinejoin="round" /></svg>,
   search: <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" strokeLinecap="round" /></svg>,
@@ -57,10 +56,20 @@ export default function Invoices({ user, onLogout }) {
   });
   const [pendingTx, setPendingTx] = useState([]);
 
-  // Push notification (PWA) — trạng thái thiết bị hiện tại
+  // Push notification (PWA)
   const [pushState, setPushState] = useState(pushSupported() ? "off" : "unsupported");
   const [pushBusy, setPushBusy] = useState(false);
 
+  // Review panel state
+  const [reviewInvoice, setReviewInvoice] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const showErr = useCallback((e) => {
+    setError(e.message || "Lỗi không xác định");
+  }, []);
+  const clearMsg = useCallback(() => setMsg(null), []);
+
+  // Load push status
   useEffect(() => {
     pushStatus().then(setPushState).catch(() => {});
   }, []);
@@ -90,16 +99,7 @@ export default function Invoices({ user, onLogout }) {
     }
   };
 
-  // Review panel: invoice được chọn để sửa field
-  const [reviewInvoice, setReviewInvoice] = useState(null);
-  const [saving, setSaving] = useState(false);
-
-  const showErr = useCallback((e) => {
-    setError(e.message || "Lỗi không xác định");
-  }, []);
-  const clearMsg = useCallback(() => setMsg(null), []);
-
-  // Giao dịch ngân hàng/ví chưa có hóa đơn (widget phụ — fail thì im lặng)
+  // Load pending transactions
   const loadPendingTx = useCallback(() => {
     api("/payments/transactions?status=pending_receipt")
       .then(setPendingTx)
@@ -134,7 +134,7 @@ export default function Invoices({ user, onLogout }) {
     lastPasswordChange: "2026-08-15",
   });
 
-  // Move focus to error banner when error appears
+  // Error focus management
   const errorRef = useRef(null);
   useEffect(() => {
     if (error && errorRef.current) {
@@ -142,19 +142,20 @@ export default function Invoices({ user, onLogout }) {
     }
   }, [error]);
 
+  // Upload file handler
   const upload = async (file) => {
     setSubmitting(true);
     setError(null);
     try {
       const form = new FormData();
       form.append("file", file);
-      const data = await api("/invoices/upload", {
+      const data = await api("/upload", {
         method: "POST",
         body: form,
       });
-      setInvoices((prev) => [...prev, ...(data.invoices || [])]);
-      setMsg({ ok: true, text: `Đã upload ${data.invoices?.length || 1} hóa đơn` });
-      loadPendingTx(); // upload có thể đã ghép xong 1 giao dịch đang chờ
+      setInvoices((prev) => [...prev, data]);
+      setMsg({ ok: true, text: "Đã upload hóa đơn" });
+      loadPendingTx();
     } catch (e) {
       showErr(e);
     } finally {
@@ -162,6 +163,7 @@ export default function Invoices({ user, onLogout }) {
     }
   };
 
+  // Load invoices
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -173,7 +175,47 @@ export default function Invoices({ user, onLogout }) {
     return () => { active = false; };
   }, [showErr, loadPendingTx]);
 
-  // Field máy đọc không chắc: confidence dưới ngưỡng, hoặc chưa trích được (0)
+  // Listen for custom events from components
+  useEffect(() => {
+    const handleUploadFile = (e) => {
+      if (e.detail) upload(e.detail);
+    };
+    const handleRefreshInvoices = () => {
+      api("/invoices").then(setInvoices).catch(() => {});
+    };
+    const handleViewInvoice = (e) => {
+      const invoice = invoices.find(i => i.id === e.detail);
+      if (invoice) setReviewInvoice({ ...invoice });
+    };
+    const handleEditInvoice = (e) => {
+      const invoice = invoices.find(i => i.id === e.detail);
+      if (invoice) setReviewInvoice({ ...invoice });
+    };
+    const handleOpenEmailConnect = () => {
+      // QuickActions handles its own modal
+    };
+    const handleOpenCamera = () => {
+      // QuickActions handles its own modal
+    };
+
+    window.addEventListener("upload-file", handleUploadFile);
+    window.addEventListener("refresh-invoices", handleRefreshInvoices);
+    window.addEventListener("view-invoice", handleViewInvoice);
+    window.addEventListener("edit-invoice", handleEditInvoice);
+    window.addEventListener("open-email-connect", handleOpenEmailConnect);
+    window.addEventListener("open-camera", handleOpenCamera);
+
+    return () => {
+      window.removeEventListener("upload-file", handleUploadFile);
+      window.removeEventListener("refresh-invoices", handleRefreshInvoices);
+      window.removeEventListener("view-invoice", handleViewInvoice);
+      window.removeEventListener("edit-invoice", handleEditInvoice);
+      window.removeEventListener("open-email-connect", handleOpenEmailConnect);
+      window.removeEventListener("open-camera", handleOpenCamera);
+    };
+  }, [invoices]);
+
+  // Review logic
   const needsReview = (inv) =>
     ["vendor", "issue_date", "total"].some(
       (k) => (inv.provenance?.[k]?.confidence ?? 0) < CONF_WARN
@@ -204,12 +246,14 @@ export default function Invoices({ user, onLogout }) {
     }
   };
 
+  // Clear error on auth-expired
   useEffect(() => {
     const handler = () => { setError(null); };
     window.addEventListener("auth-expired", handler);
     return () => window.removeEventListener("auth-expired", handler);
   }, []);
 
+  // Load report
   const loadReport = () => {
     setError(null);
     setReport(null);
@@ -218,7 +262,7 @@ export default function Invoices({ user, onLogout }) {
       .catch((e) => { showErr(e); });
   };
 
-  // Thống kê từ danh sách hóa đơn (bộ lọc hiện tại)
+  // Stats
   const stats = useMemo(() => {
     const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
     const totals = invoices.map((i) => i.total);
@@ -235,6 +279,7 @@ export default function Invoices({ user, onLogout }) {
     };
   }, [invoices]);
 
+  // Filtered rows for table
   const rows = useMemo(() => {
     const all = search.trim()
       ? invoices.filter((i) =>
@@ -257,523 +302,679 @@ export default function Invoices({ user, onLogout }) {
     setSettingsSections((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
+  // Handle invoice actions
+  const handleViewDetail = (invoice) => {
+    setReviewInvoice({ ...invoice });
+  };
+
+  const handleEdit = (invoice) => {
+    setReviewInvoice({ ...invoice });
+  };
+
+  const handleDelete = async (invoice) => {
+    if (!confirm(`Xóa hóa đơn ${invoice.invoice_number}?`)) return;
+    try {
+      await api(`/invoices/${invoice.id}`, { method: "DELETE" });
+      setInvoices((prev) => prev.filter((i) => i.id !== invoice.id));
+      setMsg({ ok: true, text: "Đã xóa hóa đơn" });
+    } catch (err) {
+      showErr(err);
+    }
+  };
+
   return (
     <div className="app-shell">
-      {/* Skip link for keyboard navigation */}
       <a href="#main-content" className="skip-link">Bỏ qua điều hướng, đến nội dung chính</a>
 
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <span className="brand-dot" aria-hidden="true" />
-          <strong>Invoice &amp; Billing</strong>
-        </div>
-        <nav className="sidebar-nav" aria-label="Primary">
-          {NAV.map((n) => (
-            <button
-              key={n}
-              className={view === n ? "nav-item active" : "nav-item"}
-              onClick={() => { setView(n); setError(null); clearMsg(); }}
-              aria-current={view === n ? "page" : undefined}
-            >
-              {n}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-footer">
-          <div className="user-chip">
-            <span className="user-avatar" aria-hidden="true">{(user?.username || "?").slice(0, 1).toUpperCase()}</span>
-            <span className="user-name">{user?.username}</span>
-          </div>
-          <button
-            className="btn-ghost"
-            onClick={() => { clearToken(); onLogout && onLogout(); }}
-            aria-label="Đăng xuất khỏi tài khoản"
-          >
-            Đăng xuất
-          </button>
-        </div>
-      </aside>
+      <Sidebar view={view} setView={setView} user={user} onLogout={onLogout} />
 
       <main id="main-content" className="main" tabIndex={-1}>
-        <nav className="page-nav" aria-label="Chức năng chính"><button className="btn-ghost" onClick={() => setView("overview")}>Tổng quan</button><button className="btn-ghost" onClick={() => setView("report")}>Báo cáo</button><button className="btn-ghost" onClick={() => setView("settings")}>Cài đặt</button><button className="btn-ghost" onClick={() => setView("ledger")}>Thu chi</button></nav>
-        {view === "ledger" ? <Ledger onBack={() => setView("overview")} /> : (
-        <div>
-        {/* Global message / error banner */}
-        {error && (
-          <div className="banner banner-error" role="alert" aria-live="assertive" ref={errorRef} tabIndex={-1}>
-            <span>⚠ {error}</span>
-            <button className="banner-close" onClick={() => setError(null)} aria-label="Đóng thông báo lỗi">×</button>
-          </div>
-        )}
-        {msg && (
-          <div className={msg.ok ? "banner banner-ok" : "banner banner-error"} role="status" aria-live="polite">
-            <span>{msg.text}</span>
-            <button className="banner-close" onClick={clearMsg} aria-label="Đóng thông báo">×</button>
-          </div>
-        )}
-
-        {view === "overview" && (
-          <>
-            <header className="page-header">
-              <div>
-                <h1>Tổng quan</h1>
-                <p className="muted">Theo dõi dòng tiền hóa đơn</p>
+        {view === "history" ? (
+          <HistoryTimeline user={user} onBack={() => setView("overview")} />
+        ) : view === "places" ? (
+          <PlaceRecommendations user={user} onBack={() => setView("overview")} />
+        ) : (
+          <div>
+            {/* Global message / error banner */}
+            {error && (
+              <div className="banner banner-error" role="alert" aria-live="assertive" ref={errorRef} tabIndex={-1}>
+                <span>⚠ {error}</span>
+                <button className="banner-close" onClick={() => setError(null)} aria-label="Đóng thông báo lỗi">×</button>
               </div>
-              <div className="header-actions">
-                <div className="search-wrap" role="search" aria-label="Tìm kiếm hóa đơn">
-                  <span className="search-icon" aria-hidden="true">{Icon.search}</span>
-                  <input
-                    className="search-input"
-                    placeholder="Tìm mã / nhà cung cấp…"
-                    value={search}
-                    onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-                    aria-label="Tìm kiếm hóa đơn theo mã hoặc nhà cung cấp"
-                  />
-                </div>
-                <label className={"btn-primary" + (submitting ? " disabled" : "")}>
-                  {submitting ? "Đang tải…" : (<>{Icon.upload} Upload</>)}
-                  <input
-                    type="file"
-                    accept="image/*,.pdf"
-                    capture="environment"
-                    hidden
-                    disabled={submitting}
-                    aria-label="Tải lên hóa đơn mới"
-                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
-                  />
-                </label>
+            )}
+            {msg && (
+              <div className={msg.ok ? "banner banner-ok" : "banner banner-error"} role="status" aria-live="polite">
+                <span>{msg.text}</span>
+                <button className="banner-close" onClick={clearMsg} aria-label="Đóng thông báo">×</button>
               </div>
-            </header>
-
-            {/* Stats */}
-            <section className="stats-grid" aria-label="Thống kê">
-              <div className="stat-card accent-blue">
-                <span className="stat-label">Tổng giá trị</span>
-                <span className="stat-value"><CountUp to={stats.total} /></span>
-                <Sparkline data={stats.series} />
-              </div>
-              <div className="stat-card accent-green">
-                <span className="stat-label">Đã thanh toán</span>
-                <span className="stat-value"><CountUp to={stats.paid} /></span>
-                <div className="progress" role="progressbar" aria-valuenow={Math.round(paidRatio)} aria-valuemin="0" aria-valuemax="100" aria-label="Tỷ lệ thanh toán">
-                  <div className="progress-fill" style={{ width: `${paidRatio}%` }} />
-                </div>
-              </div>
-              <div className="stat-card accent-amber">
-                <span className="stat-label">Chưa thanh toán</span>
-                <span className="stat-value"><CountUp to={stats.unpaid} /></span>
-              </div>
-              <div className="stat-card accent-red">
-                <span className="stat-label">Quá hạn</span>
-                <span className="stat-value"><CountUp to={stats.overdue} /></span>
-              </div>
-            </section>
-
-            {/* Giao dịch ngân hàng/ví chưa có hóa đơn */}
-            {pendingTx.length > 0 && (
-              <section className="card" aria-label="Giao dịch chờ hóa đơn">
-                <h2>Giao dịch chờ hóa đơn ({pendingTx.length})</h2>
-                <p className="muted">Tiền đã bị trừ nhưng chưa có bill — upload ảnh hóa đơn để đối soát, hoặc bỏ qua.</p>
-                <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-                  {pendingTx.map((t) => (
-                    <li
-                      key={t.id}
-                      style={{
-                        display: "flex", justifyContent: "space-between", alignItems: "center",
-                        gap: 12, padding: "10px 0", borderTop: "1px solid var(--border)",
-                      }}
-                    >
-                      <div>
-                        <strong>{money(t.currency, t.amount)}</strong>
-                        <span className="muted">
-                          {" · "}{t.merchant || t.source}
-                          {t.occurred_at ? ` · ${t.occurred_at.slice(0, 10)}` : ""}
-                        </span>
-                      </div>
-                      <button className="btn-ghost" onClick={() => dismissTx(t.id)}>
-                        Bỏ qua
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
             )}
 
-            {/* Filters */}
-            <div className="filters" role="group" aria-label="Bộ lọc trạng thái hóa đơn">
-              {[{ l: "Tất cả", v: "" }, { l: "Chưa thanh toán", v: "unpaid" }, { l: "Đã thanh toán", v: "paid" }, { l: "Quá hạn", v: "overdue" }].map((c) => (
-                <button
-                  key={c.v}
-                  className={filter === c.v ? "chip active" : "chip"}
-                  onClick={() => setFilter(c.v)}
-                  aria-pressed={filter === c.v}
-                >
-                  {c.l}
-                </button>
-              ))}
-            </div>
-
-            {/* Invoice table */}
-            <section className="card table-card" aria-label="Danh sách hóa đơn">
-              {loading ? (
-                <div className="state-wrap" role="status" aria-live="polite">
-                  <div className="spinner" aria-hidden="true" />
-                  <p>Đang tải hóa đơn…</p>
-                </div>
-              ) : rows.length === 0 ? (
-                <div className="state-wrap" role="status">
-                  <span className="empty-icon" aria-hidden="true">{Icon.empty}</span>
-                  <p className="state-title">Chưa có hóa đơn</p>
-                  <p className="muted">Upload hóa đơn đầu tiên hoặc thử bộ lọc khác.</p>
-                  {filter || search ? (
-                    <button className="btn-ghost" onClick={() => { setFilter(""); setSearch(""); }}>
-                      Xóa bộ lọc
-                    </button>
-                  ) : (
-                    <label className="btn-primary">
-                      {Icon.upload} Upload hóa đơn
-                      <input type="file" hidden accept="image/*,.pdf" capture="environment" aria-label="Chụp hoặc tải hóa đơn" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
-                    </label>
-                  )}
-                </div>
-              ) : (
-                <>
-                  <div className="table-scroll">
-                    <table className="data-table" role="table" aria-rowcount={rows.length}>
-                      <thead>
-                        <tr>
-                          <th scope="col" aria-sort="none">Mã hóa đơn</th>
-                          <th scope="col" aria-sort="none">Nhà cung cấp</th>
-                          <th scope="col" aria-sort="none">Ngày</th>
-                          <th scope="col" aria-sort="none">Tổng</th>
-                          <th scope="col" aria-sort="none">Trạng thái</th>
-                          <th scope="col" className="col-actions">Hành động</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {pagedRows.map((i, idx) => (
-                          <tr key={i.id} aria-rowindex={idx + 1}>
-                            <td>
-                              {needsReview(i) && (
-                                <span className="dot-warn" title="Có field máy đọc không chắc — bấm Xem để sửa" />
-                              )}
-                              {i.invoice_number}
-                            </td>
-                            <td>{i.vendor || "-"}</td>
-                            <td>{i.issue_date || i.created_at?.slice(0, 10) || "-"}</td>
-                            <td>{money(i.currency, i.total)}</td>
-                            <td>
-                              <span className={`status status-${i.status}`}>
-                                {STATUS_LABEL[i.status] || i.status}
-                              </span>
-                            </td>
-                            <td className="col-actions">
-                              <button
-                                className="btn-ghost"
-                                aria-label={`Xem chi tiết hóa đơn ${i.invoice_number}`}
-                                onClick={() => setReviewInvoice({ ...i })}
-                              >
-                                Xem
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+            {view === "overview" && (
+              <>
+                <header className="page-header">
+                  <div>
+                    <h1>Tổng quan</h1>
+                    <p className="muted">Theo dõi dòng tiền hóa đơn</p>
                   </div>
-                  <div className="pagination">
-                    <button
-                      className="btn-ghost"
-                      disabled={safePage <= 1}
-                      onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      aria-label="Trang trước"
-                    >
-                      ‹
-                    </button>
-                    <span className="page-info" aria-live="polite">
-                      Trang {safePage} / {pageCount}
-                    </span>
-                    <button
-                      className="btn-ghost"
-                      disabled={safePage >= pageCount}
-                      onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-                      aria-label="Trang sau"
-                    >
-                      ›
-                    </button>
-                  </div>
-                </>
-              )}
-            </section>
-          </>
-        )}
+                </header>
 
-        {/* Modal review — sửa field máy đọc không chắc */}
-        {reviewInvoice && (
-          <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Sửa hóa đơn">
-            <div className="modal" style={{ maxWidth: 560 }}>
-              <h2>Sửa hóa đơn {reviewInvoice.invoice_number}</h2>
-              <p className="muted" style={{ marginTop: 0 }}>
-                Ô đỏ là field máy đọc confidence &lt; {CONF_WARN} — sửa rồi lưu;
-                chỉnh sửa được dùng làm mẫu đánh giá độ chính xác.
-              </p>
-              <form onSubmit={saveReview}>
-                <div className="modal-fields">
-                  {Object.keys(FIELD_LABELS).map((k) => {
-                    const prov = reviewInvoice.provenance?.[k];
-                    const conf = prov?.confidence ?? 0;
-                    const low = conf < CONF_WARN;
-                    return (
-                      <div className="form-row" key={k}>
-                        <label>{FIELD_LABELS[k]}{prov?.source === "qr" ? " (QR)" : ""}</label>
-                        <input
-                          className={low ? "input-warn" : ""}
-                          value={reviewInvoice[k] ?? ""}
-                          onChange={(e) =>
-                            setReviewInvoice({ ...reviewInvoice, [k]: e.target.value })
-                          }
-                        />
-                        <small className="muted">
-                          {prov
-                            ? `confidence ${Math.round(conf * 100)}% · ${prov.source}`
-                            : "máy không trích được"}
-                        </small>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="modal-actions">
-                  <button type="button" className="btn-ghost" onClick={() => setReviewInvoice(null)}>
-                    Hủy
-                  </button>
-                  <button type="submit" className="btn-primary" disabled={saving}>
-                    {saving ? "Đang lưu…" : "Lưu chỉnh sửa"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {view === "report" && (
-          <>
-            <header className="page-header">
-              <div>
-                <h1>Báo cáo</h1>
-                <p className="muted">Báo cáo tài chính theo tháng</p>
-              </div>
-            </header>
-            <section className="card" aria-label="Báo cáo tháng">
-              <div className="form-row">
-                <label htmlFor="month-picker" id="month-picker-label">Chọn tháng</label>
-                <input
-                  id="month-picker"
-                  type="month"
-                  value={month}
-                  onChange={(e) => setMonth(e.target.value)}
-                  aria-describedby="month-picker-label"
+                {/* Quick Actions */}
+                <QuickActions 
+                  onUpload={upload}
+                  onEmailConnect={() => {}}
+                  onCamera={() => {}}
                 />
-              </div>
-              <button className="btn-primary" onClick={loadReport} aria-label="Xem báo cáo tháng đã chọn">Xem báo cáo</button>
-              {report && (
-                <div className="report-result" role="region" aria-live="polite" aria-label="Kết quả báo cáo">
-                  <p>Tổng doanh thu: <strong>{money(report.currency, report.total_revenue)}</strong></p>
-                  <a className="btn-ghost" href={"/reports/monthly/" + month + ".pdf"} target="_blank" rel="noopener noreferrer">
-                    Tải PDF
-                  </a>
-                </div>
-              )}
-            </section>
-          </>
-        )}
 
-        {view === "settings" && (
-          <>
-            <header className="page-header">
-              <div>
-                <h1>Cài đặt</h1>
-                <p className="muted">Quản lý nhóm, thanh toán và bảo mật</p>
-              </div>
-            </header>
-
-            <div className="settings-container">
-              {/* Team Section */}
-              <section className="card settings-card" aria-labelledby="settings-team-heading">
-                <button
-                  className="settings-header"
-                  onClick={() => toggleSection("team")}
-                  aria-expanded={settingsSections.team}
-                  aria-controls="settings-team-content"
-                  id="settings-team-heading"
-                >
-                  <span className="settings-icon" aria-hidden="true">{Icon.users}</span>
-                  <h2>Đội nhóm</h2>
-                  <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
-                </button>
-                {settingsSections.team && (
-                  <div id="settings-team-content" role="region" aria-labelledby="settings-team-heading">
-                    <p className="muted">Quản lý thành viên và quyền truy cập trong tổ chức.</p>
-                    <div className="table-scroll">
-                      <table className="data-table" role="table" aria-label="Danh sách thành viên đội nhóm">
-                        <thead>
-                          <tr>
-                            <th scope="col">Thành viên</th>
-                            <th scope="col">Email</th>
-                            <th scope="col">Vai trò</th>
-                            <th scope="col">Hành động</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {teamMembers.map((member) => (
-                            <tr key={member.id}>
-                              <td>{member.username}</td>
-                              <td>{member.email}</td>
-                              <td>
-                                <span className={`role role-${member.role}`}>
-                                  {member.role === "owner" ? "Chủ sở hữu" : member.role === "admin" ? "Quản trị viên" : "Thành viên"}
-                                </span>
-                              </td>
-                              <td>
-                                <button className="btn-ghost" aria-label={`Thay đổi quyền của ${member.username}`}>Thay đổi quyền</button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    <button className="btn-primary" aria-label="Mời thành viên mới vào đội nhóm">
-                      + Mời thành viên
-                    </button>
+                {/* Stats */}
+                <section className="stats-grid" aria-label="Thống kê">
+                  <div className="stat-card accent-blue">
+                    <span className="stat-label">Tổng giá trị</span>
+                    <span className="stat-value"><CountUp to={stats.total} /></span>
+                    <Sparkline data={stats.series} />
                   </div>
-                )}
-              </section>
-
-              {/* Billing Section */}
-              <section className="card settings-card" aria-labelledby="settings-billing-heading">
-                <button
-                  className="settings-header"
-                  onClick={() => toggleSection("billing")}
-                  aria-expanded={settingsSections.billing}
-                  aria-controls="settings-billing-content"
-                  id="settings-billing-heading"
-                >
-                  <span className="settings-icon" aria-hidden="true">{Icon.creditCard}</span>
-                  <h2>Thanh toán</h2>
-                  <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
-                </button>
-                {settingsSections.billing && (
-                  <div id="settings-billing-content" role="region" aria-labelledby="settings-billing-heading">
-                    <p className="muted">Quản lý gói dịch vụ và phương thức thanh toán.</p>
-                    <div className="billing-info" role="region" aria-label="Thông tin gói hiện tại">
-                      <div className="billing-row">
-                        <span>Gói hiện tại:</span>
-                        <strong>{billingInfo.plan}</strong>
-                      </div>
-                      <div className="billing-row">
-                        <span>Trạng thái:</span>
-                        <span className={`status status-${billingInfo.status}`}>{billingInfo.status === "active" ? "Đang hoạt động" : "Đã dừng"}</span>
-                      </div>
-                      <div className="billing-row">
-                        <span>Ngày gia hạn:</span>
-                        <strong>{billingInfo.renewalDate}</strong>
-                      </div>
-                      <div className="billing-row">
-                        <span>Số tiền:</span>
-                        <strong>{billingInfo.amount}/tháng</strong>
-                      </div>
+                  <div className="stat-card accent-green">
+                    <span className="stat-label">Đã thanh toán</span>
+                    <span className="stat-value"><CountUp to={stats.paid} /></span>
+                    <div className="progress" role="progressbar" aria-valuenow={Math.round(paidRatio)} aria-valuemin="0" aria-valuemax="100" aria-label="Tỷ lệ thanh toán">
+                      <div className="progress-fill" style={{ width: `${paidRatio}%` }} />
                     </div>
-                    <button className="btn-primary" aria-label="Nâng cấp gói dịch vụ">
-                      Nâng cấp gói
-                    </button>
                   </div>
-                )}
-              </section>
+                  <div className="stat-card accent-amber">
+                    <span className="stat-label">Chưa thanh toán</span>
+                    <span className="stat-value"><CountUp to={stats.unpaid} /></span>
+                  </div>
+                  <div className="stat-card accent-red">
+                    <span className="stat-label">Quá hạn</span>
+                    <span className="stat-value"><CountUp to={stats.overdue} /></span>
+                  </div>
+                </section>
 
-              {/* Security Section */}
-              <section className="card settings-card" aria-labelledby="settings-security-heading">
-                <button
-                  className="settings-header"
-                  onClick={() => toggleSection("security")}
-                  aria-expanded={settingsSections.security}
-                  aria-controls="settings-security-content"
-                  id="settings-security-heading"
-                >
-                  <span className="settings-icon" aria-hidden="true">{Icon.shield}</span>
-                  <h2>Bảo mật</h2>
-                  <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
-                </button>
-                {settingsSections.security && (
-                  <div id="settings-security-content" role="region" aria-labelledby="settings-security-heading">
-                    <p className="muted">Quản lý xác thực hai yếu tố và mật khẩu.</p>
-                    <div className="security-info" role="region" aria-label="Thông tin bảo mật">
-                      <div className="security-row">
-                        <span>Xác thực hai yếu tố (MFA):</span>
-                        <span className={`status status-${securityInfo.mfaEnabled ? "paid" : "overdue"}`}>
-                          {securityInfo.mfaEnabled ? "Đã bật" : "Đã tắt"}
-                        </span>
-                      </div>
-                      <div className="security-row">
-                        <span>Thay đổi mật khẩu gần nhất:</span>
-                        <strong>{securityInfo.lastPasswordChange}</strong>
-                      </div>
+                {/* Pending Transactions */}
+                {pendingTx.length > 0 && (
+                  <section className="card" aria-label="Giao dịch chờ hóa đơn">
+                    <h2>Giao dịch chờ hóa đơn ({pendingTx.length})</h2>
+                    <p className="muted">Tiền đã bị trừ nhưng chưa có bill — upload ảnh hóa đơn để đối soát, hoặc bỏ qua.</p>
+                    <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+                      {pendingTx.map((t) => (
+                        <li
+                          key={t.id}
+                          style={{
+                            display: "flex", justifyContent: "space-between", alignItems: "center",
+                            gap: 12, padding: "10px 0", borderTop: "1px solid var(--border)",
+                          }}
+                        >
+                          <div>
+                            <strong>{money(t.currency, t.amount)}</strong>
+                            <span className="muted">
+                              {" · "}{t.merchant || t.source}
+                              {t.occurred_at ? ` · ${t.occurred_at.slice(0, 10)}` : ""}
+                            </span>
+                          </div>
+                          <button className="btn-ghost" onClick={() => dismissTx(t.id)}>
+                            Bỏ qua
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+
+                {/* Recent Invoices Table */}
+                <section className="card table-card" aria-label="Hóa đơn gần đây">
+                  <div className="card-head">
+                    <h2>Hóa đơn gần đây</h2>
+                    <div className="search-wrap" role="search" aria-label="Tìm kiếm hóa đơn">
+                      <span className="search-icon" aria-hidden="true">{Icon.search}</span>
+                      <input
+                        className="search-input"
+                        placeholder="Tìm mã / nhà cung cấp…"
+                        value={search}
+                        onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                        aria-label="Tìm kiếm hóa đơn theo mã hoặc nhà cung cấp"
+                      />
                     </div>
-                    <button className="btn-ghost" aria-label="Thay đổi mật khẩu tài khoản">
-                      Thay đổi mật khẩu
-                    </button>
                   </div>
-                )}
-              </section>
 
-              <section className="card settings-card" aria-labelledby="settings-notifications-heading">
-                <button
-                  className="settings-header"
-                  onClick={() => toggleSection("notifications")}
-                  aria-expanded={settingsSections.notifications}
-                  aria-controls="settings-notifications-content"
-                  id="settings-notifications-heading"
-                >
-                  <span className="settings-icon" aria-hidden="true">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
-                      <path d="M13.7 21a2 2 0 0 1-3.4 0" />
-                    </svg>
-                  </span>
-                  <h2>Thông báo</h2>
-                  <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
-                </button>
-                {settingsSections.notifications && (
-                  <div id="settings-notifications-content" role="region" aria-labelledby="settings-notifications-heading">
-                    <p className="muted">Nhận thông báo ngay trên màn hình khóa khi có giao dịch chờ hóa đơn (PWA native push).</p>
-                    {pushState === "unsupported" && (
-                      <p className="muted">
-                        Thiết bị/trình duyệt chưa hỗ trợ push. Trên điện thoại: mở app qua HTTPS, iPhone cần
-                        "Thêm vào màn hình chính" (iOS 16.4+) rồi mở từ icon — xem README.
-                      </p>
-                    )}
-                    {pushState === "blocked" && (
-                      <p className="muted">
-                        Quyền thông báo đang bị chặn — vào cài đặt trình duyệt để cho phép, rồi thử lại.
-                      </p>
-                    )}
-                    {pushState !== "unsupported" && (
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <button className="btn-ghost" onClick={togglePush} disabled={pushBusy}>
-                          {pushState === "on" ? "🔕 Tắt thông báo đẩy" : "🔔 Bật thông báo đẩy (mobile)"}
+                  {/* Filters */}
+                  <div className="filters" role="group" aria-label="Bộ lọc trạng thái hóa đơn">
+                    {[{ l: "Tất cả", v: "" }, { l: "Chưa thanh toán", v: "unpaid" }, { l: "Đã thanh toán", v: "paid" }, { l: "Quá hạn", v: "overdue" }].map((c) => (
+                      <button
+                        key={c.v}
+                        className={filter === c.v ? "chip active" : "chip"}
+                        onClick={() => setFilter(c.v)}
+                        aria-pressed={filter === c.v}
+                      >
+                        {c.l}
+                      </button>
+                    ))}
+                  </div>
+
+                  {loading ? (
+                    <div className="state-wrap" role="status" aria-live="polite">
+                      <div className="spinner" aria-hidden="true" />
+                      <p>Đang tải hóa đơn…</p>
+                    </div>
+                  ) : rows.length === 0 ? (
+                    <div className="state-wrap" role="status">
+                      <span className="empty-icon" aria-hidden="true">{Icon.empty}</span>
+                      <p className="state-title">Chưa có hóa đơn</p>
+                      <p className="muted">Upload hóa đơn đầu tiên hoặc thử bộ lọc khác.</p>
+                      {filter || search ? (
+                        <button className="btn-ghost" onClick={() => { setFilter(""); setSearch(""); }}>
+                          Xóa bộ lọc
                         </button>
-                        {pushState === "on" && (
-                          <button className="btn-ghost" onClick={testPush} disabled={pushBusy}>Gửi thử</button>
+                      ) : (
+                        <label className="btn-primary">
+                          {Icon.upload} Upload hóa đơn
+                          <input type="file" hidden accept="image/*,.pdf" capture="environment" aria-label="Chụp hoặc tải hóa đơn" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
+                        </label>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="table-scroll">
+                        <table className="data-table" role="table" aria-rowcount={rows.length}>
+                          <thead>
+                            <tr>
+                              <th scope="col" aria-sort="none">Mã hóa đơn</th>
+                              <th scope="col" aria-sort="none">Nhà cung cấp</th>
+                              <th scope="col" aria-sort="none">Ngày</th>
+                              <th scope="col" aria-sort="none">Tổng</th>
+                              <th scope="col" aria-sort="none">Trạng thái</th>
+                              <th scope="col" aria-sort="none">Địa điểm/Lộ trình</th>
+                              <th scope="col" className="col-actions">Hành động</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pagedRows.map((i, idx) => (
+                              <tr key={i.id} aria-rowindex={idx + 1}>
+                                <td>
+                                  {needsReview(i) && (
+                                    <span className="dot-warn" title="Có field máy đọc không chắc — bấm để sửa" />
+                                  )}
+                                  {i.invoice_number}
+                                </td>
+                                <td>{i.vendor || "-"}</td>
+                                <td>{i.issue_date || i.created_at?.slice(0, 10) || "-"}</td>
+                                <td>{money(i.currency, i.total)}</td>
+                                <td>
+                                  <span className={`status status-${i.status}`}>
+                                    {STATUS_LABEL[i.status] || i.status}
+                                  </span>
+                                </td>
+                                <td className="col-location">
+                                  {i.location_lat && i.location_lon ? (
+                                    <span className="location-badge" title={`${i.location_lat}, ${i.location_lon}`}>
+                                      📍 {i.location_name || `${i.location_lat.toFixed(4)}, ${i.location_lon.toFixed(4)}`}
+                                    </span>
+                                  ) : (
+                                    <span className="no-location">—</span>
+                                  )}
+                                </td>
+                                <td className="col-actions">
+                                  <div className="action-buttons">
+                                    <button
+                                      className="action-btn view"
+                                      onClick={() => handleViewDetail(i)}
+                                      aria-label={`Xem chi tiết hóa đơn ${i.invoice_number}`}
+                                      title="Xem chi tiết"
+                                    >
+                                      {Icon.search}
+                                    </button>
+                                    <button
+                                      className="action-btn edit"
+                                      onClick={() => handleEdit(i)}
+                                      aria-label={`Chỉnh sửa hóa đơn ${i.invoice_number}`}
+                                      title="Chỉnh sửa"
+                                    >
+                                      ✏️
+                                    </button>
+                                    <button
+                                      className="action-btn delete"
+                                      onClick={() => handleDelete(i)}
+                                      aria-label={`Xóa hóa đơn ${i.invoice_number}`}
+                                      title="Xóa"
+                                    >
+                                      🗑️
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="pagination">
+                        <button
+                          className="btn-ghost"
+                          disabled={safePage <= 1}
+                          onClick={() => setPage((p) => Math.max(1, p - 1))}
+                          aria-label="Trang trước"
+                        >
+                          ‹
+                        </button>
+                        <span className="page-info" aria-live="polite">
+                          Trang {safePage} / {pageCount}
+                        </span>
+                        <button
+                          className="btn-ghost"
+                          disabled={safePage >= pageCount}
+                          onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                          aria-label="Trang sau"
+                        >
+                          ›
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </section>
+              </>
+            )}
+
+            {/* Review Modal */}
+            {reviewInvoice && (
+              <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Sửa hóa đơn">
+                <div className="modal" style={{ maxWidth: 560 }}>
+                  <h2>Sửa hóa đơn {reviewInvoice.invoice_number}</h2>
+                  <p className="muted" style={{ marginTop: 0 }}>
+                    Ô đỏ là field máy đọc confidence &lt; {CONF_WARN} — sửa rồi lưu;
+                    chỉnh sửa được dùng làm mẫu đánh giá độ chính xác.
+                  </p>
+                  <form onSubmit={saveReview}>
+                    <div className="modal-fields">
+                      {Object.keys(FIELD_LABELS).map((k) => {
+                        const prov = reviewInvoice.provenance?.[k];
+                        const conf = prov?.confidence ?? 0;
+                        const low = conf < CONF_WARN;
+                        return (
+                          <div className="form-row" key={k}>
+                            <label>{FIELD_LABELS[k]}{prov?.source === "qr" ? " (QR)" : ""}</label>
+                            <input
+                              className={low ? "input-warn" : ""}
+                              value={reviewInvoice[k] ?? ""}
+                              onChange={(e) =>
+                                setReviewInvoice({ ...reviewInvoice, [k]: e.target.value })
+                              }
+                            />
+                            <small className="muted">
+                              {prov
+                                ? `confidence ${Math.round(conf * 100)}% · ${prov.source}`
+                                : "máy không trích được"}
+                            </small>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="modal-actions">
+                      <button type="button" className="btn-ghost" onClick={() => setReviewInvoice(null)}>
+                        Hủy
+                      </button>
+                      <button type="submit" className="btn-primary" disabled={saving}>
+                        {saving ? "Đang lưu…" : "Lưu chỉnh sửa"}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {view === "report" && (
+              <>
+                <header className="page-header">
+                  <div>
+                    <h1>Báo cáo & Thu chi</h1>
+                    <p className="muted">Báo cáo tài chính theo tháng</p>
+                  </div>
+                </header>
+                <section className="card" aria-label="Báo cáo tháng">
+                  <div className="form-row">
+                    <label htmlFor="month-picker" id="month-picker-label">Chọn tháng</label>
+                    <input
+                      id="month-picker"
+                      type="month"
+                      value={month}
+                      onChange={(e) => setMonth(e.target.value)}
+                      aria-describedby="month-picker-label"
+                    />
+                  </div>
+                  <button className="btn-primary" onClick={loadReport} aria-label="Xem báo cáo tháng đã chọn">Xem báo cáo</button>
+                  {report && (
+                    <div className="report-result" role="region" aria-live="polite" aria-label="Kết quả báo cáo">
+                      <p>Tổng doanh thu: <strong>{money(report.currency, report.total_revenue)}</strong></p>
+                      <a className="btn-ghost" href={"/reports/monthly/" + month + ".pdf"} target="_blank" rel="noopener noreferrer">
+                        Tải PDF
+                      </a>
+                    </div>
+                  )}
+                </section>
+              </>
+            )}
+
+            {view === "settings" && (
+              <>
+                <header className="page-header">
+                  <div>
+                    <h1>Cài đặt</h1>
+                    <p className="muted">Quản lý nhóm, thanh toán và bảo mật</p>
+                  </div>
+                </header>
+
+                <div className="settings-container">
+                  {/* Team Section */}
+                  <section className="card settings-card" aria-labelledby="settings-team-heading">
+                    <button
+                      className="settings-header"
+                      onClick={() => toggleSection("team")}
+                      aria-expanded={settingsSections.team}
+                      aria-controls="settings-team-content"
+                      id="settings-team-heading"
+                    >
+                      <span className="settings-icon" aria-hidden="true">{Icon.users}</span>
+                      <h2>Đội nhóm</h2>
+                      <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
+                    </button>
+                    {settingsSections.team && (
+                      <div id="settings-team-content" role="region" aria-labelledby="settings-team-heading">
+                        <p className="muted">Quản lý thành viên và quyền truy cập trong tổ chức.</p>
+                        <div className="table-scroll">
+                          <table className="data-table" role="table" aria-label="Danh sách thành viên đội nhóm">
+                            <thead>
+                              <tr>
+                                <th scope="col">Thành viên</th>
+                                <th scope="col">Email</th>
+                                <th scope="col">Vai trò</th>
+                                <th scope="col">Hành động</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {teamMembers.map((member) => (
+                                <tr key={member.id}>
+                                  <td>{member.username}</td>
+                                  <td>{member.email}</td>
+                                  <td>
+                                    <span className={`role role-${member.role}`}>
+                                      {member.role === "owner" ? "Chủ sở hữu" : member.role === "admin" ? "Quản trị viên" : "Thành viên"}
+                                    </span>
+                                  </td>
+                                  <td>
+                                    <button className="btn-ghost" aria-label={`Thay đổi quyền của ${member.username}`}>Thay đổi quyền</button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <button className="btn-primary" aria-label="Mời thành viên mới vào đội nhóm">
+                          + Mời thành viên
+                        </button>
+                      </div>
+                    )}
+                  </section>
+
+                  {/* Billing Section */}
+                  <section className="card settings-card" aria-labelledby="settings-billing-heading">
+                    <button
+                      className="settings-header"
+                      onClick={() => toggleSection("billing")}
+                      aria-expanded={settingsSections.billing}
+                      aria-controls="settings-billing-content"
+                      id="settings-billing-heading"
+                    >
+                      <span className="settings-icon" aria-hidden="true">{Icon.creditCard}</span>
+                      <h2>Thanh toán</h2>
+                      <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
+                    </button>
+                    {settingsSections.billing && (
+                      <div id="settings-billing-content" role="region" aria-labelledby="settings-billing-heading">
+                        <p className="muted">Quản lý gói dịch vụ và phương thức thanh toán.</p>
+                        <div className="billing-info" role="region" aria-label="Thông tin gói hiện tại">
+                          <div className="billing-row">
+                            <span>Gói hiện tại:</span>
+                            <strong>{billingInfo.plan}</strong>
+                          </div>
+                          <div className="billing-row">
+                            <span>Trạng thái:</span>
+                            <span className={`status status-${billingInfo.status}`}>{billingInfo.status === "active" ? "Đang hoạt động" : "Đã dừng"}</span>
+                          </div>
+                          <div className="billing-row">
+                            <span>Ngày gia hạn:</span>
+                            <strong>{billingInfo.renewalDate}</strong>
+                          </div>
+                          <div className="billing-row">
+                            <span>Số tiền:</span>
+                            <strong>{billingInfo.amount}/tháng</strong>
+                          </div>
+                        </div>
+                        <button className="btn-primary" aria-label="Nâng cấp gói dịch vụ">
+                          Nâng cấp gói
+                        </button>
+                      </div>
+                    )}
+                  </section>
+
+                  {/* Security Section */}
+                  <section className="card settings-card" aria-labelledby="settings-security-heading">
+                    <button
+                      className="settings-header"
+                      onClick={() => toggleSection("security")}
+                      aria-expanded={settingsSections.security}
+                      aria-controls="settings-security-content"
+                      id="settings-security-heading"
+                    >
+                      <span className="settings-icon" aria-hidden="true">{Icon.shield}</span>
+                      <h2>Bảo mật</h2>
+                      <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
+                    </button>
+                    {settingsSections.security && (
+                      <div id="settings-security-content" role="region" aria-labelledby="settings-security-heading">
+                        <p className="muted">Quản lý xác thực hai yếu tố và mật khẩu.</p>
+                        <div className="security-info" role="region" aria-label="Thông tin bảo mật">
+                          <div className="security-row">
+                            <span>Xác thực hai yếu tố (MFA):</span>
+                            <span className={`status status-${securityInfo.mfaEnabled ? "paid" : "overdue"}`}>
+                              {securityInfo.mfaEnabled ? "Đã bật" : "Đã tắt"}
+                            </span>
+                          </div>
+                          <div className="security-row">
+                            <span>Thay đổi mật khẩu gần nhất:</span>
+                            <strong>{securityInfo.lastPasswordChange}</strong>
+                          </div>
+                        </div>
+                        <button className="btn-ghost" aria-label="Thay đổi mật khẩu tài khoản">
+                          Thay đổi mật khẩu
+                        </button>
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="card settings-card" aria-labelledby="settings-notifications-heading">
+                    <button
+                      className="settings-header"
+                      onClick={() => toggleSection("notifications")}
+                      aria-expanded={settingsSections.notifications}
+                      aria-controls="settings-notifications-content"
+                      id="settings-notifications-heading"
+                    >
+                      <span className="settings-icon" aria-hidden="true">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+                          <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+                        </svg>
+                      </span>
+                      <h2>Thông báo</h2>
+                      <span className="settings-chevron" aria-hidden="true">{Icon.chevronDown}</span>
+                    </button>
+                    {settingsSections.notifications && (
+                      <div id="settings-notifications-content" role="region" aria-labelledby="settings-notifications-heading">
+                        <p className="muted">Nhận thông báo ngay trên màn hình khóa khi có giao dịch chờ hóa đơn (PWA native push).</p>
+                        {pushState === "unsupported" && (
+                          <p className="muted">
+                            Thiết bị/trình duyệt chưa hỗ trợ push. Trên điện thoại: mở app qua HTTPS, iPhone cần
+                            "Thêm vào màn hình chính" (iOS 16.4+) rồi mở từ icon — xem README.
+                          </p>
+                        )}
+                        {pushState === "blocked" && (
+                          <p className="muted">
+                            Quyền thông báo đang bị chặn — vào cài đặt trình duyệt để cho phép, rồi thử lại.
+                          </p>
+                        )}
+                        {pushState !== "unsupported" && (
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <button className="btn-ghost" onClick={togglePush} disabled={pushBusy}>
+                              {pushState === "on" ? "🔕 Tắt thông báo đẩy" : "🔔 Bật thông báo đẩy (mobile)"}
+                            </button>
+                            {pushState === "on" && (
+                              <button className="btn-ghost" onClick={testPush} disabled={pushBusy}>Gửi thử</button>
+                            )}
+                          </div>
                         )}
                       </div>
                     )}
-                  </div>
-                )}
-              </section>
-            </div>
-          </>
-        )}
-      </div>
+                  </section>
+                </div>
+              </>
+            )}
+          </div>
         )}
       </main>
+
+      <style jsx global>{`
+        .action-buttons {
+          display: flex;
+          gap: 4px;
+        }
+        .action-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 32px;
+          height: 32px;
+          border: none;
+          background: transparent;
+          color: var(--text-dim);
+          border-radius: var(--r-sm);
+          cursor: pointer;
+          transition: all 0.15s;
+          font-size: 14px;
+        }
+        .action-btn:hover {
+          background: var(--surface-2);
+          color: var(--text);
+        }
+        .action-btn.view:hover { color: var(--accent); }
+        .action-btn.edit:hover { color: var(--warning); }
+        .action-btn.delete:hover {
+          background: rgba(239, 68, 68, 0.15);
+          color: var(--danger);
+        }
+        .action-btn:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+        }
+        .col-location {
+          max-width: 200px;
+        }
+        .location-badge {
+          display: inline-block;
+          max-width: 180px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          padding: 3px 8px;
+          background: rgba(37, 99, 235, 0.1);
+          border: 1px solid rgba(37, 99, 235, 0.2);
+          border-radius: var(--r-sm);
+          font-size: var(--fs-xs);
+          color: var(--accent);
+        }
+        .no-location {
+          color: var(--text-dim);
+          font-size: var(--fs-xs);
+        }
+        .page-header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 20px;
+          flex-wrap: wrap;
+        }
+        .page-header h1 {
+          font-size: var(--fs-xl);
+          margin: 0;
+        }
+        .page-header .muted {
+          margin: 4px 0 0;
+        }
+        .card-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin-bottom: 16px;
+        }
+        .card-head h2 {
+          margin: 0;
+          font-size: var(--fs-md);
+        }
+        .search-wrap {
+          position: relative;
+          display: flex;
+          align-items: center;
+          flex: 1;
+          min-width: 200px;
+          max-width: 300px;
+        }
+        .search-icon {
+          position: absolute;
+          left: 10px;
+          color: var(--text-dim);
+          pointer-events: none;
+          display: flex;
+        }
+        .search-input {
+          width: 100%;
+          padding: 8px 10px 8px 36px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-sm);
+          background: var(--surface-2);
+          color: var(--text);
+          font-size: var(--fs-sm);
+        }
+        .search-input:focus {
+          outline: none;
+          border-color: var(--accent);
+        }
+        .filters {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          margin-bottom: 16px;
+        }
+        .chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 12px;
+          background: var(--surface-2);
+          border: 1px solid var(--border);
+          border-radius: 999px;
+          font-size: var(--fs-xs);
+          color: var(--text-dim);
+          cursor: pointer;
+          transition: all 0.15s;
+          white-space: nowrap;
+        }
+        .chip:hover {
+          border-color: var(--accent);
+          color: var(--text);
+        }
+        .chip.active {
+          background: var(--accent);
+          border-color: var(--accent);
+          color: white;
+        }
+      `}</style>
     </div>
   );
 }

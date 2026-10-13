@@ -6,6 +6,7 @@ Nguyên tắc (PLAN mục 3 — bảo mật):
 - Thread-safe bằng threading.Lock.
 - SQLite backend tùy chọn cho persistence giữa các worker (dùng khi RATE_LIMIT_STORAGE=sqlite).
 """
+
 from __future__ import annotations
 
 import os
@@ -14,16 +15,15 @@ import threading
 import time
 from collections import defaultdict
 from contextlib import contextmanager
-from typing import Dict, List, Optional, Tuple
-
 
 # ---------- In-memory sliding window ----------
+
 
 class _MemoryBackend:
     """In-memory backend cho sliding window — nhanh, không persistence."""
 
     def __init__(self) -> None:
-        self._hits: Dict[str, List[float]] = defaultdict(list)
+        self._hits: dict[str, list[float]] = defaultdict(list)
         self._lock = threading.Lock()
 
     def prune(self, key: str, window_seconds: float, now: float) -> None:
@@ -44,11 +44,12 @@ class _MemoryBackend:
     def clear(self) -> None:
         self._hits.clear()
 
-    def keys(self) -> List[str]:
+    def keys(self) -> list[str]:
         return list(self._hits.keys())
 
 
 # ---------- SQLite backend (optional persistence) ----------
+
 
 class _SqliteBackend:
     """SQLite backend cho rate limit — dùng chung giữa worker/process."""
@@ -56,7 +57,7 @@ class _SqliteBackend:
     def __init__(self, db_path: str = ":memory:") -> None:
         self._db_path = db_path
         self._lock = threading.Lock()
-        self._mem_conn: Optional[sqlite3.Connection] = None
+        self._mem_conn: sqlite3.Connection | None = None
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -102,7 +103,9 @@ class _SqliteBackend:
 
     def count(self, key: str) -> int:
         with self._lock, self._cursor() as cur:
-            row = cur.execute("SELECT COUNT(*) FROM rate_limit_hits WHERE key = ?", (key,)).fetchone()
+            row = cur.execute(
+                "SELECT COUNT(*) FROM rate_limit_hits WHERE key = ?", (key,)
+            ).fetchone()
         return int(row[0]) if row else 0
 
     def reset(self, key: str) -> None:
@@ -113,13 +116,14 @@ class _SqliteBackend:
         with self._lock, self._cursor() as cur:
             cur.execute("DELETE FROM rate_limit_hits")
 
-    def keys(self) -> List[str]:
+    def keys(self) -> list[str]:
         with self._lock, self._cursor() as cur:
             rows = cur.execute("SELECT DISTINCT key FROM rate_limit_hits").fetchall()
         return [r[0] for r in rows]
 
 
 # ---------- RateLimiter ----------
+
 
 class RateLimiter:
     """Sliding-window rate limiter, thread-safe.
@@ -130,7 +134,7 @@ class RateLimiter:
             ... cho phép ...
     """
 
-    def __init__(self, backend: Optional[str] = None, db_path: Optional[str] = None) -> None:
+    def __init__(self, backend: str | None = None, db_path: str | None = None) -> None:
         """
         Args:
             backend: 'memory' (default) hoặc 'sqlite'.
@@ -145,7 +149,7 @@ class RateLimiter:
         self._lock = threading.Lock()
 
     @staticmethod
-    def make_key(client_ip: str, path: str, user_id: Optional[str] = None) -> str:
+    def make_key(client_ip: str, path: str, user_id: str | None = None) -> str:
         """Tạo key chuẩn: ưu tiên user_id nếu có, không thì IP + path."""
         if user_id:
             return f"uid:{user_id}:{path}"
@@ -191,10 +195,10 @@ class RateLimiter:
             self._backend.prune(key, window_seconds, now)
             return self._backend.count(key)
 
-    def status(self, window_seconds: float) -> Dict[str, int]:
+    def status(self, window_seconds: float) -> dict[str, int]:
         """Trả về dict {key: count} cho toàn bộ key — dùng cho admin."""
         now = time.time()
-        result: Dict[str, int] = {}
+        result: dict[str, int] = {}
         with self._lock:
             for key in self._backend.keys():
                 self._backend.prune(key, window_seconds, now)
@@ -207,7 +211,7 @@ class RateLimiter:
 # ---------- Middleware / helper ----------
 
 # Global singleton — main agent có thể import và wire vào middleware.
-_default_limiter: Optional[RateLimiter] = None
+_default_limiter: RateLimiter | None = None
 _default_limiter_lock = threading.Lock()
 
 
@@ -226,9 +230,9 @@ def check_rate_limit(
     path: str,
     max_requests: int,
     window_seconds: float,
-    user_id: Optional[str] = None,
-    limiter: Optional[RateLimiter] = None,
-) -> Tuple[bool, int]:
+    user_id: str | None = None,
+    limiter: RateLimiter | None = None,
+) -> tuple[bool, int]:
     """Helper: kiểm tra rate limit cho một request.
 
     Returns:

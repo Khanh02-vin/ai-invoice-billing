@@ -4,12 +4,11 @@ Nguyên tắc (PLAN mục 3):
 - Không commit secret, không dùng default JWT secret ở production.
 - Production config từ chối JWT_SECRET mặc định hoặc thiếu.
 """
+
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import List
-
 
 DEFAULT_DEV_SECRET = "dev-secret-change-me-please-32bytes-min"
 _DEFAULT_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -22,7 +21,7 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _list_env(name: str, default: List[str]) -> List[str]:
+def _list_env(name: str, default: list[str]) -> list[str]:
     raw = os.getenv(name)
     if not raw:
         return default
@@ -40,10 +39,14 @@ class Settings:
     jwt_secret: str = field(default_factory=lambda: os.getenv("JWT_SECRET", DEFAULT_DEV_SECRET))
     jwt_algorithm: str = field(default_factory=lambda: os.getenv("JWT_ALGO", "HS256"))
     jwt_expiry_days: int = field(default_factory=lambda: int(os.getenv("JWT_EXPIRY_DAYS", "7")))
-    open_registration: bool = field(default_factory=lambda: _bool_env("OPEN_REGISTRATION", default=False))
+    open_registration: bool = field(
+        default_factory=lambda: _bool_env("OPEN_REGISTRATION", default=False)
+    )
 
     # CORS
-    cors_origins: List[str] = field(default_factory=lambda: _list_env("CORS_ORIGINS", _DEFAULT_DEV_ORIGINS))
+    cors_origins: list[str] = field(
+        default_factory=lambda: _list_env("CORS_ORIGINS", _DEFAULT_DEV_ORIGINS)
+    )
 
     # Email transport (SMTP). When configured, offline token returns are disabled.
     smtp_host: str = field(default_factory=lambda: os.getenv("EMAIL_SMTP_HOST", ""))
@@ -68,7 +71,9 @@ class Settings:
     imap_user: str = field(default_factory=lambda: os.getenv("IMAP_USER", ""))
     imap_pass: str = field(default_factory=lambda: os.getenv("IMAP_PASS", ""))
     imap_folder: str = field(default_factory=lambda: os.getenv("IMAP_FOLDER", "INBOX"))
-    imap_interval_seconds: int = field(default_factory=lambda: int(os.getenv("IMAP_INTERVAL_SECONDS", "60")))
+    imap_interval_seconds: int = field(
+        default_factory=lambda: int(os.getenv("IMAP_INTERVAL_SECONDS", "60"))
+    )
     # Gắn email -> user (VD "linh@gmail.com,user1"); rỗng: mọi email gán cho
     # mọi user verified (chỉ dùng khi inbox là của chính người dùng).
     imap_user_map: str = field(default_factory=lambda: os.getenv("IMAP_USER_MAP", ""))
@@ -95,31 +100,47 @@ class Settings:
     billing_provider: str = field(default_factory=lambda: os.getenv("BILLING_PROVIDER", "mock"))
 
     # Upload
-    max_upload_bytes: int = field(default_factory=lambda: int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))))  # 10 MB
-    allowed_mime_types: List[str] = field(
+    max_upload_bytes: int = field(
+        default_factory=lambda: int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+    )  # 10 MB
+    allowed_mime_types: list[str] = field(
         default_factory=lambda: _list_env(
             "ALLOWED_MIME_TYPES",
             ["application/pdf", "image/png", "image/jpeg", "image/tiff", "text/plain"],
         )
     )
     max_pdf_pages: int = field(default_factory=lambda: int(os.getenv("MAX_PDF_PAGES", "20")))
-    upload_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("UPLOAD_TIMEOUT_SECONDS", "60")))
+    upload_timeout_seconds: int = field(
+        default_factory=lambda: int(os.getenv("UPLOAD_TIMEOUT_SECONDS", "60"))
+    )
 
     # Storage
     storage_dir: str = field(default_factory=lambda: os.getenv("STORAGE_DIR", "data/storage"))
     database_path: str = field(default_factory=lambda: os.getenv("DATABASE_PATH", "invoices.db"))
 
     # LLM
-    llm_base_url: str = field(default_factory=lambda: os.getenv("LLM_BASE_URL", "https://api.qwencoder.cloud/api/v1"))
-    llm_api_key: str = field(default_factory=lambda: os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY", ""))
+    llm_base_url: str = field(
+        default_factory=lambda: os.getenv("LLM_BASE_URL", "https://api.qwencoder.cloud/api/v1")
+    )
+    llm_api_key: str = field(
+        default_factory=lambda: os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY", "")
+    )
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "qwen3.7-max"))
-    llm_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("LLM_TIMEOUT_SECONDS", "30")))
+    llm_timeout_seconds: int = field(
+        default_factory=lambda: int(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+    )
     llm_max_retries: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_RETRIES", "2")))
-    llm_cost_cap_usd: float = field(default_factory=lambda: float(os.getenv("LLM_COST_CAP_USD", "0.50")))
+    llm_cost_cap_usd: float = field(
+        default_factory=lambda: float(os.getenv("LLM_COST_CAP_USD", "0.50"))
+    )
 
     # Privacy
-    privacy_local_only: bool = field(default_factory=lambda: _bool_env("PRIVACY_LOCAL_ONLY", default=False))
-    privacy_redact_pii: bool = field(default_factory=lambda: _bool_env("PRIVACY_REDACT_PII", default=True))
+    privacy_local_only: bool = field(
+        default_factory=lambda: _bool_env("PRIVACY_LOCAL_ONLY", default=False)
+    )
+    privacy_redact_pii: bool = field(
+        default_factory=lambda: _bool_env("PRIVACY_REDACT_PII", default=True)
+    )
 
     @property
     def is_production(self) -> bool:
@@ -143,16 +164,20 @@ class Settings:
             raise RuntimeError("Production không cho phép APP_DEBUG=true.")
         if not self.email_enabled:
             import logging
+
             logging.warning(
                 "Production: email transport chưa cấu hình (EMAIL_SMTP_HOST/EMAIL_SMTP_PORT). "
                 "Cần cấu hình SMTP trước khi gửi email thực tế."
             )
         if self.billing_provider == "mock":
             import logging
+
             logging.warning(
                 "Production: BILLING_PROVIDER=mock không an toàn cho môi trường thực tế. "
                 "Hãy cấu hình stripe|paddle trước khi nhận thanh toán."
             )
+
+
 _settings: Settings | None = None
 _overrides: dict = {}
 

@@ -1,10 +1,10 @@
 """Repository người dùng trên SQLite."""
+
 import hashlib
 import sqlite3
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
-from ..domain.models import User
+from ..models import User
 from .db import SQLiteRepo
 
 
@@ -15,26 +15,34 @@ class UserRepository(SQLiteRepo):
         # Migration: drop legacy plaintext tables (jti/token) if present.
         # Hashed schema is created lazily by token methods + RefreshTokenRepository.
         try:
-            row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='refresh_tokens'").fetchone()
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='refresh_tokens'"
+            ).fetchone()
             if row and row[0] and "jti TEXT" in row[0]:
                 conn.execute("DROP TABLE refresh_tokens")
         except Exception:
             pass
         try:
-            row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='email_verifications'").fetchone()
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='email_verifications'"
+            ).fetchone()
             if row and row[0] and "token TEXT" in row[0]:
                 conn.execute("DROP TABLE email_verifications")
         except Exception:
             pass
         try:
-            row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='password_reset_tokens'").fetchone()
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='password_reset_tokens'"
+            ).fetchone()
             if row and row[0]:
                 conn.execute("DROP TABLE password_reset_tokens")
         except Exception:
             pass
         # Legacy password_resets with token column also needs drop (rare)
         try:
-            row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='password_resets'").fetchone()
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='password_resets'"
+            ).fetchone()
             if row and row[0] and "token TEXT" in row[0]:
                 conn.execute("DROP TABLE password_resets")
         except Exception:
@@ -59,7 +67,9 @@ class UserRepository(SQLiteRepo):
         except sqlite3.OperationalError:
             pass  # cột đã có
         try:
-            conn.execute("ALTER TABLE users ADD COLUMN share_place_visits INTEGER NOT NULL DEFAULT 0")
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN share_place_visits INTEGER NOT NULL DEFAULT 0"
+            )
         except sqlite3.OperationalError:
             pass
         # MFA TOTP secrets (one per user).
@@ -88,19 +98,25 @@ class UserRepository(SQLiteRepo):
                 conn.execute(
                     "INSERT INTO users (id, username, password_hash, created_at, email) "
                     "VALUES (?, ?, ?, ?, ?)",
-                    (user.id, user.username, user.password_hash, user.created_at.isoformat(), user.email),
+                    (
+                        user.id,
+                        user.username,
+                        user.password_hash,
+                        user.created_at.isoformat(),
+                        user.email,
+                    ),
                 )
             except sqlite3.IntegrityError:
                 raise ValueError("Tên người dùng đã tồn tại")
         return user
 
-    def get_by_username(self, username: str) -> Optional[User]:
+    def get_by_username(self, username: str) -> User | None:
         """Tìm người dùng theo username."""
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         return self._row_to_user(row) if row else None
 
-    def get(self, user_id: str) -> Optional[User]:
+    def get(self, user_id: str) -> User | None:
         """Tìm người dùng theo id."""
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -131,7 +147,9 @@ class UserRepository(SQLiteRepo):
 
     def get_place_sharing(self, user_id: str) -> bool:
         with self._connect() as conn:
-            row = conn.execute("SELECT share_place_visits FROM users WHERE id = ?", (user_id,)).fetchone()
+            row = conn.execute(
+                "SELECT share_place_visits FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
         return bool(row[0]) if row else False
 
     def list_place_sharing_ids(self) -> list[str]:
@@ -141,7 +159,9 @@ class UserRepository(SQLiteRepo):
 
     def set_place_sharing(self, user_id: str, enabled: bool) -> bool:
         with self._connect() as conn:
-            cur = conn.execute("UPDATE users SET share_place_visits = ? WHERE id = ?", (int(enabled), user_id))
+            cur = conn.execute(
+                "UPDATE users SET share_place_visits = ? WHERE id = ?", (int(enabled), user_id)
+            )
             if not enabled:
                 try:
                     conn.execute("DELETE FROM shared_place_visits WHERE user_id = ?", (user_id,))
@@ -153,8 +173,7 @@ class UserRepository(SQLiteRepo):
         """Cập nhật mật khẩu. Trả về True nếu user tồn tại."""
         with self._connect() as conn:
             cur = conn.execute(
-                "UPDATE users SET password_hash = ? WHERE id = ?",
-                (new_hash, user_id),
+                "UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id)
             )
             return cur.rowcount > 0
 
@@ -162,8 +181,7 @@ class UserRepository(SQLiteRepo):
         """Đặt trạng thái verified cho user (tiện cho test/admin)."""
         with self._connect() as conn:
             conn.execute(
-                "UPDATE users SET verified = ? WHERE id = ?",
-                (1 if verified else 0, user_id),
+                "UPDATE users SET verified = ? WHERE id = ?", (1 if verified else 0, user_id)
             )
 
     # ---- MFA ----
@@ -177,10 +195,10 @@ class UserRepository(SQLiteRepo):
                 VALUES (?, ?, 0, NULL, ?)
                 ON CONFLICT(user_id) DO UPDATE SET secret=excluded.secret, updated_at=excluded.updated_at
                 """,
-                (user_id, secret, datetime.now(timezone.utc).isoformat()),
+                (user_id, secret, datetime.now(UTC).isoformat()),
             )
 
-    def get_mfa_secret(self, user_id: str) -> Optional[dict]:
+    def get_mfa_secret(self, user_id: str) -> dict | None:
         """Lấy secret TOTP."""
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM mfa_secrets WHERE user_id = ?", (user_id,)).fetchone()
@@ -193,8 +211,7 @@ class UserRepository(SQLiteRepo):
     def set_mfa_enabled(self, user_id: str, enabled: bool) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE users SET mfa_enabled = ? WHERE id = ?",
-                (1 if enabled else 0, user_id),
+                "UPDATE users SET mfa_enabled = ? WHERE id = ?", (1 if enabled else 0, user_id)
             )
             conn.execute(
                 "UPDATE mfa_secrets SET enabled = ? WHERE user_id = ?",
@@ -204,6 +221,7 @@ class UserRepository(SQLiteRepo):
     # ---- Auth token shims (delegated to hashed tables in the unified schema) ----
     def _hash_token(self, token: str) -> str:
         import hashlib as _h
+
         return _h.sha256(token.encode()).hexdigest()
 
     def create_email_verification(self, user_id: str, token: str, expires_at: str) -> None:
@@ -242,20 +260,24 @@ class UserRepository(SQLiteRepo):
             conn.execute(
                 """INSERT INTO email_verifications (token_hash, user_id, expires_at, used, created_at)
                    VALUES (?, ?, ?, 0, ?)""",
-                (token_hash, user_id, expires_at, datetime.now(timezone.utc).isoformat()),
+                (token_hash, user_id, expires_at, datetime.now(UTC).isoformat()),
             )
 
-    def consume_email_verification(self, token: str) -> "Optional[str]":
+    def consume_email_verification(self, token: str) -> "str | None":
         token_hash = self._hash_token(token)
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM email_verifications WHERE token_hash = ?", (token_hash,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM email_verifications WHERE token_hash = ?", (token_hash,)
+            ).fetchone()
             if not row:
                 return None
             if row["used"]:
                 return None
-            if datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+            if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
                 return None
-            conn.execute("UPDATE email_verifications SET used = 1 WHERE token_hash = ?", (token_hash,))
+            conn.execute(
+                "UPDATE email_verifications SET used = 1 WHERE token_hash = ?", (token_hash,)
+            )
             conn.execute("UPDATE users SET verified = 1 WHERE id = ?", (row["user_id"],))
             return row["user_id"]
 
@@ -274,23 +296,27 @@ class UserRepository(SQLiteRepo):
             conn.execute(
                 """INSERT INTO password_resets (token_hash, user_id, expires_at, used, created_at)
                    VALUES (?, ?, ?, 0, ?)""",
-                (token_hash, user_id, expires_at, datetime.now(timezone.utc).isoformat()),
+                (token_hash, user_id, expires_at, datetime.now(UTC).isoformat()),
             )
 
-    def consume_password_reset(self, token: str) -> "Optional[str]":
+    def consume_password_reset(self, token: str) -> "str | None":
         token_hash = self._hash_token(token)
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM password_resets WHERE token_hash = ?", (token_hash,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM password_resets WHERE token_hash = ?", (token_hash,)
+            ).fetchone()
             if not row:
                 return None
             if row["used"]:
                 return None
-            if datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+            if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
                 return None
             conn.execute("UPDATE password_resets SET used = 1 WHERE token_hash = ?", (token_hash,))
             return row["user_id"]
 
-    def store_refresh_token(self, jti: str, user_id: str, expires_at: str, family: str = "") -> None:
+    def store_refresh_token(
+        self, jti: str, user_id: str, expires_at: str, family: str = ""
+    ) -> None:
         token_hash = self._hash_token(jti)
         with self._connect() as conn:
             conn.execute("""
@@ -306,23 +332,26 @@ class UserRepository(SQLiteRepo):
             conn.execute(
                 """INSERT INTO refresh_tokens (token_hash, user_id, expires_at, revoked, created_at, family)
                    VALUES (?, ?, ?, 0, ?, ?)""",
-                (token_hash, user_id, expires_at, datetime.now(timezone.utc).isoformat(), family),
+                (token_hash, user_id, expires_at, datetime.now(UTC).isoformat(), family),
             )
 
-    def is_refresh_token_valid(self, jti: str) -> "Optional[str]":
+    def is_refresh_token_valid(self, jti: str) -> "str | None":
         token_hash = self._hash_token(jti)
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM refresh_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM refresh_tokens WHERE token_hash = ?", (token_hash,)
+            ).fetchone()
             if not row:
                 return None
             if row["revoked"]:
                 return None
-            if datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+            if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
                 return None
             return row["user_id"]
 
     def revoke_refresh_token(self, jti: str) -> None:
         token_hash = self._hash_token(jti)
         with self._connect() as conn:
-            conn.execute("UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?", (token_hash,))
-
+            conn.execute(
+                "UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?", (token_hash,)
+            )

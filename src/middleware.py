@@ -5,12 +5,13 @@ Nguyên tắc (PLAN mục 3):
 - Không có CORS wildcard trong production.
 - Request ID cho trace và audit.
 """
+
 from __future__ import annotations
 
 import logging
 import time
 import uuid
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -69,14 +70,20 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
             status = 500
             self._logger.warning(
                 "unhandled_exception request_id=%s method=%s path=%s",
-                request_id, request.method, str(request.url.path),
+                request_id,
+                request.method,
+                str(request.url.path),
             )
             raise
         finally:
             duration_ms = (time.perf_counter() - start) * 1000
             self._logger.info(
                 "access request_id=%s method=%s path=%s status=%d duration_ms=%.2f",
-                request_id, request.method, str(request.url.path), status, duration_ms,
+                request_id,
+                request.method,
+                str(request.url.path),
+                status,
+                duration_ms,
             )
         return response
 

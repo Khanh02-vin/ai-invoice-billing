@@ -4,13 +4,13 @@ Triển khai RFC 6238 (TOTP) và RFC 4648 (base32).
 - Secret: base32 (A-Z2-7), random bytes.
 - TOTP: 6 chữ số, cửa sổ 30 giây, SHA1.
 - Backup codes: mã phục hồi dùng 1 lần."""
+
 import base64
 import hashlib
 import hmac
 import secrets
 import struct
 import time
-from typing import List
 
 
 def generate_mfa_secret(length: int = 32) -> str:
@@ -57,7 +57,7 @@ def verify_totp(secret: str, token: str, window: int = 1) -> bool:
     return False
 
 
-def generate_backup_codes(n: int = 8) -> List[str]:
+def generate_backup_codes(n: int = 8) -> list[str]:
     """Tạo n backup code dùng 1 lần, định dạng xxxx-xxxx."""
     codes = []
     for _ in range(n):

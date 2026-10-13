@@ -5,13 +5,22 @@ Migration cho DB cũ: tự thêm cột mới nếu thiếu.
 Chống trùng: unique index (user, invoice_number) + (user, file_checksum),
 check trước mỗi insert — bản trùng cùng file gộp, cùng số khác file báo lỗi.
 """
+
 import json
 import logging
 import sqlite3
-from datetime import datetime, timezone
-from typing import List, Optional, Tuple
-from ..domain.models import (Invoice, InvoiceStatus, InvoiceUpdate, MonthlyReport,
-                             JobStatus, LineItem, FieldCorrection, FieldProvenance)
+from datetime import UTC, datetime
+
+from ..models import (
+    FieldCorrection,
+    FieldProvenance,
+    Invoice,
+    InvoiceStatus,
+    InvoiceUpdate,
+    JobStatus,
+    LineItem,
+    MonthlyReport,
+)
 from .db import SQLiteRepo
 
 logger = logging.getLogger(__name__)
@@ -19,8 +28,15 @@ _dup_index_warned = False
 
 # Trường user có thể sửa trong UI review (dùng để ghi correction + export eval)
 _UPDATABLE_FIELDS = {
-    "invoice_number", "vendor", "buyer", "issue_date", "due_date",
-    "total", "tax", "currency", "status",
+    "invoice_number",
+    "vendor",
+    "buyer",
+    "issue_date",
+    "due_date",
+    "total",
+    "tax",
+    "currency",
+    "status",
 }
 
 
@@ -200,7 +216,9 @@ class InvoiceRepository(SQLiteRepo):
         """Chuyển DB row -> Invoice model."""
         data = dict(row)
         # Parse JSON fields
-        data["line_items"] = [LineItem(**item) for item in json.loads(data.get("line_items") or "[]")]
+        data["line_items"] = [
+            LineItem(**item) for item in json.loads(data.get("line_items") or "[]")
+        ]
         prov_raw = json.loads(data.get("provenance") or "{}")
         data["provenance"] = {k: FieldProvenance(**v) for k, v in prov_raw.items()}
         data["review_history"] = json.loads(data.get("review_history") or "[]")
@@ -208,7 +226,11 @@ class InvoiceRepository(SQLiteRepo):
         data["status"] = InvoiceStatus(data.get("status", "unpaid"))
         data["job_status"] = JobStatus(data.get("job_status", "review"))
         # Parse datetime
-        data["created_at"] = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.utcnow()
+        data["created_at"] = (
+            datetime.fromisoformat(data["created_at"])
+            if data.get("created_at")
+            else datetime.utcnow()
+        )
         if data.get("finalized_at"):
             data["finalized_at"] = datetime.fromisoformat(data["finalized_at"])
         return Invoice(**data)
@@ -216,6 +238,7 @@ class InvoiceRepository(SQLiteRepo):
     def create(self, data, user_id: str = "") -> Invoice:
         """Tạo hóa đơn mới từ InvoiceCreate."""
         import uuid
+
         invoice = Invoice(
             id=str(uuid.uuid4()),
             invoice_number=data.invoice_number,
@@ -230,7 +253,7 @@ class InvoiceRepository(SQLiteRepo):
         )
         return self.upsert(invoice)
 
-    def _find_duplicate(self, conn, invoice: Invoice) -> Optional[Tuple[str, bool]]:
+    def _find_duplicate(self, conn, invoice: Invoice) -> tuple[str, bool] | None:
         """Tìm bản trùng của invoice trong cùng user.
 
         Trả (id bản trùng, cùng_file?): cùng file (checksum) → chắc chắn cùng bill
@@ -260,6 +283,7 @@ class InvoiceRepository(SQLiteRepo):
         """
         if not invoice.id:
             import uuid
+
             invoice.id = str(uuid.uuid4())
         with self._connect() as conn:
             is_new = not conn.execute(
@@ -284,7 +308,7 @@ class InvoiceRepository(SQLiteRepo):
                 conn.execute(_INSERT_INVOICE_SQL, self._serialize_invoice(invoice))
         return invoice
 
-    def get(self, invoice_id: str, user_id: str = "") -> Optional[Invoice]:
+    def get(self, invoice_id: str, user_id: str = "") -> Invoice | None:
         """Lấy hóa đơn theo id (phải thuộc user)."""
         with self._connect() as conn:
             row = conn.execute(
@@ -292,7 +316,9 @@ class InvoiceRepository(SQLiteRepo):
             ).fetchone()
         return self._row_to_invoice(row) if row else None
 
-    def list(self, user_id: str = "", status: Optional[InvoiceStatus] = None, limit: int = 100) -> List[Invoice]:
+    def list(
+        self, user_id: str = "", status: InvoiceStatus | None = None, limit: int = 100
+    ) -> list[Invoice]:
         """Liệt kê hóa đơn của user, có thể lọc theo status."""
         query = "SELECT * FROM invoices WHERE user_id = ?"
         params: list = [user_id]
@@ -305,7 +331,7 @@ class InvoiceRepository(SQLiteRepo):
             rows = conn.execute(query, params).fetchall()
         return [self._row_to_invoice(r) for r in rows]
 
-    def update(self, invoice_id: str, data: InvoiceUpdate, user_id: str = "") -> Optional[Invoice]:
+    def update(self, invoice_id: str, data: InvoiceUpdate, user_id: str = "") -> Invoice | None:
         """Cập nhật hóa đơn — field user sửa được ghi lại thành correction (audit/eval).
 
         Mỗi thay đổi thật (giá trị khác cũ) ghi 1 dòng review_history: old → new +
@@ -315,7 +341,7 @@ class InvoiceRepository(SQLiteRepo):
         invoice = self.get(invoice_id, user_id=user_id)
         if not invoice:
             return None
-        corrections: List[FieldCorrection] = []
+        corrections: list[FieldCorrection] = []
         for field, value in data.model_dump(exclude_unset=True).items():
             if value is None or field not in _UPDATABLE_FIELDS:
                 continue
@@ -329,19 +355,23 @@ class InvoiceRepository(SQLiteRepo):
             setattr(invoice, col, value)
             if field != "status":
                 prov = invoice.provenance.get(field)
-                corrections.append(FieldCorrection(
-                    invoice_id=invoice.id,
-                    field=field,
-                    old_value=old,
-                    new_value=value,
-                    confidence=prov.confidence if prov else None,
-                    source=prov.source if prov else None,
-                    corrected_by=user_id,
-                    corrected_at=datetime.now(timezone.utc).isoformat(),
-                ))
+                corrections.append(
+                    FieldCorrection(
+                        invoice_id=invoice.id,
+                        field=field,
+                        old_value=old,
+                        new_value=value,
+                        confidence=prov.confidence if prov else None,
+                        source=prov.source if prov else None,
+                        corrected_by=user_id,
+                        corrected_at=datetime.now(UTC).isoformat(),
+                    )
+                )
                 # User đã sửa → field này đã review: provenance manual, chắc chắn
                 invoice.provenance[field] = FieldProvenance(
-                    value=value, confidence=1.0, source="manual",
+                    value=value,
+                    confidence=1.0,
+                    source="manual",
                     evidence=f"user-corrected (was {old!r})",
                 )
         if corrections:
@@ -358,7 +388,7 @@ class InvoiceRepository(SQLiteRepo):
             )
             return cur.rowcount > 0
 
-    def monthly_report(self, period: str, user_id: str = "") -> Optional[MonthlyReport]:
+    def monthly_report(self, period: str, user_id: str = "") -> MonthlyReport | None:
         """Báo cáo theo tháng (YYYY-MM)."""
         with self._connect() as conn:
             rows = conn.execute(
@@ -374,10 +404,11 @@ class InvoiceRepository(SQLiteRepo):
         report.total_tax = sum(inv.tax for inv in invoices)
         report.total_discount = sum(inv.discount for inv in invoices)
         report.paid_amount = sum(inv.total for inv in invoices if inv.status == InvoiceStatus.PAID)
-        report.unpaid_amount = sum(inv.total for inv in invoices if inv.status != InvoiceStatus.PAID)
+        report.unpaid_amount = sum(
+            inv.total for inv in invoices if inv.status != InvoiceStatus.PAID
+        )
         report.paid_count = sum(1 for inv in invoices if inv.status == InvoiceStatus.PAID)
         return report
 
 
 # Import FieldProvenance ở cuối để tránh circular
-from ..domain.models import FieldProvenance

@@ -6,10 +6,10 @@ from src import app as app_module
 from src import push as push_module
 from src.domain.payments import PaymentTransaction, TxDirection, TxStatus
 from src.payments.notify import send_receipt_reminder
-from src.store.push import PushSubscriptionRepository
-from src.store.repository import InvoiceRepository
-from src.store.transactions import TransactionRepository
-from src.store.users import UserRepository
+from tests.test_utils import (
+    TestInvoiceRepository, TestUserRepository, TestTransactionRepository,
+    TestPushSubscriptionRepository
+)
 
 VAPID_PUB = "BNVBzrWUcCA7GOOCUOgBWB27-LGwKMXezWFV3qEEayho18hxANT5fLFRvIGkPVh0fLezbcelsw5UYRadsQKGV1Q"
 SUB = {
@@ -25,10 +25,10 @@ def fresh_db(monkeypatch):
     monkeypatch.delenv("VAPID_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("VAPID_SUBJECT", raising=False)
-    push_repo = PushSubscriptionRepository(db_path=":memory:")
-    app_module.repo = InvoiceRepository(db_path=":memory:")
-    app_module.users = UserRepository(db_path=":memory:")
-    app_module.tx_repo = TransactionRepository(db_path=":memory:")
+    push_repo = TestPushSubscriptionRepository()
+    app_module.repo = TestInvoiceRepository()
+    app_module.users = TestUserRepository()
+    app_module.tx_repo = TestTransactionRepository()
     app_module.push_repo = push_repo
     push_module.set_repo(push_repo)
     yield

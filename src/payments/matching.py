@@ -3,9 +3,10 @@
 Chỉ so amount + currency (tolerance VND 1.000 do làm tròn, ngoại tệ 0.01).
 Ưu tiên hóa đơn CHƯA thanh toán khi có nhiều ứng viên.
 """
-from typing import Iterable, Optional
 
-from ..domain.models import Invoice, InvoiceStatus
+from collections.abc import Iterable
+
+from ..models import Invoice, InvoiceStatus
 from ..domain.payments import PaymentTransaction, TxDirection
 
 
@@ -17,10 +18,11 @@ def amounts_match(amount_a: float, currency_a: str, amount_b: float, currency_b:
     return abs(amount_a - amount_b) <= tolerance
 
 
-def pick_invoice(tx: PaymentTransaction, invoices: Iterable[Invoice]) -> Optional[Invoice]:
+def pick_invoice(tx: PaymentTransaction, invoices: Iterable[Invoice]) -> Invoice | None:
     """Chọn hóa đơn khớp số tiền giao dịch — ưu tiên chưa thanh toán."""
     cands = [
-        i for i in invoices
+        i
+        for i in invoices
         if i.status != InvoiceStatus.CANCELLED
         and amounts_match(tx.amount, tx.currency, i.total, i.currency)
     ]
@@ -30,7 +32,9 @@ def pick_invoice(tx: PaymentTransaction, invoices: Iterable[Invoice]) -> Optiona
     return cands[0]
 
 
-def pick_transaction(invoice: Invoice, txs: Iterable[PaymentTransaction]) -> Optional[PaymentTransaction]:
+def pick_transaction(
+    invoice: Invoice, txs: Iterable[PaymentTransaction]
+) -> PaymentTransaction | None:
     """Chọn giao dịch debit khớp số tiền hóa đơn (list trả về mới nhất trước)."""
     for tx in txs:
         if tx.direction == TxDirection.DEBIT and amounts_match(

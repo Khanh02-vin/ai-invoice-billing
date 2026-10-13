@@ -6,6 +6,7 @@ Pure-function style for testability:
 
 Uses only stdlib: zipfile, json, hashlib, shutil, datetime, os, pathlib.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -13,10 +14,8 @@ import json
 import os
 import shutil
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
-
 
 MANIFEST_NAME = "backup_manifest.json"
 
@@ -31,7 +30,7 @@ def compute_checksum(path: str | os.PathLike, algorithm: str = "sha256") -> str:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _write_backup_manifest(
@@ -43,7 +42,7 @@ def _write_backup_manifest(
     db_checksum: str,
     zip_checksum: str,
     file_count: int,
-) -> Dict:
+) -> dict:
     manifest = {
         "version": 1,
         "created_at": _utc_now_iso(),
@@ -58,7 +57,7 @@ def _write_backup_manifest(
     return manifest
 
 
-def _read_backup_manifest(manifest_path: Path) -> Dict:
+def _read_backup_manifest(manifest_path: Path) -> dict:
     return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
@@ -80,7 +79,7 @@ class BackupManager:
 
     # ---------- public API ----------
 
-    def create_backup(self, backup_dir: Optional[str] = None) -> str:
+    def create_backup(self, backup_dir: str | None = None) -> str:
         """Create a zip backup of the DB file + storage dir.
 
         Returns the path to the created zip file.
@@ -88,7 +87,7 @@ class BackupManager:
         backup_root = Path(backup_dir) if backup_dir else Path(self.backup_dir)
         backup_root.mkdir(parents=True, exist_ok=True)
 
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         backup_name = f"backup_{ts}.zip"
         backup_path = backup_root / backup_name
 
@@ -144,8 +143,8 @@ class BackupManager:
     def restore_backup(
         self,
         backup_path: str,
-        target_db_path: Optional[str] = None,
-        target_storage_dir: Optional[str] = None,
+        target_db_path: str | None = None,
+        target_storage_dir: str | None = None,
     ) -> bool:
         """Restore a backup zip into target locations.
 
@@ -199,13 +198,13 @@ class BackupManager:
 
         return True
 
-    def list_backups(self, backup_dir: Optional[str] = None) -> List[Dict]:
+    def list_backups(self, backup_dir: str | None = None) -> list[dict]:
         """List available backups with metadata, newest first."""
         backup_root = Path(backup_dir) if backup_dir else Path(self.backup_dir)
         if not backup_root.exists():
             return []
 
-        results: List[Dict] = []
+        results: list[dict] = []
         for sidecar in sorted(backup_root.glob("backup_*.json"), reverse=True):
             try:
                 manifest = _read_backup_manifest(sidecar)
@@ -225,7 +224,7 @@ class BackupManager:
                 continue
         return results
 
-    def prune_backups(self, backup_dir: Optional[str] = None, keep_last: int = 10) -> int:
+    def prune_backups(self, backup_dir: str | None = None, keep_last: int = 10) -> int:
         """Remove oldest backups beyond keep_last. Returns removed count."""
         if keep_last < 0:
             raise ValueError("keep_last must be >= 0")

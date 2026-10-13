@@ -1,12 +1,13 @@
 """Bảo mật: hash mật khẩu (stdlib pbkdf2) + JWT (PyJWT) + refresh/tokens/TOTP.
 ponytail: pbkdf2_hmac stdlib thay bcrypt — đủ an toàn, không thêm dep nặng."""
+
 import base64
 import hashlib
 import hmac
 import secrets
 import struct
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import jwt
 
@@ -42,10 +43,7 @@ def create_token(user_id: str, days: int | None = None) -> str:
     settings = get_settings()
     if days is None:
         days = settings.jwt_expiry_days
-    payload = {
-        "sub": user_id,
-        "exp": datetime.now(timezone.utc) + timedelta(days=days),
-    }
+    payload = {"sub": user_id, "exp": datetime.now(UTC) + timedelta(days=days)}
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
@@ -61,6 +59,7 @@ def decode_token(token: str) -> str | None:
 
 # ---- Refresh tokens ----
 
+
 def create_refresh_token(user_id: str, jti: str) -> str:
     """Tạo refresh token JWT (short-lived, 30 days) chứa jti."""
     settings = get_settings()
@@ -68,7 +67,7 @@ def create_refresh_token(user_id: str, jti: str) -> str:
         "sub": user_id,
         "jti": jti,
         "type": "refresh",
-        "exp": datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS),
+        "exp": datetime.now(UTC) + timedelta(days=_REFRESH_DAYS),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
@@ -91,6 +90,7 @@ def decode_refresh_token(token: str) -> tuple[str, str] | None:
 
 # ---- Email / reset token helpers ----
 
+
 def create_email_token() -> str:
     """Tạo token URL-safe ngẫu nhiên cho email verification."""
     return secrets.token_urlsafe(32)
@@ -102,6 +102,7 @@ def hash_token(token: str) -> str:
 
 
 # ---- TOTP (RFC 6238, stdlib only) ----
+
 
 def create_totp_secret() -> str:
     """Tạo secret base32 ngẫu nhiên cho TOTP."""
@@ -115,8 +116,8 @@ def _hotp(secret: str, counter: int, digits: int = _TOTP_DIGITS) -> str:
     msg = struct.pack(">Q", counter)
     h = hmac.new(key, msg, hashlib.sha1).digest()
     o = h[-1] & 0x0F
-    code = struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF
-    return str(code % (10 ** digits)).zfill(digits)
+    code = struct.unpack(">I", h[o : o + 4])[0] & 0x7FFFFFFF
+    return str(code % (10**digits)).zfill(digits)
 
 
 def verify_totp(secret: str, code: str, *, window: int = 1) -> bool:
@@ -132,6 +133,7 @@ def verify_totp(secret: str, code: str, *, window: int = 1) -> bool:
 
 
 # ---- Backup codes ----
+
 
 def generate_backup_codes(n: int = 8) -> list[str]:
     """Tạo N mã backup ngẫu nhiên (6 chữ số)."""

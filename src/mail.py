@@ -4,6 +4,7 @@ email / đặt lại mật khẩu). stdlib smtplib, không thêm dependency.
 Chưa cấu hình SMTP (EMAIL_SMTP_HOST/PORT) -> send_mail trả False; caller quyết
 định (503 fail-closed ở auth, im lặng bỏ qua ở notify).
 """
+
 from __future__ import annotations
 
 import logging
@@ -11,7 +12,7 @@ import smtplib
 from email.message import EmailMessage
 
 from .config import get_settings
-from .domain.models import User
+from .models import User
 
 logger = logging.getLogger("invoice.mail")
 

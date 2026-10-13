@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 
 from src import app as app_module
 from src.domain.models import Invoice
-from src.store.repository import InvoiceRepository, DuplicateInvoiceError
-from src.store.users import UserRepository
+from tests.test_utils import TestInvoiceRepository, TestUserRepository
+from src.store.sql_repository import DuplicateInvoiceError
 
 
 def _inv(id: str, user_id: str = "u1", number: str = "INV-1", checksum: str = "") -> Invoice:

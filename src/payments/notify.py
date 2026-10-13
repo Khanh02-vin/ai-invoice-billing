@@ -3,9 +3,10 @@
 - Push native PWA (`src/push.py`): không cấu hình VAPID key -> im lặng.
 Kênh gọi: router /payments/ingest (thread fire-and-forget) + IMAP poller (thread nền).
 """
+
 from __future__ import annotations
 
-from ..domain.models import User
+from ..models import User
 from ..domain.payments import PaymentTransaction
 from ..mail import send_mail, user_email
 

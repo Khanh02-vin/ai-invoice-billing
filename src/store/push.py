@@ -3,9 +3,9 @@
 Mỗi dòng = 1 thiết bị (endpoint) của 1 user. Endpoint do trình duyệt cấp,
 là khoá tự nhiên của thiết bị; subscribe lại cùng endpoint chỉ cập nhật key.
 """
+
 import uuid
 from datetime import datetime
-from typing import Dict, List
 
 from .db import SQLiteRepo
 
@@ -30,7 +30,7 @@ class PushSubscriptionRepository(SQLiteRepo):
             ON push_subscriptions (user_id, endpoint)
         """)
 
-    def save(self, user_id: str, subscription: Dict) -> None:
+    def save(self, user_id: str, subscription: dict) -> None:
         """Lưu/cập nhật subscription. Chuẩn dict: {endpoint, keys:{p256dh, auth}}."""
         endpoint = (subscription.get("endpoint") or "").strip()
         keys = subscription.get("keys") or {}
@@ -44,11 +44,17 @@ class PushSubscriptionRepository(SQLiteRepo):
                    VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(user_id, endpoint)
                    DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth""",
-                (uuid.uuid4().hex[:16], user_id, endpoint, p256dh, auth,
-                 datetime.utcnow().isoformat()),
+                (
+                    uuid.uuid4().hex[:16],
+                    user_id,
+                    endpoint,
+                    p256dh,
+                    auth,
+                    datetime.utcnow().isoformat(),
+                ),
             )
 
-    def list_for_user(self, user_id: str) -> List[Dict]:
+    def list_for_user(self, user_id: str) -> list[dict]:
         """Subscription của user, dạng pywebpush nhận trực tiếp."""
         with self._connect() as conn:
             rows = conn.execute(
@@ -69,7 +75,5 @@ class PushSubscriptionRepository(SQLiteRepo):
                     (user_id, endpoint),
                 )
             else:
-                cur = conn.execute(
-                    "DELETE FROM push_subscriptions WHERE user_id = ?", (user_id,)
-                )
+                cur = conn.execute("DELETE FROM push_subscriptions WHERE user_id = ?", (user_id,))
             return cur.rowcount

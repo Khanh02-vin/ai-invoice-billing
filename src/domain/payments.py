@@ -3,44 +3,46 @@
 Luồng: text thô thông báo giao dịch -> parse -> PaymentTransaction (pending)
 -> tự ghép hóa đơn theo số tiền -> nhắc user chụp hóa đơn nếu chưa có.
 """
+
 from datetime import datetime
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
 
 class TxDirection(str, Enum):
-    DEBIT = "debit"    # tiền đi ra -> cần hóa đơn
+    DEBIT = "debit"  # tiền đi ra -> cần hóa đơn
     CREDIT = "credit"  # tiền vào -> không cần hóa đơn
 
 
 class TxStatus(str, Enum):
     PENDING_RECEIPT = "pending_receipt"  # chờ upload hóa đơn
-    MATCHED = "matched"                  # đã ghép với hóa đơn
-    DISMISSED = "dismissed"              # user bỏ qua
-    RECORDED = "recorded"                # thu nhập hoặc chi phí đã ghi sổ
+    MATCHED = "matched"  # đã ghép với hóa đơn
+    DISMISSED = "dismissed"  # user bỏ qua
+    RECORDED = "recorded"  # thu nhập hoặc chi phí đã ghi sổ
 
 
 class PaymentEvent(BaseModel):
     """Kết quả parse 1 tin nhắn/email thông báo giao dịch."""
+
     amount: float
     currency: str = "VND"
     direction: TxDirection = TxDirection.DEBIT
     merchant: str = ""
-    occurred_at: Optional[str] = None  # ISO datetime nếu đọc được ngày
+    occurred_at: str | None = None  # ISO datetime nếu đọc được ngày
     source: str = "sms"
 
 
 class PaymentTransaction(BaseModel):
     """Giao dịch đã lưu — chờ ghép với hóa đơn."""
+
     id: str = ""
     user_id: str = ""
     amount: float = 0.0
     currency: str = "VND"
     direction: TxDirection = TxDirection.DEBIT
     merchant: str = ""
-    occurred_at: Optional[str] = None
+    occurred_at: str | None = None
     source: str = "sms"
     external_ref: str = ""
     status: TxStatus = TxStatus.PENDING_RECEIPT
@@ -48,7 +50,7 @@ class PaymentTransaction(BaseModel):
     raw_text: str = ""
     note: str = ""
     category: str = ""
-    location_lat: Optional[float] = None
-    location_lon: Optional[float] = None
-    location_captured_at: Optional[str] = None
+    location_lat: float | None = None
+    location_lon: float | None = None
+    location_captured_at: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)

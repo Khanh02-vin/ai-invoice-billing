@@ -4,24 +4,64 @@ Pure stdlib — no external ML deps. Tokenizes invoice text, builds a vocab of
 the top-K most frequent terms, and produces L2-normalized dense vectors.
 Similarity is cosine. Deterministic and fast enough for small invoice sets.
 """
+
 from __future__ import annotations
 
 import math
 import re
 from collections import Counter
-from typing import Dict, Iterable, List, Sequence
+from collections.abc import Sequence
 
-_TOKEN_RE = re.compile(r"[a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]+", re.I)
+_TOKEN_RE = re.compile(
+    r"[a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]+", re.I
+)
 
 _STOPWORDS = {
-    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with",
-    "is", "are", "was", "were", "be", "as", "at", "by", "from", "into",
-    "của", "và", "có", "là", "được", "cho", "với", "một", "các", "những",
-    "này", "đó", "tại", "trong", "đã", "sẽ", "đang", "về", "theo", "từ",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "of",
+    "to",
+    "in",
+    "on",
+    "for",
+    "with",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "as",
+    "at",
+    "by",
+    "from",
+    "into",
+    "của",
+    "và",
+    "có",
+    "là",
+    "được",
+    "cho",
+    "với",
+    "một",
+    "các",
+    "những",
+    "này",
+    "đó",
+    "tại",
+    "trong",
+    "đã",
+    "sẽ",
+    "đang",
+    "về",
+    "theo",
+    "từ",
 }
 
 
-def tokenize(text: str) -> List[str]:
+def tokenize(text: str) -> list[str]:
     """Lowercase + split on non-alphanumeric, drop stopwords + 1-char tokens."""
     if not text:
         return []
@@ -35,16 +75,16 @@ class SimpleEmbedding:
     def __init__(self, max_vocab: int = 512, min_df: int = 1) -> None:
         self.max_vocab = max_vocab
         self.min_df = min_df
-        self.vocab: Dict[str, int] = {}
-        self.idf: Dict[str, float] = {}
+        self.vocab: dict[str, int] = {}
+        self.idf: dict[str, float] = {}
         self._is_fit = False
 
     # ---------- fit ----------
 
-    def fit(self, texts: Sequence[str]) -> "SimpleEmbedding":
+    def fit(self, texts: Sequence[str]) -> SimpleEmbedding:
         """Build vocab + idf from a corpus."""
         df: Counter = Counter()
-        tokenized: List[List[str]] = []
+        tokenized: list[list[str]] = []
         for t in texts:
             toks = tokenize(t)
             tokenized.append(toks)
@@ -55,16 +95,13 @@ class SimpleEmbedding:
         top = eligible[: self.max_vocab]
         self.vocab = {term: i for i, (term, _c) in enumerate(top)}
         n = max(len(tokenized), 1)
-        self.idf = {
-            term: math.log((n + 1) / (c + 1)) + 1
-            for term, c in top
-        }
+        self.idf = {term: math.log((n + 1) / (c + 1)) + 1 for term, c in top}
         self._is_fit = True
         return self
 
     # ---------- vectorize ----------
 
-    def vectorize(self, text: str) -> List[float]:
+    def vectorize(self, text: str) -> list[float]:
         """Return L2-normalized dense vector for `text`."""
         if not self._is_fit or not self.vocab:
             return []
@@ -85,7 +122,7 @@ class SimpleEmbedding:
 
     # ---------- helpers ----------
 
-    def fit_vectorize(self, text: str) -> List[float]:
+    def fit_vectorize(self, text: str) -> list[float]:
         """Fit on a single text then vectorize it (degenerate but safe)."""
         self.fit([text])
         return self.vectorize(text)
