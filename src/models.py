@@ -75,8 +75,6 @@ class User(SQLModel, table=True):
     password_hash: str = Field(min_length=60)  # bcrypt hash
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     verified: bool = False
-    mfa_enabled: bool = False
-    mfa_secret: str | None = None
     email: str = Field(default="", max_length=254)
 
     # Relationships

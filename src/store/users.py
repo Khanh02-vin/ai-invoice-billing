@@ -56,7 +56,6 @@ class UserRepository(SQLiteRepo):
                 password_hash TEXT NOT NULL,
                 created_at TEXT,
                 verified INTEGER DEFAULT 0,
-                mfa_enabled INTEGER DEFAULT 0,
                 email TEXT DEFAULT '',
                 share_place_visits INTEGER NOT NULL DEFAULT 0
             )
@@ -72,16 +71,6 @@ class UserRepository(SQLiteRepo):
             )
         except sqlite3.OperationalError:
             pass
-        # MFA TOTP secrets (one per user).
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS mfa_secrets (
-                user_id TEXT PRIMARY KEY,
-                secret TEXT NOT NULL,
-                enabled INTEGER DEFAULT 0,
-                backup_codes TEXT,
-                updated_at TEXT NOT NULL
-            )
-        """)
         # Note: email_verifications, password_resets, refresh_tokens
         # are managed by RefreshTokenRepository (hashed token system).
 
@@ -135,7 +124,6 @@ class UserRepository(SQLiteRepo):
             password_hash=row["password_hash"],
             created_at=datetime.fromisoformat(row["created_at"]),
             verified=bool(row["verified"]) if "verified" in row.keys() else False,
-            mfa_enabled=bool(row["mfa_enabled"]) if "mfa_enabled" in row.keys() else False,
             email=row["email"] if "email" in row.keys() else "",
         )
 
@@ -182,40 +170,6 @@ class UserRepository(SQLiteRepo):
         with self._connect() as conn:
             conn.execute(
                 "UPDATE users SET verified = ? WHERE id = ?", (1 if verified else 0, user_id)
-            )
-
-    # ---- MFA ----
-
-    def store_mfa_secret(self, user_id: str, secret: str) -> None:
-        """Lưu secret TOTP."""
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO mfa_secrets (user_id, secret, enabled, backup_codes, updated_at)
-                VALUES (?, ?, 0, NULL, ?)
-                ON CONFLICT(user_id) DO UPDATE SET secret=excluded.secret, updated_at=excluded.updated_at
-                """,
-                (user_id, secret, datetime.now(UTC).isoformat()),
-            )
-
-    def get_mfa_secret(self, user_id: str) -> dict | None:
-        """Lấy secret TOTP."""
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM mfa_secrets WHERE user_id = ?", (user_id,)).fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        d["enabled"] = bool(d["enabled"])
-        return d
-
-    def set_mfa_enabled(self, user_id: str, enabled: bool) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE users SET mfa_enabled = ? WHERE id = ?", (1 if enabled else 0, user_id)
-            )
-            conn.execute(
-                "UPDATE mfa_secrets SET enabled = ? WHERE user_id = ?",
-                (1 if enabled else 0, user_id),
             )
 
     # ---- Auth token shims (delegated to hashed tables in the unified schema) ----

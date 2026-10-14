@@ -1,12 +1,9 @@
-"""Bảo mật: hash mật khẩu (stdlib pbkdf2) + JWT (PyJWT) + refresh/tokens/TOTP.
+"""Bảo mật: hash mật khẩu (stdlib pbkdf2) + JWT (PyJWT) + refresh/tokens.
 ponytail: pbkdf2_hmac stdlib thay bcrypt — đủ an toàn, không thêm dep nặng."""
 
 import base64
 import hashlib
-import hmac
 import secrets
-import struct
-import time
 from datetime import UTC, datetime, timedelta
 
 import jwt
@@ -16,8 +13,6 @@ from ..config import get_settings
 _ALGO = "HS256"
 _ITERATIONS = 100_000
 _REFRESH_DAYS = 30
-_TOTP_PERIOD = 30
-_TOTP_DIGITS = 6
 
 
 def hash_password(password: str) -> str:
@@ -99,42 +94,3 @@ def create_email_token() -> str:
 def hash_token(token: str) -> str:
     """Hash token bằng SHA-256 để lưu vào DB."""
     return hashlib.sha256(token.encode()).hexdigest()
-
-
-# ---- TOTP (RFC 6238, stdlib only) ----
-
-
-def create_totp_secret() -> str:
-    """Tạo secret base32 ngẫu nhiên cho TOTP."""
-    raw = secrets.token_bytes(20)
-    return base64.b32encode(raw).decode()
-
-
-def _hotp(secret: str, counter: int, digits: int = _TOTP_DIGITS) -> str:
-    """HMAC-SHA1 based OTP."""
-    key = base64.b32decode(secret, casefold=True)
-    msg = struct.pack(">Q", counter)
-    h = hmac.new(key, msg, hashlib.sha1).digest()
-    o = h[-1] & 0x0F
-    code = struct.unpack(">I", h[o : o + 4])[0] & 0x7FFFFFFF
-    return str(code % (10**digits)).zfill(digits)
-
-
-def verify_totp(secret: str, code: str, *, window: int = 1) -> bool:
-    """Xác thực mã TOTP với cửa sổ ±window (mặc định ±1)."""
-    if not code.isdigit() or len(code) != _TOTP_DIGITS:
-        return False
-    now = int(time.time())
-    for offset in range(-window, window + 1):
-        counter = (now // _TOTP_PERIOD) + offset
-        if secrets.compare_digest(_hotp(secret, counter), code):
-            return True
-    return False
-
-
-# ---- Backup codes ----
-
-
-def generate_backup_codes(n: int = 8) -> list[str]:
-    """Tạo N mã backup ngẫu nhiên (6 chữ số)."""
-    return [f"{secrets.randbelow(10**6):06d}" for _ in range(n)]

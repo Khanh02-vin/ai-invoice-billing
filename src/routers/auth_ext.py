@@ -1,4 +1,4 @@
-"""Auth hardening router: refresh/revoke, email verification, password reset, MFA (TOTP).
+"""Auth hardening router: refresh/revoke, email verification, password reset.
 
 Prefix: /auth
 Tags: auth-ext
@@ -20,12 +20,9 @@ from ..auth.security import (
     create_email_token,
     create_refresh_token,
     create_token,
-    create_totp_secret,
     decode_refresh_token,
     decode_token,
-    generate_backup_codes,
     hash_password,
-    verify_totp,
 )
 from ..config import get_settings
 from ..errors import AppError
@@ -111,16 +108,6 @@ class RefreshRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
-
-
-class MfaSetupResponse(BaseModel):
-    secret: str
-    backup_codes: list[str]
-    # TODO: In production, return otpauth_uri for QR scanning.
-
-
-class MfaVerifyRequest(BaseModel):
-    code: str
 
 
 # ---- Email helpers ----
@@ -303,27 +290,3 @@ async def revoke(payload: RefreshRequest):
     user_repo = _get_repo()
     user_repo.revoke_refresh_token(jti)
     return {"message": "Refresh token da duoc thu hoi."}
-
-
-@router.post("/mfa/setup")
-async def mfa_setup(user: User = Depends(current_user_local)):
-    """Setup MFA (TOTP). Returns secret + backup codes."""
-    secret = create_totp_secret()
-    repo = _get_repo()
-    repo.store_mfa_secret(user.id, secret)
-    backup_codes = generate_backup_codes(8)
-    return MfaSetupResponse(secret=secret, backup_codes=backup_codes)
-
-
-@router.post("/mfa/verify")
-async def mfa_verify(payload: MfaVerifyRequest, user: User = Depends(current_user_local)):
-    """Verify TOTP code and enable MFA."""
-    repo = _get_repo()
-    info = repo.get_mfa_secret(user.id)
-    if not info:
-        raise AppError("MFA_NOT_SETUP", "Chua lap dat MFA. Goi /auth/mfa/setup truoc.", status=400)
-    if not verify_totp(info["secret"], payload.code):
-        raise AppError("INVALID_CODE", "Ma xac minh khong hop le.", status=400)
-    repo = _get_repo()
-    repo.set_mfa_enabled(user.id, True)
-    return {"message": "MFA da duoc bat."}

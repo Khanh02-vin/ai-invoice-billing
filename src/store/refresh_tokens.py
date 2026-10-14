@@ -1,10 +1,9 @@
-"""Repository cho refresh tokens, email verification, password reset, và MFA secrets.
+"""Repository cho refresh tokens, email verification, và password reset.
 
 Lưu trữ tất cả token dưới dạng hash (token_hash) để tránh lộ token gốc khi DB bị xâm nhập.
 Sử dụng SQLiteRepo cơ sở giống UserRepository."""
 
 import hashlib
-import json
 import sqlite3
 from datetime import datetime
 
@@ -17,7 +16,7 @@ def _hash_token(token: str) -> str:
 
 
 class RefreshTokenRepository(SQLiteRepo):
-    """Lưu trữ refresh tokens, email verification, password reset, và MFA."""
+    """Lưu trữ refresh tokens, email verification, password reset."""
 
     def _ensure_schema(self, conn: sqlite3.Connection):
         conn.execute("""
@@ -46,15 +45,6 @@ class RefreshTokenRepository(SQLiteRepo):
                 expires_at TEXT NOT NULL,
                 used INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS mfa_secrets (
-                user_id TEXT PRIMARY KEY,
-                secret TEXT NOT NULL,
-                enabled INTEGER DEFAULT 0,
-                backup_codes TEXT,
-                updated_at TEXT NOT NULL
             )
         """)
 
@@ -159,60 +149,3 @@ class RefreshTokenRepository(SQLiteRepo):
                 return None
             conn.execute("UPDATE password_resets SET used = 1 WHERE token_hash = ?", (token_hash,))
             return row["user_id"]
-
-    # ---- MFA ----
-    def store_mfa_secret(self, user_id: str, secret: str, backup_codes: list[str]) -> None:
-        """Lưu secret MFA (chưa enable)."""
-        codes_json = json.dumps(backup_codes)
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO mfa_secrets (user_id, secret, enabled, backup_codes, updated_at) "
-                "VALUES (?, ?, 0, ?, ?)",
-                (user_id, secret, codes_json, datetime.utcnow().isoformat()),
-            )
-
-    def get_mfa_secret(self, user_id: str) -> dict | None:
-        """Lấy thông tin MFA của user."""
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM mfa_secrets WHERE user_id = ?", (user_id,)).fetchone()
-        if not row:
-            return None
-        result = dict(row)
-        result["backup_codes"] = (
-            json.loads(result["backup_codes"]) if result["backup_codes"] else []
-        )
-        return result
-
-    def enable_mfa(self, user_id: str) -> bool:
-        """Bật MFA sau khi verify thành công."""
-        with self._connect() as conn:
-            cur = conn.execute(
-                "UPDATE mfa_secrets SET enabled = 1, updated_at = ? WHERE user_id = ?",
-                (datetime.utcnow().isoformat(), user_id),
-            )
-            return cur.rowcount > 0
-
-    def disable_mfa(self, user_id: str) -> bool:
-        """Tắt MFA."""
-        with self._connect() as conn:
-            cur = conn.execute(
-                "UPDATE mfa_secrets SET enabled = 0, updated_at = ? WHERE user_id = ?",
-                (datetime.utcnow().isoformat(), user_id),
-            )
-            return cur.rowcount > 0
-
-    def consume_backup_code(self, user_id: str, code: str) -> bool:
-        """Tiêu thụ một backup code (dùng 1 lần)."""
-        info = self.get_mfa_secret(user_id)
-        if not info or not info["backup_codes"]:
-            return False
-        codes = info["backup_codes"]
-        if code not in codes:
-            return False
-        codes.remove(code)
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE mfa_secrets SET backup_codes = ?, updated_at = ? WHERE user_id = ?",
-                (json.dumps(codes), datetime.utcnow().isoformat(), user_id),
-            )
-        return True

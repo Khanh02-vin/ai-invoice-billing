@@ -158,11 +158,6 @@ export default function Invoices({ user, onLogout }) {
     amount: "299,000₫",
   });
 
-  const [securityInfo] = useState({
-    mfaEnabled: true,
-    lastPasswordChange: "2026-08-15",
-  });
-
   // Error focus management
   const errorRef = useRef(null);
   useEffect(() => {
@@ -791,19 +786,7 @@ export default function Invoices({ user, onLogout }) {
                     </button>
                     {settingsSections.security && (
                       <div id="settings-security-content" role="region" aria-labelledby="settings-security-heading">
-                        <p className="muted">Quản lý xác thực hai yếu tố và mật khẩu.</p>
-                        <div className="security-info" role="region" aria-label="Thông tin bảo mật">
-                          <div className="security-row">
-                            <span>Xác thực hai yếu tố (MFA):</span>
-                            <span className={`status status-${securityInfo.mfaEnabled ? "paid" : "overdue"}`}>
-                              {securityInfo.mfaEnabled ? "Đã bật" : "Đã tắt"}
-                            </span>
-                          </div>
-                          <div className="security-row">
-                            <span>Thay đổi mật khẩu gần nhất:</span>
-                            <strong>{securityInfo.lastPasswordChange}</strong>
-                          </div>
-                        </div>
+                        <p className="muted">Quản lý mật khẩu tài khoản.</p>
                         <button className="btn-ghost" aria-label="Thay đổi mật khẩu tài khoản">
                           Thay đổi mật khẩu
                         </button>

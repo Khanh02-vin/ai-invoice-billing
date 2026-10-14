@@ -1,4 +1,4 @@
-"""Tests for Phase 4 auth hardening: email verification, password reset, refresh tokens, MFA."""
+"""Tests for Phase 4 auth hardening: email verification, password reset, refresh tokens."""
 from __future__ import annotations
 
 import os
@@ -12,8 +12,6 @@ from fastapi.testclient import TestClient
 from src.auth.security import (
     create_email_token,
     hash_token,
-    verify_totp,
-    generate_backup_codes,
     create_token,
     decode_token,
 )
@@ -319,83 +317,6 @@ def test_revoke_invalidates_token(client, user_repo):
     # Refresh should now fail.
     r = client.post("/auth/refresh", json={"refresh_token": refresh_tok})
     assert r.status_code == 401
-
-
-# ---- Tests: MFA ----
-
-def test_mfa_setup_and_verify(client, user_repo):
-    """Setup MFA -> get secret -> verify with correct code -> MFA enabled."""
-    token = _register(client)
-    headers = {"Authorization": f"Bearer {token}"}
-
-    # Setup.
-    r = client.post("/auth/mfa/setup", headers=headers)
-    assert r.status_code == 200
-    data = r.json()
-    secret = data["secret"]
-    backup_codes = data["backup_codes"]
-
-    # Secret is base32, 32 chars.
-    assert len(secret) == 32
-    assert all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567" for c in secret)
-
-    # Backup codes: 8 codes, 6 digits each.
-    assert len(backup_codes) == 8
-    assert all(len(c) == 6 and c.isdigit() for c in backup_codes)
-
-    # Generate a TOTP code for the secret.
-    # We can't easily get the exact current code without the same hotp logic,
-    # but verify_totp with window=1 should accept a freshly generated one.
-    from src.auth.mfa import get_totp_token
-    code = get_totp_token(secret)
-
-    # Verify.
-    r = client.post("/auth/mfa/verify", json={"code": code}, headers=headers)
-    assert r.status_code == 200
-    assert "da duoc bat" in r.json()["message"]
-
-    # MFA enabled in DB.
-    info = user_repo.get_mfa_secret(user_repo.get_by_username("kien").id)
-    assert info["enabled"] is True
-
-
-def test_mfa_verify_rejects_bad_code(client, user_repo):
-    """Setup MFA -> verify with wrong code -> 400."""
-    token = _register(client)
-    headers = {"Authorization": f"Bearer {token}"}
-
-    client.post("/auth/mfa/setup", headers=headers)
-
-    r = client.post("/auth/mfa/verify", json={"code": "000000"}, headers=headers)
-    assert r.status_code == 400
-    assert "khong hop le" in r.json()["error"]["message"]
-
-
-# ---- Tests: TOTP security primitives ----
-
-def test_verify_totp_accepts_valid_codes():
-    """verify_totp accepts a code within window."""
-    from src.auth.security import create_totp_secret
-    secret = create_totp_secret()
-    from src.auth.mfa import get_totp_token
-    code = get_totp_token(secret)
-    assert verify_totp(secret, code) is True
-
-
-def test_verify_totp_rejects_invalid_code():
-    """verify_totp rejects wrong code."""
-    from src.auth.security import create_totp_secret
-    secret = create_totp_secret()
-    assert verify_totp(secret, "000000") is False
-
-
-def test_generate_backup_codes():
-    """generate_backup_codes returns N unique 6-digit codes."""
-    codes = generate_backup_codes(8)
-    assert len(codes) == 8
-    assert len(set(codes)) == 8
-    for c in codes:
-        assert len(c) == 6 and c.isdigit()
 
 
 def test_hash_token_is_sha256():

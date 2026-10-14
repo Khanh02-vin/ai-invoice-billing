@@ -196,29 +196,6 @@ class UserRepository:
                 return user_id
             return None
 
-    def store_mfa_secret(self, user_id: str, secret: str):
-        with self.db.get_session() as session:
-            user = session.get(User, user_id)
-            if user:
-                user.mfa_secret = secret
-                session.add(user)
-                session.commit()
-
-    def get_mfa_secret(self, user_id: str) -> dict | None:
-        with self.db.get_session() as session:
-            user = session.get(User, user_id)
-            if user and user.mfa_secret:
-                return {"secret": user.mfa_secret}
-            return None
-
-    def set_mfa_enabled(self, user_id: str, enabled: bool):
-        with self.db.get_session() as session:
-            user = session.get(User, user_id)
-            if user:
-                user.mfa_enabled = enabled
-                session.add(user)
-                session.commit()
-
 
 class InvoiceRepository:
     """Invoice repository with SQLModel."""

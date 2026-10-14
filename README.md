@@ -206,7 +206,7 @@ Milestone này hoàn thiện nền tảng dùng được: xác thực JWT, uploa
 
 ## Còn lại cho vòng tiếp theo
 
-Phase 3 (Stripe/Paddle checkout, subscriptions, webhooks, entitlements) và một số mục Phase 4 chưa triển khai: refresh-token/revocation, email verification, password reset, MFA, rate limiting, malware scanning, object storage hardening, backup/restore, privacy/DPA/SLA và mở rộng accessibility/settings.
+Phase 3 (Stripe/Paddle checkout, subscriptions, webhooks, entitlements) và một số mục Phase 4 chưa triển khai: refresh-token/revocation, email verification, password reset, rate limiting, malware scanning, object storage hardening, backup/restore, privacy/DPA/SLA và mở rộng accessibility/settings.
 
 ## Benchmark — SROIE (dữ liệu thật)
 
