@@ -1,21 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, clearToken, getToken } from "./api";
+import { api } from "./api";
 
 const money = (tx) => new Intl.NumberFormat("vi-VN", { style: "currency", currency: tx.currency || "VND", maximumFractionDigits: 0 }).format(tx.amount || 0);
 const dateValue = (value) => value ? new Date(value).toISOString().slice(0, 10) : "";
 
-export default function Ledger({ onBack, onShowLedger }) {
+export default function Ledger({ onBack, onLogout, initialTransactionId = "" }) {
   const [transactions, setTransactions] = useState([]);
   const [places, setPlaces] = useState([]);
   const [attachments, setAttachments] = useState([]);
   const [selected, setSelected] = useState(null);
   const [sharing, setSharing] = useState(false);
-  const [token, setToken] = useState(getToken());
   const [direction, setDirection] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const [draftFile, setDraftFile] = useState(null);
+  const [draftBusy, setDraftBusy] = useState(false);
+  const [draftStatus, setDraftStatus] = useState("");
+  const [draftForm, setDraftForm] = useState({ amount: "", merchant: "", item: "", category: "", address: "", packaging_text: "" });
   const [form, setForm] = useState({ amount: "", direction: "debit", merchant: "", category: "", note: "" });
 
   const load = async () => {
@@ -31,6 +35,11 @@ export default function Ledger({ onBack, onShowLedger }) {
     } catch (e) { setError(e.message); }
   };
   useEffect(() => { load(); }, [direction, from, to]);
+  useEffect(() => {
+    if (!initialTransactionId || !transactions.length) return;
+    const tx = transactions.find((item) => item.id === initialTransactionId);
+    if (tx) setSelected(tx);
+  }, [initialTransactionId, transactions]);
   useEffect(() => {
     api("/payments/preferences/place-sharing").then((data) => setSharing(data.share_place_visits)).catch(() => {});
   }, []);
@@ -60,6 +69,45 @@ export default function Ledger({ onBack, onShowLedger }) {
       const location = await locate();
       await api("/payments/transactions", { method: "POST", body: JSON.stringify({ ...form, amount: Number(form.amount), ...location }) });
       setForm({ amount: "", direction: "debit", merchant: "", category: "", note: "" });
+      await load();
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const recognizePhoto = async (file) => {
+    if (!file) return;
+    setDraftBusy(true); setError(""); setDraftStatus("");
+    const body = new FormData(); body.append("file", file);
+    try {
+      const result = await api("/payments/image-draft", { method: "POST", body });
+      setDraftFile(file);
+      setDraftForm({ amount: "", merchant: result.merchant || "", item: result.item || "", category: result.category || "", address: result.address || "", packaging_text: result.packaging_text || "" });
+      setDraftStatus(result.message);
+      setDraft(result);
+    } catch (e) { setError(e.message); }
+    finally { setDraftBusy(false); }
+  };
+
+  const savePhotoDraft = async (event) => {
+    event.preventDefault();
+    if (!selected || !draftFile) { setError("Chọn giao dịch đang chờ và ảnh sản phẩm trước khi lưu."); return; }
+    setBusy(true); setError("");
+    try {
+      const body = new FormData(); body.append("file", draftFile);
+      const attachment = await api(`/payments/transactions/${selected.id}/attachments`, { method: "POST", body });
+    const description = [draftForm.item && `Sản phẩm: ${draftForm.item}`, draftForm.packaging_text && `Chữ trên bao bì: ${draftForm.packaging_text}`, draftForm.address && `Địa chỉ: ${draftForm.address}`].filter(Boolean).join(" · ");
+      const patch = {};
+      if (draftForm.merchant) patch.merchant = draftForm.merchant;
+      if (draftForm.category) patch.category = draftForm.category;
+      if (description) patch.note = [selected.note, description].filter(Boolean).join(" · ").slice(0, 1000);
+      const location = await locate();
+      if (location) Object.assign(patch, location);
+      if (Object.keys(patch).length) {
+        const updated = await api(`/payments/transactions/${selected.id}`, { method: "PUT", body: JSON.stringify(patch) });
+        setSelected(updated);
+      }
+      setAttachments((items) => [attachment, ...items]);
+      setDraft(null); setDraftFile(null); setDraftForm({ amount: "", merchant: "", item: "", category: "", address: "", packaging_text: "" });
       await load();
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
@@ -119,7 +167,7 @@ export default function Ledger({ onBack, onShowLedger }) {
   };
 
   return <main className="content">
-    <header className="content-header"><div><button className="btn-link" onClick={onBack}>← Hóa đơn</button><h1>Lịch sử thu chi</h1></div><button className="btn-link" onClick={() => { clearToken(); onLogout?.(); }}>Đăng xuất</button></header>
+    <header className="content-header"><div><button className="btn-link" onClick={onBack}>← Hóa đơn</button><h1>Lịch sử thu chi</h1></div><button className="btn-link" onClick={() => onLogout?.()}>Đăng xuất</button></header>
     {error && <div className="msg err" role="alert">{error}</div>}
     <section className="stat-grid"><div className="stat-card"><div className="stat-label">Tổng thu trong kỳ</div><div className="stat-num">{new Intl.NumberFormat("vi-VN").format(totals.income)} ₫</div></div><div className="stat-card"><div className="stat-label">Tổng chi trong kỳ</div><div className="stat-num">{new Intl.NumberFormat("vi-VN").format(totals.expense)} ₫</div></div></section>
     <section className="card"><div className="card-head"><h2>Ghi khoản thu hoặc chi</h2></div><form className="ledger-form" onSubmit={save}>
@@ -131,6 +179,23 @@ export default function Ledger({ onBack, onShowLedger }) {
       <p className="ledger-wide ledger-hint">Sau khi bấm lưu, ứng dụng có thể xin quyền vị trí một lần. Nếu từ chối hoặc không khả dụng, giao dịch vẫn được lưu bình thường.</p>
       <button className="btn-primary" disabled={busy}>{busy ? "Đang lưu…" : "Lưu khoản thu/chi"}</button>
     </form></section>
+    {selected?.status === "pending_receipt" && <section className="card"><div className="card-head"><h2>Không có hóa đơn? Bổ sung ảnh sản phẩm</h2></div>
+      <p className="ledger-wide ledger-hint">Ảnh sẽ được gắn vào giao dịch đang chờ bên dưới; số tiền lấy từ thông báo chuyển khoản và không thể thay đổi ở đây.</p>
+      <label className="btn-small">Chụp hoặc chọn ảnh<input type="file" accept="image/*" capture="environment" hidden disabled={draftBusy} onChange={(e) => { recognizePhoto(e.target.files?.[0]); e.target.value = ""; }} /></label>
+      {draftBusy && <p className="ledger-hint">Đang nhận diện ảnh…</p>}
+      {draft && draftFile && <form className="ledger-form" onSubmit={savePhotoDraft}>
+        <p className="ledger-wide ledger-hint" role="status">{draftStatus}</p>
+        <p className="ledger-wide">Giao dịch <strong>{money(selected)}</strong> · số tiền không đổi.</p>
+        <label>Người bán / nguồn<input value={draftForm.merchant} onChange={(e) => setDraftForm({ ...draftForm, merchant: e.target.value })} maxLength="120" /></label>
+        <label>Sản phẩm / món<input value={draftForm.item} onChange={(e) => setDraftForm({ ...draftForm, item: e.target.value })} maxLength="200" /></label>
+        <label>Danh mục<input value={draftForm.category} onChange={(e) => setDraftForm({ ...draftForm, category: e.target.value })} maxLength="64" /></label>
+        <label className="ledger-wide">Chữ đọc được trên bao bì<textarea value={draftForm.packaging_text} onChange={(e) => setDraftForm({ ...draftForm, packaging_text: e.target.value })} maxLength="1000" /></label>
+        <label className="ledger-wide">Địa chỉ ghi trên ảnh<input value={draftForm.address} onChange={(e) => setDraftForm({ ...draftForm, address: e.target.value })} maxLength="240" /></label>
+        <p className="ledger-wide ledger-hint">Khi xác nhận, ảnh và mô tả sẽ được đính kèm. Ứng dụng xin quyền GPS một lần để ghi vị trí lúc mua; nếu từ chối, ảnh vẫn được lưu.</p>
+        <button className="btn-primary" disabled={busy}>{busy ? "Đang lưu…" : "Xác nhận ảnh và vị trí"}</button>
+        <button type="button" className="btn-link" onClick={() => { setDraft(null); setDraftFile(null); }}>Hủy</button>
+      </form>}
+    </section>}
     <section className="card"><div className="card-head"><h2>Giao dịch</h2><div className="row"><label>Từ ngày <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label><label>Đến ngày <input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></label><label>Loại <select value={direction} onChange={(e) => setDirection(e.target.value)}><option value="">Tất cả</option><option value="credit">Thu</option><option value="debit">Chi</option></select></label></div></div>
       <div className="table-scroll"><table className="data-table"><thead><tr><th>Ngày</th><th>Loại</th><th>Người bán / nguồn</th><th>Số tiền</th><th>Chứng từ</th><th></th></tr></thead><tbody>
         {transactions.map((tx) => <tr key={tx.id} onClick={() => setSelected(tx)} style={{ cursor: "pointer" }}><td>{tx.occurred_at ? new Date(tx.occurred_at).toLocaleString("vi-VN") : "—"}</td><td>{tx.direction === "credit" ? "Thu" : "Chi"}</td><td>{tx.merchant || "—"}</td><td>{money(tx)}</td><td>{tx.matched_invoice_id ? "Đã ghép hóa đơn" : tx.status === "pending_receipt" ? "Chờ chứng từ" : "—"}</td><td><button className="btn-link" onClick={(e) => { e.stopPropagation(); setSelected(tx); }}>Chi tiết</button></td></tr>)}

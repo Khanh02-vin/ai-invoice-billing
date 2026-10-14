@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { api, clearToken } from "./api";
+import Ledger from "./Ledger";
 import Sidebar from "./components/Sidebar";
 import QuickActions from "./components/QuickActions";
 import HistoryTimeline from "./views/HistoryTimeline";
@@ -55,6 +56,7 @@ export default function Invoices({ user, onLogout }) {
     notifications: true,
   });
   const [pendingTx, setPendingTx] = useState([]);
+  const [ledgerTransactionId, setLedgerTransactionId] = useState("");
 
   // Push notification (PWA)
   const [pushState, setPushState] = useState(pushSupported() ? "off" : "unsupported");
@@ -68,6 +70,15 @@ export default function Invoices({ user, onLogout }) {
     setError(e.message || "Lỗi không xác định");
   }, []);
   const clearMsg = useCallback(() => setMsg(null), []);
+
+  useEffect(() => {
+    const transactionId = new URLSearchParams(window.location.search).get("transaction_id");
+    if (transactionId) {
+      setLedgerTransactionId(transactionId);
+      setView("ledger");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   // Load push status
   useEffect(() => {
@@ -115,6 +126,24 @@ export default function Invoices({ user, onLogout }) {
     }
   };
 
+  const openPendingTransaction = (id) => {
+    setLedgerTransactionId(id);
+    setView("ledger");
+  };
+
+  const uploadInvoiceForTransaction = async (file, transactionId) => {
+    if (!file || !transactionId) return;
+    setSubmitting(true); setError(null);
+    try {
+      const form = new FormData(); form.append("file", file);
+      const data = await api(`/upload?transaction_id=${encodeURIComponent(transactionId)}`, { method: "POST", body: form });
+      setInvoices((prev) => [...prev.filter((item) => item.id !== data.id), data]);
+      setMsg({ ok: true, text: data.payment_match_status === "matched" ? "Đã lưu hóa đơn và ghép với giao dịch đã chọn." : "Đã lưu hóa đơn nhưng chưa ghép được với giao dịch; hãy kiểm tra số tiền." });
+      loadPendingTx();
+    } catch (e) { showErr(e); }
+    finally { setSubmitting(false); }
+  };
+
   // Demo data for settings
   const [teamMembers] = useState([
     { id: 1, username: "nguyenvan_a", role: "owner", email: "nguyen@example.com" },
@@ -143,18 +172,18 @@ export default function Invoices({ user, onLogout }) {
   }, [error]);
 
   // Upload file handler
-  const upload = async (file) => {
+  const upload = async (file, transactionId = "") => {
     setSubmitting(true);
     setError(null);
     try {
       const form = new FormData();
       form.append("file", file);
-      const data = await api("/upload", {
+      const data = await api(transactionId ? `/upload?transaction_id=${encodeURIComponent(transactionId)}` : "/upload", {
         method: "POST",
         body: form,
       });
       setInvoices((prev) => [...prev, data]);
-      setMsg({ ok: true, text: "Đã upload hóa đơn" });
+      setMsg({ ok: true, text: data.payment_match_status === "matched" ? "Đã lưu hóa đơn và ghép với giao dịch đã chọn." : data.payment_match_status === "amount_mismatch" ? "Đã lưu hóa đơn nhưng số tiền không khớp giao dịch. Giao dịch vẫn đang chờ chứng từ." : "Đã upload hóa đơn" });
       loadPendingTx();
     } catch (e) {
       showErr(e);
@@ -329,7 +358,9 @@ export default function Invoices({ user, onLogout }) {
       <Sidebar view={view} setView={setView} user={user} onLogout={onLogout} />
 
       <main id="main-content" className="main" tabIndex={-1}>
-        {view === "history" ? (
+        {view === "ledger" ? (
+          <Ledger onBack={() => { setView("overview"); setLedgerTransactionId(""); }} onLogout={() => { clearToken(); onLogout?.(); }} initialTransactionId={ledgerTransactionId} />
+        ) : view === "history" ? (
           <HistoryTimeline user={user} onBack={() => setView("overview")} />
         ) : view === "places" ? (
           <PlaceRecommendations user={user} onBack={() => setView("overview")} />
@@ -391,28 +422,21 @@ export default function Invoices({ user, onLogout }) {
 
                 {/* Pending Transactions */}
                 {pendingTx.length > 0 && (
-                  <section className="card" aria-label="Giao dịch chờ hóa đơn">
+                  <section className="card" aria-label="Giao dịch chờ chứng từ">
                     <h2>Giao dịch chờ hóa đơn ({pendingTx.length})</h2>
-                    <p className="muted">Tiền đã bị trừ nhưng chưa có bill — upload ảnh hóa đơn để đối soát, hoặc bỏ qua.</p>
+                    <p className="muted">Tiền đã được ghi nhận từ thông báo thanh toán. Tải hóa đơn để đối soát, hoặc chụp sản phẩm nếu không có hóa đơn.</p>
                     <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
                       {pendingTx.map((t) => (
-                        <li
-                          key={t.id}
-                          style={{
-                            display: "flex", justifyContent: "space-between", alignItems: "center",
-                            gap: 12, padding: "10px 0", borderTop: "1px solid var(--border)",
-                          }}
-                        >
+                        <li key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "10px 0", borderTop: "1px solid var(--border)" }}>
                           <div>
                             <strong>{money(t.currency, t.amount)}</strong>
-                            <span className="muted">
-                              {" · "}{t.merchant || t.source}
-                              {t.occurred_at ? ` · ${t.occurred_at.slice(0, 10)}` : ""}
-                            </span>
+                            <span className="muted">{" · "}{t.merchant || t.source}{t.occurred_at ? ` · ${t.occurred_at.slice(0, 10)}` : ""}</span>
                           </div>
-                          <button className="btn-ghost" onClick={() => dismissTx(t.id)}>
-                            Bỏ qua
-                          </button>
+                          <div className="row">
+                            <label className="btn-small">Tải hóa đơn<input type="file" accept="image/*,.pdf" capture="environment" hidden disabled={submitting} onChange={(e) => { uploadInvoiceForTransaction(e.target.files?.[0], t.id); e.target.value = ""; }} /></label>
+                            <button className="btn-small" onClick={() => openPendingTransaction(t.id)}>Không có hóa đơn — chụp sản phẩm</button>
+                            <button className="btn-ghost" onClick={() => dismissTx(t.id)}>Bỏ qua</button>
+                          </div>
                         </li>
                       ))}
                     </ul>

@@ -470,6 +470,24 @@ class TransactionRepository:
                 )
             ).first()
 
+    def get_attachment_with_key(self, attachment_id: str, user_id: str) -> dict | None:
+        with self.db.get_session() as session:
+            attachment = session.exec(
+                select(TransactionAttachment).where(
+                    TransactionAttachment.id == attachment_id,
+                    TransactionAttachment.user_id == user_id,
+                )
+            ).first()
+            if not attachment:
+                return None
+            return {
+                "id": attachment.id,
+                "transaction_id": attachment.transaction_id,
+                "storage_key": attachment.storage_key,
+                "mime_type": attachment.mime_type,
+                "size": attachment.size,
+            }
+
     def list(
         self,
         user_id: str = "",
@@ -504,7 +522,7 @@ class TransactionRepository:
             tx = session.exec(query).first()
             if tx:
                 tx.status = status
-                tx.matched_invoice_id = invoice_id
+                tx.matched_invoice_id = invoice_id or None
                 session.add(tx)
                 session.commit()
                 return True
@@ -515,11 +533,17 @@ class TransactionRepository:
         tx_id: str,
         user_id: str,
         *,
-        note: str,
-        category: str,
-        location_lat: float | None,
-        location_lon: float | None,
-        location_captured_at: str | None,
+        note: str | None = None,
+        category: str | None = None,
+        location_lat: float | None = None,
+        location_lon: float | None = None,
+        location_captured_at: str | None = None,
+        amount: float | None = None,
+        currency: str | None = None,
+        direction: TxDirection | None = None,
+        merchant: str | None = None,
+        occurred_at: str | None = None,
+        update_fields: set[str] | None = None,
     ) -> bool:
         with self.db.get_session() as session:
             tx = session.exec(
@@ -529,11 +553,14 @@ class TransactionRepository:
             ).first()
             if not tx:
                 return False
-            tx.note = note
-            tx.category = category
-            tx.location_lat = location_lat
-            tx.location_lon = location_lon
-            tx.location_captured_at = location_captured_at
+            for field, value in {
+                "note": note, "category": category, "location_lat": location_lat,
+                "location_lon": location_lon, "location_captured_at": location_captured_at,
+                "amount": amount, "currency": currency, "direction": direction,
+                "merchant": merchant, "occurred_at": occurred_at,
+            }.items():
+                if field in (update_fields or set()):
+                    setattr(tx, field, value)
             session.add(tx)
             session.commit()
             return True
@@ -547,15 +574,23 @@ class TransactionRepository:
         mime_type: str,
         size: int,
     ) -> dict:
-        attachment = TransactionAttachment(
-            id=attachment_id,
-            transaction_id=transaction_id,
-            user_id=user_id,
-            storage_key=storage_key,
-            mime_type=mime_type,
-            size=size,
-        )
         with self.db.get_session() as session:
+            tx = session.exec(
+                select(PaymentTransaction).where(
+                    PaymentTransaction.id == transaction_id,
+                    PaymentTransaction.user_id == user_id,
+                )
+            ).first()
+            if not tx:
+                raise ValueError("Transaction does not belong to user")
+            attachment = TransactionAttachment(
+                id=attachment_id,
+                transaction_id=transaction_id,
+                user_id=user_id,
+                storage_key=storage_key,
+                mime_type=mime_type,
+                size=size,
+            )
             session.add(attachment)
             session.commit()
         return {
@@ -643,7 +678,7 @@ class TransactionRepository:
         user_ids: builtins.list[str],
         exclude_user_id: str = "",
     ) -> builtins.list[dict]:
-        if len(user_ids) < 2:
+        if len(user_ids) < 3:
             return []
 
         import math

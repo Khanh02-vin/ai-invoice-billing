@@ -47,7 +47,8 @@ from .routers.auth_ext import send_verification_email
 from .routers.payments import router as payments_router
 from .routers.push import router as push_router
 from .routers.search import router as search_router
-from .security.idempotency import compute_content_hash, generate_idempotency_key
+from .payments.service import match_invoice_saved as _match_invoice_saved
+from .security.idempotency import InMemoryCache, compute_content_hash, generate_idempotency_key
 from .store.sql_repository import (
     DuplicateInvoiceError,
     InvoiceRepository,
@@ -56,11 +57,24 @@ from .store.sql_repository import (
     UserRepository,
     init_database,
 )
-from .store.storage import compute_fingerprint, generate_storage_key
+from .store.repository import DuplicateInvoiceError as LegacyDuplicateInvoiceError
+from .store.storage import LocalFileStorage, compute_fingerprint, generate_storage_key
 from .upload import validate_upload
 
 settings = get_settings()
 settings.ensure_production_readiness()
+_upload_idempotency = InMemoryCache()
+storage = LocalFileStorage(settings.storage_dir)
+
+
+def match_invoice_saved(tx_repo, invoice_repo, invoice: Invoice):
+    """Match saved invoices when a payment transaction repository is available."""
+    try:
+        return _match_invoice_saved(tx_repo, invoice_repo, invoice)
+    except Exception as exc:
+        if "payment_transactions" not in str(exc):
+            raise
+        return None
 
 app = FastAPI(title="Invoice & Billing System", version="3.0.0")
 
@@ -228,7 +242,7 @@ async def get_invoice(invoice_id: str, user: User = Depends(current_user)):
 async def create_invoice(data: InvoiceCreate, user: User = Depends(current_user)):
     try:
         invoice = repo.create(data, user_id=user.id)
-    except DuplicateInvoiceError as e:
+    except (DuplicateInvoiceError, LegacyDuplicateInvoiceError) as e:
         raise AppError(
             "DUPLICATE_INVOICE",
             f"Hóa đơn số {e.invoice_number} đã tồn tại.",
@@ -297,12 +311,20 @@ async def export_corrections(limit: int = 500, user: User = Depends(current_user
 
 
 # ---------- Upload + Extraction ----------
-@app.post("/upload", response_model=Invoice)
+@app.post("/upload")
 async def upload_invoice(
-    file: UploadFile = File(...), request: Request = None, user: User = Depends(current_user)
+    file: UploadFile = File(...),
+    request: Request = None,
+    transaction_id: str | None = None,
+    user: User = Depends(current_user),
 ):
     """Upload file hóa đơn → validate → trích xuất → lưu."""
     content = await file.read()
+
+    if transaction_id:
+        pending = tx_repo.get(transaction_id, user.id)
+        if not pending:
+            raise AppError("TRANSACTION_NOT_PENDING", "Không tìm thấy giao dịch đã chọn.", status=409)
 
     # Idempotency: explicit key is preferred; content-derived fallback protects retries.
     idem_key = request.headers.get("Idempotency-Key") if request else None
@@ -310,11 +332,15 @@ async def upload_invoice(
         idem_key = generate_idempotency_key(
             user.id, file.filename or "upload", len(content), compute_content_hash(content)
         )
+    if transaction_id:
+        idem_key = f"{idem_key}:{transaction_id}"
     cached = _upload_idempotency.get(idem_key)
     if cached:
-        return JSONResponse(
-            content=cached, status_code=200, headers={"X-Idempotent-Replay": "true"}
-        )
+        invoice_id = cached.get("id")
+        if invoice_id and repo.get(invoice_id, user_id=user.id):
+            return JSONResponse(
+                content=cached, status_code=200, headers={"X-Idempotent-Replay": "true"}
+            )
 
     # Validate upload
     validated = validate_upload(
@@ -335,11 +361,12 @@ async def upload_invoice(
         invoice = extract_invoice(
             content=content,
             mime_type=validated.mime_type,
-            source_file=file.filename or "upload",
+            source_file=stored.key,
             user_id=user.id,
         )
-    except Exception as e:
-        raise AppError("EXTRACTION_FAILED", f"Trích xuất thất bại: {e!s}", status=422)
+    except Exception:
+        storage.delete(stored.key)
+        raise AppError("EXTRACTION_FAILED", "Không thể xử lý tệp hóa đơn.", status=422)
 
     # Cập nhật provenance với file metadata
     invoice.file_checksum = compute_fingerprint(content)
@@ -350,17 +377,35 @@ async def upload_invoice(
     # Lưu invoice
     try:
         saved = repo.upsert(invoice)
-    except DuplicateInvoiceError as e:
+    except (DuplicateInvoiceError, LegacyDuplicateInvoiceError) as e:
+        storage.delete(stored.key)
         raise AppError(
             "DUPLICATE_INVOICE",
             f"Hóa đơn số {e.invoice_number} đã tồn tại.",
             status=409,
             details={"existing_id": e.existing_id},
         )
-    # Giao dịch đã đến trước? Ghép ngay nếu số tiền khớp
-    match_invoice_saved(tx_repo, repo, saved)
-    _upload_idempotency.set(idem_key, saved.model_dump(mode="json"))
-    return saved
+    match_status = "unmatched"
+    matched_tx = None
+    if transaction_id:
+        matched_tx = tx_repo.get(transaction_id, user.id)
+        if not matched_tx or getattr(matched_tx.status, "value", matched_tx.status) != "pending_receipt":
+            raise AppError("TRANSACTION_NOT_PENDING", "Giao dịch không còn chờ hóa đơn.", status=409)
+        from .payments.matching import amounts_match
+        if amounts_match(matched_tx.amount, matched_tx.currency, saved.total, saved.currency):
+            from .payments.service import link
+            link(tx_repo, repo, matched_tx, saved)
+            match_status = "matched"
+        else:
+            match_status = "amount_mismatch"
+    else:
+        matched_tx = match_invoice_saved(tx_repo, repo, saved)
+        match_status = "matched" if matched_tx else "unmatched"
+    result = saved.model_dump(mode="json")
+    result["payment_match_status"] = match_status
+    result["matched_transaction_id"] = matched_tx.id if matched_tx and match_status == "matched" else None
+    _upload_idempotency.set(idem_key, result)
+    return result
 
 
 # ---------- Reports ----------

@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from src import app as app_module
 from src.store.repository import InvoiceRepository
 from src.store.users import UserRepository
+from src.store.sql_repository import Database, TransactionRepository, UserRepository as SQLUserRepository
+from src.models import User
 
 
 @pytest.fixture(autouse=True)
@@ -14,7 +16,28 @@ def fresh_db(monkeypatch):
     monkeypatch.setenv("OPEN_REGISTRATION", "1")
     app_module.repo = InvoiceRepository(db_path=":memory:")
     app_module.users = UserRepository(db_path=":memory:")
+    app_db = Database(":memory:")
+    app_db.create_tables()
+    app_module.tx_repo = TransactionRepository(app_db)
     yield
+
+
+@pytest.fixture()
+def transaction_db(tmp_path):
+    previous = app_module.tx_repo
+    db = Database(str(tmp_path / "payment-transactions.db"))
+    db.create_tables()
+    import hashlib
+    with db.get_session() as session:
+        session.add_all([
+            User(id=hashlib.md5(username.encode()).hexdigest()[:12], username=username,
+                 password_hash="x" * 60, verified=True)
+            for username in ("kien", "alice", "bob")
+        ])
+        session.commit()
+    app_module.tx_repo = TransactionRepository(db)
+    yield db
+    app_module.tx_repo = previous
 
 
 @pytest.fixture()
@@ -107,6 +130,58 @@ def test_upload_gtgt_full_flow(client):
 
 
 # ---------- Invoice CRUD ----------
+
+def test_upload_for_selected_transaction_matches_exact_idempotently(client, transaction_db, monkeypatch):
+    token = _register(client)
+    owner_id = app_module.users.get_by_username("kien").id
+    from src.payments import service
+    monkeypatch.setattr(service, "link", lambda tx_repo, invoice_repo, tx, invoice: None)
+    tx = app_module.tx_repo.create(__import__("src.models", fromlist=["PaymentTransaction"]).PaymentTransaction(
+        id="selected-payment", user_id=owner_id, amount=30900000, currency="VND",
+        status=__import__("src.domain.payments", fromlist=["TxStatus"]).TxStatus.PENDING_RECEIPT,
+    ))
+    r = client.post(
+        "/upload?transaction_id=selected-payment",
+        files={"file": ("hoadon.txt", GTGT.encode("utf-8"), "text/plain")},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["payment_match_status"] == "matched"
+    assert r.json()["matched_transaction_id"] == tx.id
+    assert app_module.tx_repo.get(tx.id, owner_id).amount == 30900000
+
+
+def test_selected_transaction_invoice_amount_mismatch_is_not_linked(client, transaction_db):
+    token = _register(client)
+    owner_id = app_module.users.get_by_username("kien").id
+    tx = app_module.tx_repo.create(__import__("src.models", fromlist=["PaymentTransaction"]).PaymentTransaction(
+        id="mismatch-payment", user_id=owner_id, amount=100, currency="VND",
+    ))
+    r = client.post(
+        "/upload?transaction_id=mismatch-payment",
+        files={"file": ("hoadon.txt", GTGT.encode("utf-8"), "text/plain")},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["payment_match_status"] == "amount_mismatch"
+    assert app_module.tx_repo.get(tx.id, owner_id).matched_invoice_id is None
+
+
+def test_selected_transaction_upload_rejects_foreign_owner(client, transaction_db):
+    token = _register(client, "alice", "pass123456")
+    other_token = _register(client, "bob", "pass123456")
+    owner_id = app_module.users.get_by_username("alice").id
+    foreign_tx = app_module.tx_repo.create(__import__("src.models", fromlist=["PaymentTransaction"]).PaymentTransaction(
+        id="foreign-payment", user_id=owner_id, amount=10,
+    ))
+    r = client.post(
+        "/upload?transaction_id=foreign-payment",
+        files={"file": ("hoadon.txt", GTGT.encode("utf-8"), "text/plain")},
+        headers=_auth(other_token),
+    )
+    assert r.status_code == 409
+    assert app_module.tx_repo.get(foreign_tx.id, owner_id).matched_invoice_id is None
+
 
 def test_create_list_paid_flow(client):
     """Tạo hóa đơn → list → cập nhật paid."""

@@ -18,13 +18,14 @@ def send_receipt_reminder(user: User, tx: PaymentTransaction) -> bool:
     gửi độc lập với email.
     """
     amount = f"{tx.amount:,.0f} {tx.currency}"
-    subject = f"[Nhắc] Chụp hóa đơn cho giao dịch {amount}"
+    subject = f"[Nhắc] Hoàn tất chứng từ cho giao dịch {amount}"
     where = f" tại {tx.merchant}" if tx.merchant else ""
     when = f" ({tx.occurred_at})" if tx.occurred_at else ""
     body = (
         f"Bạn vừa chi {amount}{where}{when}.\n\n"
-        "Chưa tìm thấy hóa đơn khớp số tiền này.\n"
-        "Hãy upload ảnh hóa đơn trong app để hệ thống tự đối soát.\n"
+        "Chưa tìm thấy hóa đơn khớp số tiền này.\n\n"
+        "Nếu có hóa đơn, hãy tải ảnh hóa đơn lên app để đối soát. "
+        "Nếu không có hóa đơn, mở thông báo giao dịch trong app để chụp ảnh sản phẩm và xác nhận vị trí.\n"
     )
 
     # Push notification native (PWA) — best-effort, không phụ thuộc email.
@@ -34,8 +35,8 @@ def send_receipt_reminder(user: User, tx: PaymentTransaction) -> bool:
         send_push_to_user(
             user.id,
             subject,
-            f"Chưa thấy hóa đơn khớp {amount}. Mở app để tải ảnh hóa đơn.",
-            url="/",
+            f"Chưa thấy hóa đơn khớp {amount}. Tải hóa đơn hoặc chụp ảnh sản phẩm trong app.",
+            url=f"/?transaction_id={tx.id}",
         )
     except Exception:
         pass

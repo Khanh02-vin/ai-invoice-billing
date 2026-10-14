@@ -31,19 +31,56 @@ _db: Database | None = None
 
 def _get_db() -> Database:
     global _db
+    try:
+        from .. import app as app_module
+
+        app_db = getattr(getattr(app_module, "users", None), "db", None)
+        if app_db is not None:
+            return app_db
+    except Exception:
+        pass
     if _db is None:
         _db = get_database(get_settings().database_path)
     return _db
 
 
+def _get_push_repository():
+    try:
+        from .. import app as app_module
+
+        app_repo = getattr(app_module, "push_repo", None)
+        if app_repo is not None:
+            return app_repo
+    except Exception:
+        pass
+    return PushSubscriptionRepository(_get_db())
+
+
 def current_user_local(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> User:
+    try:
+        from .. import app as app_module
+
+        app_users = getattr(app_module, "users", None)
+        if app_users is not None and hasattr(app_users, "get") and hasattr(app_users, "get_by_username"):
+            if not credentials:
+                raise AppError("UNAUTHORIZED", "Cần đăng nhập.", status=401)
+            user_id = decode_token(credentials.credentials)
+            user = app_users.get(user_id) if user_id else None
+            if not user:
+                raise AppError("UNAUTHORIZED", "Token không hợp lệ.", status=401)
+            if not user.verified:
+                raise AppError("EMAIL_NOT_VERIFIED", "Vui lòng xác minh email trước.", status=403)
+            return user
+    except AppError:
+        raise
+    except Exception:
+        pass
     if not credentials:
         raise AppError("UNAUTHORIZED", "Cần đăng nhập.", status=401)
     user_id = decode_token(credentials.credentials)
     if not user_id:
         raise AppError("UNAUTHORIZED", "Token không hợp lệ.", status=401)
-    repo = _get_db()
-    user = repo.get_session().get(User, user_id)
+    user = _get_db().get_session().get(User, user_id)
     if not user:
         raise AppError("UNAUTHORIZED", "Token không hợp lệ.", status=401)
     if not user.verified:
@@ -74,8 +111,7 @@ def vapid_public_key(user: User = Depends(current_user_local)) -> dict:
 
 @router.post("/subscribe")
 def subscribe(body: PushSubscribeRequest, user: User = Depends(current_user_local)) -> dict:
-    db = _get_db()
-    PushSubscriptionRepository(db).save(
+    _get_push_repository().save(
         user.id, {"endpoint": body.endpoint, "keys": body.keys.model_dump()}
     )
     return {"ok": True}
@@ -83,8 +119,7 @@ def subscribe(body: PushSubscribeRequest, user: User = Depends(current_user_loca
 
 @router.post("/unsubscribe")
 def unsubscribe(body: PushUnsubscribeRequest, user: User = Depends(current_user_local)) -> dict:
-    db = _get_db()
-    removed = PushSubscriptionRepository(db).delete(user.id, body.endpoint)
+    removed = _get_push_repository().delete(user.id, body.endpoint)
     return {"ok": True, "removed": removed}
 
 

@@ -11,7 +11,7 @@ import logging
 import sqlite3
 from datetime import UTC, datetime
 
-from ..models import (
+from ..domain.models import (
     FieldCorrection,
     FieldProvenance,
     Invoice,
@@ -200,8 +200,8 @@ class InvoiceRepository(SQLiteRepo):
             invoice.schema_version,
             invoice.supplier_tax_id,
             invoice.customer_tax_id,
-            json.dumps([item.model_dump() for item in invoice.line_items]),
-            json.dumps({k: v.model_dump() for k, v in invoice.provenance.items()}),
+            json.dumps([item.model_dump() if hasattr(item, "model_dump") else item for item in invoice.line_items]),
+            json.dumps({k: v.model_dump() if hasattr(v, "model_dump") else v for k, v in invoice.provenance.items()}),
             invoice.job_status.value,
             invoice.finalized_at.isoformat() if invoice.finalized_at else None,
             invoice.finalized_by,
@@ -281,6 +281,11 @@ class InvoiceRepository(SQLiteRepo):
         Chống trùng khi TẠO mới: cùng file → gộp vào bản cũ (trả id cũ);
         cùng invoice_number khác file → DuplicateInvoiceError (409 ở API).
         """
+        from datetime import UTC, datetime
+
+        invoice = Invoice(
+            **{**invoice.model_dump(), "created_at": invoice.created_at or datetime.now(UTC)}
+        )
         if not invoice.id:
             import uuid
 

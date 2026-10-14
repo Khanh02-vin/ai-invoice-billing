@@ -124,9 +124,9 @@ def test_receipt_reminder_sends_push_when_tx_pending(monkeypatch, client):
     assert calls[0]["subscription_info"]["endpoint"] == SUB["endpoint"]
     import json
     payload = json.loads(calls[0]["data"])
-    assert "350,000 VND" in payload["title"] and "Chụp hóa đơn" in payload["title"]
-    assert "Mở app" in payload["body"]
-    assert payload["url"] == "/"
+    assert "350,000 VND" in payload["title"] and "chứng từ" in payload["title"]
+    assert "Tải hóa đơn" in payload["body"] and "chụp ảnh sản phẩm" in payload["body"]
+    assert payload["url"] == f"/?transaction_id={tx.id}"
     assert calls[0]["vapid_private_key"] == "./vapid_private.pem"
     assert calls[0]["vapid_claims"]["sub"].startswith("mailto:")  # set trong .env
 
