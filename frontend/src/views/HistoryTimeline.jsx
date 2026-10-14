@@ -157,10 +157,10 @@ export default function HistoryTimeline({ user, onBack }) {
         />
       </section>
 
-      {/* Transaction Table */}
-      <section className="card" aria-label="Danh sách giao dịch trong lộ trình">
+      {/* Invoice Table */}
+      <section className="card" aria-label="Danh sách hóa đơn">
         <div className="card-head">
-          <h2>📋 Giao dịch trong lộ trình</h2>
+          <h2>📋 Hóa đơn</h2>
         </div>
         <TransactionTable
           invoices={invoices}

@@ -2,7 +2,7 @@
 import pytest
 
 from src.auth.security import hash_password, verify_password, create_token, decode_token
-from tests.test_utils import TestUserRepository
+from tests.test_utils import TestUserRepository as UserRepository
 
 
 def test_hash_and_verify():

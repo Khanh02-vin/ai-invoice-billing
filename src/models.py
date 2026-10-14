@@ -207,6 +207,25 @@ class SharedPlaceVisit(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class UserPaymentPreference(SQLModel, table=True):
+    __tablename__ = "user_payment_preferences"
+
+    user_id: str = Field(foreign_key="users.id", primary_key=True)
+    share_place_visits: bool = False
+
+
+class UserEmailAccount(SQLModel, table=True):
+    __tablename__ = "user_email_accounts"
+
+    user_id: str = Field(foreign_key="users.id", primary_key=True)
+    host: str = ""
+    port: int = 993
+    username: str = ""
+    encrypted_password: str = ""
+    folder: str = "INBOX"
+    interval_seconds: int = 60
+
+
 class PushSubscription(SQLModel, table=True):
     """Web Push subscription."""
 

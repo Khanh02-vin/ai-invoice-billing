@@ -46,3 +46,5 @@ data/mcocr_sample/
 data/cord_sample/
 # Log benchmark (regenerable)
 tests/*_err.log
+src/invoice_billing.egg-info/
+*.egg-info/

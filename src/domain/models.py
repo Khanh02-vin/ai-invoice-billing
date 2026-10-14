@@ -92,6 +92,49 @@ class Token(BaseModel):
     verification_sent: bool = False
 
 
+class Invoice(BaseModel):
+    """Extracted invoice data used by OCR, repository adapters, and API tests."""
+
+    id: str = ""
+    user_id: str = ""
+    invoice_number: str = "unknown"
+    vendor: str = "unknown"
+    buyer: str = ""
+    issue_date: str | None = None
+    due_date: str | None = None
+    currency: str = "USD"
+    subtotal: float = 0.0
+    total: float = 0.0
+    tax: float = 0.0
+    tax_rate: float = 0.0
+    discount: float = 0.0
+    amount_due: float = 0.0
+    status: InvoiceStatus = InvoiceStatus.UNPAID
+    source_file: str = ""
+    raw_snippet: str = ""
+    confidence: float = 0.0
+    created_at: Any = None
+    schema_version: int = 2
+    supplier_tax_id: str = ""
+    customer_tax_id: str = ""
+    line_items: list[LineItem] = Field(default_factory=list)
+    provenance: dict[str, FieldProvenance] = Field(default_factory=dict)
+    job_status: JobStatus = JobStatus.REVIEW
+    finalized_at: Any = None
+    finalized_by: str | None = None
+    file_checksum: str = ""
+    file_size: int = 0
+    page_count: int | None = None
+    extraction_provider: str = ""
+    review_history: list[dict[str, Any]] = Field(default_factory=list)
+    location_lat: float | None = None
+    location_lon: float | None = None
+    location_name: str | None = None
+    location_address: str | None = None
+    transport_mode: str | None = None
+    route_sequence: int | None = None
+
+
 class InvoiceCreate(BaseModel):
     """Dữ liệu đầu vào để tạo hóa đơn."""
 
@@ -161,6 +204,7 @@ class PaymentEvent(BaseModel):
 __all__ = [
     "FieldCorrection",
     "FieldProvenance",
+    "Invoice",
     "InvoiceCreate",
     "InvoiceStatus",
     "InvoiceUpdate",

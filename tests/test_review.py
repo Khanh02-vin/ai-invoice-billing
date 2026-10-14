@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from src import app as app_module
 from src.store.repository import InvoiceRepository
 from src.store.users import UserRepository
+from src.store.sql_repository import Database, TransactionRepository
 
 
 @pytest.fixture(autouse=True)
@@ -13,6 +14,9 @@ def fresh_db(monkeypatch):
     monkeypatch.setenv("OPEN_REGISTRATION", "1")
     app_module.repo = InvoiceRepository(db_path=":memory:")
     app_module.users = UserRepository(db_path=":memory:")
+    app_db = Database(":memory:")
+    app_db.create_tables()
+    app_module.tx_repo = TransactionRepository(app_db)
     from src.security.idempotency import InMemoryCache
     app_module._upload_idempotency = InMemoryCache()
     yield

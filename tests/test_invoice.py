@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.domain.models import Invoice, InvoiceStatus, InvoiceUpdate
 from src.extract.extractor import OcrLine, extract_from_text, extract_invoice
+from tests.test_utils import TestInvoiceRepository as InvoiceRepository
 from tests.test_utils import TestInvoiceRepository, TestUserRepository
 
 

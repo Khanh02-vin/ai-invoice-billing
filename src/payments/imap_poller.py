@@ -16,19 +16,33 @@ from __future__ import annotations
 import email
 import imaplib
 import logging
+import os
 import threading
 from collections.abc import Callable
 from email.header import decode_header
 from email.message import Message
 
+from sqlmodel import select
+
 from ..config import Settings, get_settings
 from ..domain.payments import PaymentEvent, TxDirection
+from ..models import UserEmailAccount
 from ..payments.notify import send_receipt_reminder
 from ..payments.parser import parse_payment_text
 from ..payments.service import ingest
 from ..store.sql_repository import TransactionRepository, UserRepository, get_database
 
 logger = logging.getLogger("invoice.imap")
+
+
+def _decrypt_password(value: str) -> str:
+    from cryptography.fernet import Fernet
+
+    key = os.getenv("IMAP_CREDENTIAL_KEY", "")
+    if not key:
+        raise RuntimeError("IMAP credential encryption is not configured")
+    return Fernet(key.encode()).decrypt(value.encode()).decode()
+
 
 # Nhãn nguồn để truy vết email đến từ đâu
 SOURCE = "email"
@@ -125,10 +139,21 @@ def resolve_user_ids(
     ids = [u.id for u in users if u.email and u.email.lower() in headers]
     if ids:
         return ids
-    ids = [u.id for u in users if "@" in u.username and u.username.lower() in headers]
-    if ids:
-        return ids
-    return [u.id for u in users]
+    return [u.id for u in users if "@" in u.username and u.username.lower() in headers]
+
+
+def get_attachments(msg: Message) -> list[tuple[str, str, bytes]]:
+    attachments = []
+    for part in msg.walk():
+        if part.is_multipart() or not part.get_filename():
+            continue
+        mime = part.get_content_type()
+        if mime not in {"application/pdf", "image/jpeg", "image/png", "image/tiff"}:
+            continue
+        payload = part.get_payload(decode=True)
+        if payload:
+            attachments.append((decode_mime_header(part.get_filename()), mime, payload))
+    return attachments
 
 
 class ImapPoller:
@@ -152,7 +177,10 @@ class ImapPoller:
 
     @property
     def enabled(self) -> bool:
-        return self._settings.imap_enabled
+        if self._settings.imap_enabled:
+            return True
+        with self._tx_repo.db.get_session() as session:
+            return bool(session.exec(select(UserEmailAccount)).first())
 
     def start(self) -> None:
         if not self.enabled or (self._thread and self._thread.is_alive()):
@@ -202,13 +230,21 @@ class ImapPoller:
         for num, raw in messages:
             try:
                 msg = email.message_from_bytes(raw)
-                event = parse_payment_text(build_event_text(msg), source=SOURCE)
-                if event is None or event.direction == TxDirection.CREDIT:
+                user_ids = resolve_user_ids(msg, self._user_repo, user_map)
+                if not user_ids:
                     handled.append(num)
                     continue
-                # message-id làm external_ref -> dedupe cả khi mark_seen thất bại
-                ref = (msg.get("Message-ID") or "").strip() or raw[:64].decode("utf-8", "replace")
-                count += self._ingest_for_recipients(msg, event, ref, user_map)
+                event = parse_payment_text(build_event_text(msg), source=SOURCE)
+                ref = (msg.get("Message-ID") or "").strip()
+                if event is not None and event.direction != TxDirection.CREDIT and ref:
+                    count += self._ingest_for_recipients(msg, event, ref, user_map)
+                else:
+                    invoice_repo = self._invoice_getter() if self._invoice_getter else None
+                    if invoice_repo is None:
+                        from .. import app as app_module
+                        invoice_repo = app_module.repo
+                    for uid in user_ids:
+                        self._ingest_attachments(msg, uid, invoice_repo)
                 handled.append(num)
             except Exception:
                 logger.exception("IMAP: xử lý 1 email thất bại — giữ lại email cho chu kỳ sau")
@@ -242,40 +278,86 @@ class ImapPoller:
                 )
                 done += 1
                 if not dup and invoice is None:
-                    # Chưa ghép được hóa đơn -> nhắc user chụp bill (best-effort)
                     user = self._user_repo.get(uid)
                     if user:
                         send_receipt_reminder(user, tx)
+                if not dup:
+                    self._ingest_attachments(msg, uid, invoice_repo)
             except Exception:
                 errors += 1
                 logger.exception("IMAP: ingest failed user=%s", uid)
         if errors:
-            # Báo fail để poll_once GIỮ email (UNSEEN) — user fail sẽ retry chu kỳ sau,
-            # user đã thành công được dedupe bảo vệ.
             raise RuntimeError(f"IMAP ingest failed for {errors} user(s)")
         return done
 
+    def _ingest_attachments(self, msg: Message, user_id: str, invoice_repo) -> None:
+        from ..config import get_settings
+        from ..extract.extractor import extract_invoice
+        from ..store.storage import LocalFileStorage, compute_fingerprint, generate_storage_key
+        from ..upload import validate_upload
+
+        settings = get_settings()
+        storage = LocalFileStorage(settings.storage_dir)
+        for filename, mime_type, content in get_attachments(msg):
+            validated = validate_upload(
+                content, filename, mime_type, settings.max_upload_bytes,
+                settings.allowed_mime_types, settings.max_pdf_pages,
+            )
+            key = generate_storage_key(filename, content)
+            storage.put(key, content)
+            try:
+                invoice = extract_invoice(content, validated.mime_type, key, user_id)
+                invoice.file_checksum = compute_fingerprint(content)
+                invoice.file_size = validated.size
+                invoice.page_count = validated.page_count
+                invoice.source_file = key
+                invoice_repo.upsert(invoice)
+            except Exception:
+                storage.delete(key)
+                logger.warning("IMAP attachment processing failed for user=%s", user_id)
+
     def _fetch_unseen(self):
-        """Kết nối IMAP thật -> ([(num, raw message)], mark_seen(nums))."""
-        s = self._settings
-        client = imaplib.IMAP4_SSL(s.imap_host, s.imap_port, timeout=30)
+        """Connect to environment or explicitly configured per-user IMAP accounts."""
+        settings = self._settings
+        if settings.imap_enabled:
+            client = imaplib.IMAP4_SSL(settings.imap_host, settings.imap_port, timeout=30)
+            return self._fetch_account(client, settings.imap_user, settings.imap_pass, settings.imap_folder)
+
+        with self._tx_repo.db.get_session() as session:
+            accounts = session.exec(select(UserEmailAccount)).all()
+        messages = []
+        clients = []
+        for account in accounts:
+            try:
+                password = _decrypt_password(account.encrypted_password)
+                client = imaplib.IMAP4_SSL(account.host, account.port, timeout=15)
+                fetched, marker = self._fetch_account(client, account.username, password, account.folder)
+                messages.extend(fetched)
+                clients.append((client, marker))
+            except Exception:
+                logger.warning("Per-user IMAP poll failed user=%s", account.user_id)
+        def mark_seen(nums):
+            for client, marker in clients:
+                if marker:
+                    marker(nums)
+        return messages, mark_seen
+
+    def _fetch_account(self, client, username: str, password: str, folder: str):
         try:
-            client.login(s.imap_user, s.imap_pass)
-            client.select(s.imap_folder)
+            client.login(username, password)
+            client.select(folder)
             status, data = client.search(None, "UNSEEN")
             if status != "OK":
                 return [], None
-            nums = (data[0] or b"").split()[:50]  # giới hạn mỗi vòng
-            messages: list[tuple] = []
+            nums = (data[0] or b"").split()[:50]
+            messages = []
             for num in nums:
                 status, msg_data = client.fetch(num, "(RFC822)")
                 if status == "OK" and msg_data and msg_data[0]:
                     messages.append((num, msg_data[0][1]))
-
             def mark_seen(nums_to_mark):
                 for num in nums_to_mark:
                     client.store(num, "+FLAGS", "\\Seen")
-
             return messages, mark_seen
         finally:
             try:

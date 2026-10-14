@@ -3,6 +3,7 @@ import { api } from "../api";
 
 const NAV_ITEMS = [
   { id: "overview", label: "Tổng quan", icon: "📊" },
+  { id: "ledger", label: "Sổ thu chi", icon: "💳" },
   { id: "report", label: "Báo cáo & Thu chi", icon: "📈" },
   { id: "history", label: "Lịch sử & Lộ trình", icon: "🗺️", badge: "Mới" },
   { id: "places", label: "Đề xuất địa điểm", icon: "📍", badge: "Mới" },

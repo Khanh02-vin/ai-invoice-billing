@@ -49,11 +49,33 @@ class OpenAIProvider(LLMProvider):
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0,
         )
+        return self._content(r)
+
+    def complete_image(self, system: str, user: str, image_data_url: str) -> str:
+        from openai import OpenAI
+
+        client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+        r = client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": [
+                    {"type": "text", "text": user},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ]},
+            ],
+            temperature=0,
+            timeout=30,
+        )
+        return self._content(r)
+
+    @staticmethod
+    def _content(response) -> str:
         # qwencoder trả JSON kèm "data: [DONE]" → SDK trả str thay vì object
-        if isinstance(r, str):
-            raw = re.sub(r"\s*data: \[DONE\].*$", "", r, flags=re.S).strip()
+        if isinstance(response, str):
+            raw = re.sub(r"\s*data: \[DONE\].*$", "", response, flags=re.S).strip()
             return json.loads(raw)["choices"][0]["message"]["content"] or ""
-        return r.choices[0].message.content or ""
+        return response.choices[0].message.content or ""
 
 
 class MockProvider(LLMProvider):
