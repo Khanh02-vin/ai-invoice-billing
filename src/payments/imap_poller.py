@@ -148,7 +148,7 @@ def get_attachments(msg: Message) -> list[tuple[str, str, bytes]]:
         if part.is_multipart() or not part.get_filename():
             continue
         mime = part.get_content_type()
-        if mime not in {"application/pdf", "image/jpeg", "image/png", "image/tiff"}:
+        if mime not in {"application/pdf", "image/jpeg", "image/png", "image/tiff", "application/xml", "text/xml"}:
             continue
         payload = part.get_payload(decode=True)
         if payload:
@@ -293,6 +293,7 @@ class ImapPoller:
     def _ingest_attachments(self, msg: Message, user_id: str, invoice_repo) -> None:
         from ..config import get_settings
         from ..extract.extractor import extract_invoice
+        from ..extract.xml_parser import parse_xml_invoice
         from ..store.storage import LocalFileStorage, compute_fingerprint, generate_storage_key
         from ..upload import validate_upload
 
@@ -306,7 +307,12 @@ class ImapPoller:
             key = generate_storage_key(filename, content)
             storage.put(key, content)
             try:
-                invoice = extract_invoice(content, validated.mime_type, key, user_id)
+                invoice = parse_xml_invoice(content) if validated.mime_type in {"application/xml", "text/xml"} else None
+                if invoice is None:
+                    invoice = extract_invoice(content, validated.mime_type, key, user_id)
+                else:
+                    invoice.user_id = user_id
+                    invoice.source_file = key
                 invoice.file_checksum = compute_fingerprint(content)
                 invoice.file_size = validated.size
                 invoice.page_count = validated.page_count

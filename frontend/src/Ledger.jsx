@@ -67,9 +67,17 @@ export default function Ledger({ onBack, onLogout, initialTransactionId = "" }) 
     setBusy(true); setError("");
     try {
       const location = await locate();
-      await api("/payments/transactions", { method: "POST", body: JSON.stringify({ ...form, amount: Number(form.amount), ...location }) });
+      const created = await api("/payments/transactions", {
+        method: "POST",
+        body: JSON.stringify({ ...form, amount: Number(form.amount), ...location }),
+      });
       setForm({ amount: "", direction: "debit", merchant: "", category: "", note: "" });
       await load();
+      if (created.payment_match_status === "matched") {
+        setError("");
+        setSelected(created);
+        window.dispatchEvent(new CustomEvent("refresh-invoices"));
+      }
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };

@@ -139,6 +139,43 @@ class Invoice(SQLModel, table=True):
 
     # Relationships
     user: Mapped["User"] = Relationship(back_populates="invoices")
+    links: Mapped[list["InvoiceTransactionLink"]] = Relationship(
+        back_populates="invoice",
+        sa_relationship_kwargs={
+            "foreign_keys": "InvoiceTransactionLink.invoice_id",
+            "cascade": "all, delete-orphan",
+        },
+    )
+
+
+class InvoiceTransactionLink(SQLModel, table=True):
+    """Liên kết giao dịch <-> hóa đơn (many-to-many).
+
+    PaymentTransaction.matched_invoice_id (1-1) vẫn giữ cho tự động ghép;
+    bảng này lưu các liên kết bổ sung: một giao dịch thanh toán nhiều hóa đơn,
+    hoặc một hóa đơn trả nhiều lần (đặt cọc, tất toán). amount = phần tiền giao
+    dịch được quy cho hóa đơn này.
+    """
+
+    __tablename__ = "invoice_transaction_links"
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    transaction_id: str = Field(foreign_key="payment_transactions.id", index=True)
+    invoice_id: str = Field(foreign_key="invoices.id", index=True)
+    amount: float = 0.0
+    match_reason: str = "manual"  # manual | partial | combination
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    transaction: Mapped["PaymentTransaction"] = Relationship(
+        back_populates="links",
+        sa_relationship_kwargs={"foreign_keys": "InvoiceTransactionLink.transaction_id"},
+    )
+    invoice: Mapped["Invoice"] = Relationship(
+        back_populates="links",
+        sa_relationship_kwargs={"foreign_keys": "InvoiceTransactionLink.invoice_id"},
+    )
 
 
 class PaymentTransaction(SQLModel, table=True):
@@ -172,6 +209,13 @@ class PaymentTransaction(SQLModel, table=True):
     # Relationships
     user: Mapped["User"] = Relationship(back_populates="transactions")
     attachments: Mapped[list["TransactionAttachment"]] = Relationship(back_populates="transaction")
+    links: Mapped[list["InvoiceTransactionLink"]] = Relationship(
+        back_populates="transaction",
+        sa_relationship_kwargs={
+            "foreign_keys": "InvoiceTransactionLink.transaction_id",
+            "cascade": "all, delete-orphan",
+        },
+    )
     matched_invoice: Mapped[Optional["Invoice"]] = Relationship(sa_relationship_kwargs={"foreign_keys": "PaymentTransaction.matched_invoice_id"})
 
 

@@ -52,6 +52,10 @@ def _sniff_mime(content: bytes, declared_mime: str) -> str:
             return "text/plain"
         except UnicodeDecodeError:
             pass
+    # XML không có magic bytes ổn định — chấp nhận khi khai báo XML và nội dung
+    # bắt đầu bằng '<' (sau BOM/whitespace); parse thật ở bước extract.
+    if declared_mime in ("application/xml", "text/xml") and content.lstrip()[:1] == b"<":
+        return declared_mime
     return ""
 
 

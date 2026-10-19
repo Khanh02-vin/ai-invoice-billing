@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src import app as app_module
-from src.models import User
+from src.models import Invoice, User
 from src.routers import payments
 from src.store.sql_repository import Database, TransactionRepository
 
@@ -25,6 +25,39 @@ def payments_client(monkeypatch, tmp_path):
     app_module.app.dependency_overrides.clear()
 
 
+def test_manual_transaction_create_matches_existing_unpaid_invoice(payments_client):
+    client, db = payments_client
+    from src.store.sql_repository import InvoiceRepository, InvoiceTransactionLinkRepository
+
+    invoice = Invoice(id="pending-invoice", user_id="owner", invoice_number="I-100", total=1200, currency="VND")
+    InvoiceRepository(db).upsert(invoice)
+
+    created = client.post("/payments/transactions", json={"amount": 1200, "direction": "debit"})
+    assert created.status_code == 200
+    tx = created.json()
+    assert tx["status"] == "matched"
+    assert tx["matched_invoice_id"] == invoice.id
+    assert InvoiceRepository(db).get(invoice.id, user_id="owner").status.value == "paid"
+    assert len(InvoiceTransactionLinkRepository(db).list_for_transaction(tx["id"], "owner")) == 1
+
+
+def test_manual_transaction_create_only_matches_eligible_amount_currency_and_direction(payments_client):
+    client, db = payments_client
+    from src.store.sql_repository import InvoiceRepository
+
+    invoices = InvoiceRepository(db)
+    invoices.upsert(Invoice(id="usd-invoice", user_id="owner", invoice_number="USD-1", total=1200, currency="USD"))
+    invoices.upsert(Invoice(id="vnd-invoice", user_id="owner", invoice_number="VND-1", total=5000, currency="VND"))
+
+    wrong_currency = client.post("/payments/transactions", json={"amount": 1200, "currency": "VND"}).json()
+    credit = client.post("/payments/transactions", json={"amount": 5000, "direction": "credit"}).json()
+    assert wrong_currency["status"] == "pending_receipt"
+    assert wrong_currency["matched_invoice_id"] is None
+    assert credit["status"] == "pending_receipt"
+    assert credit["matched_invoice_id"] is None
+    assert invoices.get("vnd-invoice", user_id="owner").status.value == "unpaid"
+
+
 def test_transaction_crud_is_owner_scoped(payments_client):
     client, db = payments_client
     created = client.post("/payments/transactions", json={"amount": 1200, "merchant": "Cafe"})
@@ -40,7 +73,39 @@ def test_transaction_crud_is_owner_scoped(payments_client):
     assert client.post(f"/payments/transactions/{tx_id}/dismiss").json() == {"dismissed": True}
 
 
-def test_invalid_amount_and_coordinates_rejected(payments_client):
+def test_manual_invoice_link_and_unlink_are_owner_scoped(payments_client):
+    client, db = payments_client
+    from src.store.sql_repository import InvoiceRepository, InvoiceTransactionLinkRepository
+
+    tx = client.post("/payments/transactions", json={"amount": 100}).json()
+    owner_invoice = Invoice(id="owner-invoice", user_id="owner", invoice_number="I-1", total=100)
+    foreign_invoice = Invoice(id="foreign-invoice", user_id="other", invoice_number="I-2", total=100)
+    tx_repo = InvoiceRepository(db)
+    tx_repo.upsert(owner_invoice)
+    tx_repo.upsert(foreign_invoice)
+
+    linked = client.post(
+        f"/payments/transactions/{tx['id']}/invoices",
+        json={"invoice_id": owner_invoice.id},
+    )
+    assert linked.status_code == 200
+    assert linked.json()["amount"] == 100
+    assert len(InvoiceTransactionLinkRepository(db).list_for_transaction(tx["id"], "owner")) == 1
+
+    assert client.post(
+        f"/payments/transactions/{tx['id']}/invoices",
+        json={"invoice_id": foreign_invoice.id},
+    ).status_code == 404
+    assert client.post(
+        f"/payments/transactions/{tx['id']}/invoices",
+        json={"invoice_id": owner_invoice.id, "amount": 101},
+    ).status_code == 400
+    assert client.delete(
+        f"/payments/transactions/{tx['id']}/invoices/{owner_invoice.id}"
+    ).json() == {"unlinked": True}
+    assert not InvoiceTransactionLinkRepository(db).list_for_transaction(tx["id"], "owner")
+
+
     client, _ = payments_client
     assert client.post("/payments/transactions", json={"amount": -1}).status_code == 422
     assert client.post("/payments/transactions", json={"amount": 5, "location_lat": 10}).status_code == 422

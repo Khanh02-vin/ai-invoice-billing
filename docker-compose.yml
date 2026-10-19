@@ -45,6 +45,10 @@ services:
       BILLING_PROVIDER: ${BILLING_PROVIDER:-mock}  # mock|stripe|paddle (mock is safe non-secret default)
     volumes:
       - invoice-data:/app/data
+      # VAPID_PRIVATE_KEY là đường dẫn file, mà image không chứa file này (là
+      # secret, git-ignored). Thiếu mount thì pywebpush không thấy file và push
+      # thất bại im lặng — không có thông báo nào tới điện thoại.
+      - ./vapid_private.pem:/app/vapid_private.pem:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -81,6 +85,8 @@ services:
       WORKER_ENABLED: "1"
     volumes:
       - invoice-data:/app/data
+      # Cùng lý do như backend: worker cũng gửi thông báo nhắc chụp hóa đơn.
+      - ./vapid_private.pem:/app/vapid_private.pem:ro
     depends_on:
       redis:
         condition: service_healthy

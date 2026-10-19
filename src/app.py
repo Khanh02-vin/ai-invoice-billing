@@ -40,7 +40,7 @@ from .middleware import (
     StructuredLoggingMiddleware,
     configure_cors,
 )
-from .models import Invoice, User
+from .models import Invoice, TxDirection, TxStatus, User
 from .observability import metrics as obs_metrics
 from .routers.auth_ext import router as auth_ext_router
 from .routers.auth_ext import send_verification_email
@@ -52,6 +52,7 @@ from .security.idempotency import InMemoryCache, compute_content_hash, generate_
 from .store.sql_repository import (
     DuplicateInvoiceError,
     InvoiceRepository,
+    InvoiceTransactionLinkRepository,
     PushSubscriptionRepository,
     TransactionRepository,
     UserRepository,
@@ -115,6 +116,7 @@ db = init_database(settings.database_path)
 repo = InvoiceRepository(db)
 users = UserRepository(db)
 tx_repo = TransactionRepository(db)
+link_repo = InvoiceTransactionLinkRepository(db)
 push_repo = PushSubscriptionRepository(db)
 
 
@@ -254,7 +256,7 @@ async def create_invoice(data: InvoiceCreate, user: User = Depends(current_user)
     return invoice
 
 
-@app.put("/invoices/{invoice_id}", response_model=Invoice)
+@app.put("/invoices/{invoice_id}")
 async def update_invoice(invoice_id: str, data: InvoiceUpdate, user: User = Depends(current_user)):
     invoice = repo.get(invoice_id, user_id=user.id)
     if not invoice:
@@ -262,7 +264,13 @@ async def update_invoice(invoice_id: str, data: InvoiceUpdate, user: User = Depe
     updated = repo.update(invoice_id, data, user_id=user.id)
     if not updated:
         raise AppError("UPDATE_FAILED", "Cập nhật thất bại.", status=400)
-    return updated
+    matched_tx = None
+    if updated.status not in (InvoiceStatus.PAID, InvoiceStatus.CANCELLED):
+        matched_tx = match_invoice_saved(tx_repo, repo, updated)
+    result = updated.model_dump(mode="json")
+    result["payment_match_status"] = "matched" if matched_tx else "unmatched"
+    result["matched_transaction_id"] = matched_tx.id if matched_tx else None
+    return result
 
 
 @app.delete("/invoices/{invoice_id}")
@@ -358,12 +366,21 @@ async def upload_invoice(
 
     # Trích xuất
     try:
-        invoice = extract_invoice(
-            content=content,
-            mime_type=validated.mime_type,
-            source_file=stored.key,
-            user_id=user.id,
-        )
+        invoice = None
+        if validated.mime_type in ("application/xml", "text/xml"):
+            from .extract.xml_parser import parse_xml_invoice
+
+            invoice = parse_xml_invoice(content)
+            if invoice:
+                invoice.user_id = user.id
+                invoice.source_file = stored.key
+        if invoice is None:
+            invoice = extract_invoice(
+                content=content,
+                mime_type=validated.mime_type,
+                source_file=stored.key,
+                user_id=user.id,
+            )
     except Exception:
         storage.delete(stored.key)
         raise AppError("EXTRACTION_FAILED", "Không thể xử lý tệp hóa đơn.", status=422)

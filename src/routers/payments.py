@@ -43,6 +43,7 @@ from ..models import (
 from ..store.sql_repository import (
     Database,
     InvoiceRepository,
+    InvoiceTransactionLinkRepository,
     TransactionRepository,
     UserRepository,
     get_database,
@@ -230,6 +231,11 @@ class PlaceSharingPreference(BaseModel):
     share_place_visits: bool
 
 
+class InvoiceLinkRequest(BaseModel):
+    invoice_id: str
+    amount: float | None = Field(default=None, gt=0)
+
+
 _ALLOWED_IMAP_HOSTS = {"imap.gmail.com", "outlook.office365.com", "imap.mail.yahoo.com"}
 
 
@@ -280,8 +286,25 @@ async def list_transactions(
 
 @router.post("/transactions")
 async def create_transaction(body: TransactionCreate, user: User = Depends(current_user)):
+    tx_repo = TransactionRepository(_get_db())
     tx = PaymentTransaction(user_id=user.id, **body.model_dump())
-    return TransactionRepository(_get_db()).create(tx)
+    tx = tx_repo.create(tx)
+    matched = None
+    if tx.direction == TxDirection.DEBIT and tx.status == TxStatus.PENDING_RECEIPT:
+        from ..payments.matching import pick_invoices
+        from ..payments.service import link, link_many
+
+        invoice_repo = InvoiceRepository(_get_db())
+        matches = pick_invoices(tx, invoice_repo.list(user_id=user.id, limit=200))
+        if len(matches) > 1:
+            link_many(tx_repo, invoice_repo, tx, matches)
+            matched = True
+        elif matches:
+            link(tx_repo, invoice_repo, tx, matches[0])
+            matched = True
+    result = tx.model_dump(mode="json")
+    result["payment_match_status"] = "matched" if matched else "unmatched"
+    return result
 
 
 @router.put("/transactions/{transaction_id}")
@@ -304,6 +327,39 @@ async def dismiss_transaction(transaction_id: str, user: User = Depends(current_
     if not repo.set_status(transaction_id, TxStatus.DISMISSED, user_id=user.id):
         raise AppError("NOT_FOUND", "Không tìm thấy giao dịch.", status=404)
     return {"dismissed": True}
+
+
+@router.post("/transactions/{transaction_id}/invoices")
+async def link_invoice_to_transaction(
+    transaction_id: str, body: InvoiceLinkRequest, user: User = Depends(current_user)
+):
+    db = _get_db()
+    transactions = TransactionRepository(db)
+    invoices = InvoiceRepository(db)
+    tx = transactions.get(transaction_id, user.id)
+    invoice = invoices.get(body.invoice_id, user_id=user.id)
+    if not tx or not invoice:
+        raise AppError("NOT_FOUND", "Không tìm thấy giao dịch hoặc hóa đơn.", status=404)
+    link_repo = InvoiceTransactionLinkRepository(db)
+    amount = body.amount if body.amount is not None else min(tx.amount, invoice.total)
+    if amount > tx.amount or amount > invoice.total:
+        raise AppError("INVALID_LINK_AMOUNT", "Số tiền liên kết vượt quá số tiền giao dịch hoặc hóa đơn.", status=400)
+    return link_repo.create(user.id, tx.id, invoice.id, amount, "manual")
+
+
+@router.delete("/transactions/{transaction_id}/invoices/{invoice_id}")
+async def unlink_invoice_from_transaction(
+    transaction_id: str, invoice_id: str, user: User = Depends(current_user)
+):
+    db = _get_db()
+    if not TransactionRepository(db).get(transaction_id, user.id):
+        raise AppError("NOT_FOUND", "Không tìm thấy giao dịch.", status=404)
+    links = InvoiceTransactionLinkRepository(db).list_for_transaction(transaction_id, user.id)
+    link = next((item for item in links if item.invoice_id == invoice_id), None)
+    if not link or not InvoiceRepository(db).get(invoice_id, user_id=user.id):
+        raise AppError("NOT_FOUND", "Không tìm thấy liên kết.", status=404)
+    InvoiceTransactionLinkRepository(db).delete(link.id, user.id)
+    return {"unlinked": True}
 
 
 @router.get("/transactions/{transaction_id}/attachments")

@@ -183,6 +183,35 @@ def test_selected_transaction_upload_rejects_foreign_owner(client, transaction_d
     assert app_module.tx_repo.get(foreign_tx.id, owner_id).matched_invoice_id is None
 
 
+def test_edit_invoice_retries_matching_against_pending_transaction(client, transaction_db):
+    token = _register(client)
+    user_id = app_module.users.get_by_username("kien").id
+    app_module.repo = __import__("src.store.sql_repository", fromlist=["InvoiceRepository"]).InvoiceRepository(transaction_db)
+    app_module.tx_repo = TransactionRepository(transaction_db)
+    transaction = app_module.tx_repo.create(
+        __import__("src.models", fromlist=["PaymentTransaction"]).PaymentTransaction(
+            id="edit-match-payment", user_id=user_id, amount=500000, currency="VND",
+        )
+    )
+    invoice = app_module.repo.create(
+        __import__("src.models", fromlist=["InvoiceCreate"]).InvoiceCreate(
+            invoice_number="EDIT-MATCH", vendor="Shop", total=50000, currency="VND",
+        ), user_id=user_id,
+    )
+
+    response = client.put(
+        f"/invoices/{invoice.id}", json={"total": 500000}, headers=_auth(token)
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["payment_match_status"] == "matched"
+    assert response.json()["matched_transaction_id"] == transaction.id
+    assert app_module.tx_repo.get(transaction.id, user_id).status.value == "matched"
+    assert app_module.repo.get(invoice.id, user_id=user_id).status.value == "paid"
+    app_module.repo = InvoiceRepository(db_path=":memory:")
+    app_module.tx_repo = TransactionRepository(Database(":memory:"))
+    app_module.tx_repo.db.create_tables()
+
+
 def test_create_list_paid_flow(client):
     """Tạo hóa đơn → list → cập nhật paid."""
     token = _register(client)

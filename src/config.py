@@ -106,7 +106,15 @@ class Settings:
     allowed_mime_types: list[str] = field(
         default_factory=lambda: _list_env(
             "ALLOWED_MIME_TYPES",
-            ["application/pdf", "image/png", "image/jpeg", "image/tiff", "text/plain"],
+            [
+                "application/pdf",
+                "image/png",
+                "image/jpeg",
+                "image/tiff",
+                "text/plain",
+                "application/xml",
+                "text/xml",
+            ],
         )
     )
     max_pdf_pages: int = field(default_factory=lambda: int(os.getenv("MAX_PDF_PAGES", "20")))

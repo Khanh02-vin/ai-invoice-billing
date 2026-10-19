@@ -9,6 +9,7 @@ venv/
 .env
 *.env
 vapid_*.pem
+.env.production
 
 # DB & data
 *.db

@@ -21,6 +21,7 @@ from src.models import (
     Invoice,
     InvoiceCreate,
     InvoiceStatus,
+    InvoiceTransactionLink,
     InvoiceUpdate,
     LineItem,
     MonthlyReport,
@@ -685,6 +686,82 @@ class TransactionRepository:
                 (*filtered_ids, lat - lat_delta, lat + lat_delta, lon - lon_delta, lon + lon_delta),
             ).all()
             return [dict(row) for row in rows]
+
+
+class InvoiceTransactionLinkRepository:
+    """Liên kết nhiều-nhiều giao dịch <-> hóa đơn (ghép gộp/trả góp)."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def create(
+        self,
+        user_id: str,
+        transaction_id: str,
+        invoice_id: str,
+        amount: float = 0.0,
+        match_reason: str = "manual",
+    ) -> InvoiceTransactionLink:
+        link = InvoiceTransactionLink(
+            id=uuid.uuid4().hex[:16],
+            user_id=user_id,
+            transaction_id=transaction_id,
+            invoice_id=invoice_id,
+            amount=amount,
+            match_reason=match_reason,
+        )
+        with self.db.get_session() as session:
+            existing = session.exec(
+                select(InvoiceTransactionLink).where(
+                    InvoiceTransactionLink.transaction_id == transaction_id,
+                    InvoiceTransactionLink.invoice_id == invoice_id,
+                )
+            ).first()
+            if existing:
+                existing.amount = amount
+                existing.match_reason = match_reason
+                session.add(existing)
+                session.commit()
+                session.refresh(existing)
+                return existing
+            session.add(link)
+            session.commit()
+            session.refresh(link)
+            return link
+
+    def list_for_transaction(
+        self, transaction_id: str, user_id: str = ""
+    ) -> builtins.list[InvoiceTransactionLink]:
+        with self.db.get_session() as session:
+            query = select(InvoiceTransactionLink).where(
+                InvoiceTransactionLink.transaction_id == transaction_id
+            )
+            if user_id:
+                query = query.where(InvoiceTransactionLink.user_id == user_id)
+            return session.exec(query).all()
+
+    def list_for_invoice(
+        self, invoice_id: str, user_id: str = ""
+    ) -> builtins.list[InvoiceTransactionLink]:
+        with self.db.get_session() as session:
+            query = select(InvoiceTransactionLink).where(
+                InvoiceTransactionLink.invoice_id == invoice_id
+            )
+            if user_id:
+                query = query.where(InvoiceTransactionLink.user_id == user_id)
+            return session.exec(query).all()
+
+    def delete(self, link_id: str, user_id: str = "") -> bool:
+        with self.db.get_session() as session:
+            query = select(InvoiceTransactionLink).where(InvoiceTransactionLink.id == link_id)
+            if user_id:
+                query = query.where(InvoiceTransactionLink.user_id == user_id)
+            link = session.exec(query).first()
+            if link:
+                session.delete(link)
+                session.commit()
+                return True
+            return False
 
 
 class PushSubscriptionRepository:

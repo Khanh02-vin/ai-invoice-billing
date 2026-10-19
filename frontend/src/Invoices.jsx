@@ -262,7 +262,12 @@ export default function Invoices({ user, onLogout }) {
       });
       setInvoices((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
       setReviewInvoice(null);
-      setMsg({ ok: true, text: "Đã lưu chỉnh sửa — dùng làm mẫu đánh giá độ chính xác" });
+      setMsg({
+        ok: true,
+        text: updated.payment_match_status === "matched"
+          ? "Đã lưu chỉnh sửa và ghép hóa đơn với giao dịch thanh toán."
+          : "Đã lưu chỉnh sửa — dùng làm mẫu đánh giá độ chính xác",
+      });
     } catch (err) {
       showErr(err);
     } finally {
