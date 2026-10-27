@@ -30,6 +30,8 @@ from ..mail import send_mail, user_email
 from ..models import User
 from ..store.sql_repository import Database, UserRepository, get_database
 
+from ..security.api_rate_limit import rate_limit_dependency
+
 router = APIRouter(prefix="/auth", tags=["auth-ext"])
 
 bearer = HTTPBearer(auto_error=False)
@@ -179,7 +181,11 @@ def _verify_page(title: str, body: str, ok: bool) -> HTMLResponse:
 
 
 @router.post("/resend-verification")
-async def resend_verification(payload: ResendVerificationRequest, request: Request):
+async def resend_verification(
+    payload: ResendVerificationRequest,
+    request: Request,
+    _rl: None = Depends(rate_limit_dependency("rate_limit_auth_resend")),
+):
     """Tạo + gửi email xác minh thật (503 nếu chưa có SMTP)."""
     settings = get_settings()
     if not settings.email_enabled:

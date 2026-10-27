@@ -8,9 +8,14 @@ Nguyên tắc (PLAN mục 3):
 """
 
 import secrets
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
+
+import logging
+
+logger = logging.getLogger("invoice.app")
 
 from fastapi import Depends, FastAPI, File, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
@@ -32,7 +37,7 @@ from .domain.models import (
     UserCreate,
     UserPublic,
 )
-from .errors import AppError, register_error_handlers
+from .errors import AppError, register_error_handlers, _public_body
 from .extract.extractor import extract_invoice
 from .middleware import (
     RequestIdMiddleware,
@@ -49,6 +54,11 @@ from .routers.push import router as push_router
 from .routers.search import router as search_router
 from .payments.service import match_invoice_saved as _match_invoice_saved
 from .security.idempotency import InMemoryCache, compute_content_hash, generate_idempotency_key
+from .security.rate_limit import RateLimiter  # noqa: F401  (kept for backward import)
+from .security.api_rate_limit import (
+    RateLimitExceeded,
+    rate_limit_dependency,
+)
 from .store.sql_repository import (
     DuplicateInvoiceError,
     InvoiceRepository,
@@ -87,6 +97,21 @@ app.add_middleware(StructuredLoggingMiddleware)
 
 # --- Error handlers ---
 register_error_handlers(app)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _handle_rate_limit_exceeded(request: Request, exc: RateLimitExceeded):
+    request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:12])
+    logger.warning("rate_limit_exceeded request_id=%s", request_id)
+    return JSONResponse(
+        status_code=429,
+        content=_public_body(exc.code, exc.message, request_id, exc.details),
+        headers={
+            "Retry-After": str(exc.retry_after),
+            "X-RateLimit-Limit": str(exc.limit),
+            "X-RateLimit-Remaining": str(exc.remaining),
+        },
+    )
 
 # --- Routers (Phase 2-4) ---
 app.include_router(search_router)
@@ -174,7 +199,11 @@ async def ready():
 
 
 @app.post("/auth/register", response_model=Token)
-async def register(data: UserCreate, request: Request):
+async def register(
+    data: UserCreate,
+    request: Request,
+    _rl: None = Depends(rate_limit_dependency("rate_limit_auth_register")),
+):
     # Đọc settings tại request time để test monkeypatch có hiệu lực
     _settings = get_settings()
     if not _settings.open_registration:
@@ -202,7 +231,10 @@ async def register(data: UserCreate, request: Request):
 
 
 @app.post("/auth/login", response_model=Token)
-async def login(data: UserCreate):
+async def login(
+    data: UserCreate,
+    _rl: None = Depends(rate_limit_dependency("rate_limit_auth_login")),
+):
     user = users.get_by_username(data.username)
     if not user or not verify_password(data.password, user.password_hash):
         raise AppError("INVALID_CREDENTIALS", "Sai tên người dùng hoặc mật khẩu.", status=401)

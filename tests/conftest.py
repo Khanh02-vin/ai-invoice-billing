@@ -27,3 +27,10 @@ def safe_db(tmp_path, monkeypatch):
     monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
     monkeypatch.setenv("APP_URL", "http://testserver")
     yield
+    # Clear rate-limit singleton để các test không bị ảnh hưởng bởi test trước.
+    try:
+        from src.security.rate_limit import get_default_limiter
+
+        get_default_limiter().clear()
+    except Exception:
+        pass

@@ -17,6 +17,7 @@ export default defineConfig({
     proxy: {
       "/auth": API_TARGET,
       "/invoices": API_TARGET,
+      "/upload": API_TARGET,
       "/payments": API_TARGET,
       "/push": API_TARGET,
       "/reports": API_TARGET,

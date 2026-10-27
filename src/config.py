@@ -122,6 +122,34 @@ class Settings:
         default_factory=lambda: int(os.getenv("UPLOAD_TIMEOUT_SECONDS", "60"))
     )
 
+    # Rate limiting (sliding window, per endpoint policy)
+    # Format for env: RL_AUTH_LOGIN=5:60 means 5 requests per 60 seconds.
+    rate_limit_auth_login: str = field(
+        default_factory=lambda: os.getenv("RL_AUTH_LOGIN", "5:60")
+    )
+    rate_limit_auth_register: str = field(
+        default_factory=lambda: os.getenv("RL_AUTH_REGISTER", "3:60")
+    )
+    rate_limit_auth_resend: str = field(
+        default_factory=lambda: os.getenv("RL_AUTH_RESEND", "3:300")
+    )
+    rate_limit_upload: str = field(default_factory=lambda: os.getenv("RL_UPLOAD", "10:60"))
+    rate_limit_payment_ingest: str = field(
+        default_factory=lambda: os.getenv("RL_PAYMENT_INGEST", "20:60")
+    )
+
+    def rate_limit_policy(self, name: str) -> tuple[int, int]:
+        """Trả về (max_requests, window_seconds) cho một chính sách.
+
+        Mô env: "<max_requests>:<window_seconds>".
+        """
+        raw = getattr(self, name, "10:60")
+        try:
+            max_str, window_str = str(raw).split(":", 1)
+            return int(max_str), int(window_str)
+        except (ValueError, AttributeError):
+            return 10, 60
+
     # Storage
     storage_dir: str = field(default_factory=lambda: os.getenv("STORAGE_DIR", "data/storage"))
     database_path: str = field(default_factory=lambda: os.getenv("DATABASE_PATH", "invoices.db"))

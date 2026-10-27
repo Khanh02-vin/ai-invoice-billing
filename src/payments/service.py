@@ -10,7 +10,7 @@ Link = transaction matched_invoice_id + hóa đơn chuyển sang PAID
 from ..models import Invoice, InvoiceStatus, InvoiceUpdate, TxStatus
 from ..domain.payments import PaymentEvent, PaymentTransaction
 from ..store.sql_repository import InvoiceTransactionLinkRepository
-from .matching import pick_invoices
+from .matching import InvoiceMatchResult, pick_invoices_decision
 from .parser import derive_ref
 
 
@@ -76,30 +76,44 @@ def ingest(
     tx = tx_repo.create(tx)
     if event.direction.value == "credit":
         return tx, None, False
-    invoices = pick_invoices(tx, invoice_repo.list(user_id=user_id, limit=200))
-    if len(invoices) > 1:
-        link_many(tx_repo, invoice_repo, tx, invoices)
+    decision = pick_invoices_decision(
+        tx, invoice_repo.list(user_id=user_id, limit=200)
+    )
+    if decision.kind == "unique":
+        invoices = decision.invoices
+        if len(invoices) > 1:
+            link_many(tx_repo, invoice_repo, tx, invoices)
+            return tx, invoices[0], False
+        link(tx_repo, invoice_repo, tx, invoices[0])
         return tx, invoices[0], False
-    invoice = invoices[0] if invoices else None
-    if invoice:
-        link(tx_repo, invoice_repo, tx, invoice)
-    return tx, invoice, False
+    # ambiguous or none: keep transaction pending, do not auto-link.
+    return tx, None, False
 
 
 def match_invoice_saved(tx_repo, invoice_repo, invoice: Invoice) -> PaymentTransaction | None:
-    """Gọi sau khi lưu hóa đơn — ghép với giao dịch đang chờ nếu số tiền khớp."""
+    """Gọi sau khi lưu hóa đơn — ghép với giao dịch đang chờ nếu số tiền khớp.
+
+    Chỉ tự ghép khi rozhod định là "unique" (một ứng viên duy nhất). Nếu ambiguous
+    (nhiều ứng viên ngang hàng) hoặc none, giữ giao dịch pending để người dùng
+    chọn thủ công.
+    """
     if not invoice.user_id or invoice.total <= 0:
         return None
     pending = tx_repo.list(
         user_id=invoice.user_id, status=TxStatus.PENDING_RECEIPT, direction=None, limit=50
     )
     for tx in pending:
-        matched = pick_invoices(tx, invoice_repo.list(user_id=invoice.user_id, limit=200))
+        decision: InvoiceMatchResult = pick_invoices_decision(
+            tx, invoice_repo.list(user_id=invoice.user_id, limit=200)
+        )
+        if decision.kind != "unique":
+            continue
+        matched = decision.invoices
         if invoice.id not in {item.id for item in matched}:
             continue
         if len(matched) > 1:
             link_many(tx_repo, invoice_repo, tx, matched)
         else:
-            link(tx_repo, invoice_repo, tx, invoice)
+            link(tx_repo, invoice_repo, tx, matched[0])
         return tx
     return None

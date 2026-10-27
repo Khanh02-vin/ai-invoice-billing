@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 
 # Rate limiting
+from fastapi.testclient import TestClient
+from src import app as app_module
 from src.security.rate_limit import RateLimiter
 
 # Malware
@@ -257,3 +259,68 @@ class TestBackupRestore:
         assert len(backups) == 1
         assert backups[0]["label"] == "first"
         assert backups[0]["name"].startswith("backup_")
+
+
+# ---------- Rate limit API integration tests ----------
+
+
+class TestRateLimitAPI:
+    @pytest.fixture(autouse=True)
+    def _reset_limiter(self):
+        from src.security.api_rate_limit import get_default_limiter
+
+        get_default_limiter().clear()
+        yield
+        get_default_limiter().clear()
+
+    def _client(self, monkeypatch):
+        monkeypatch.setenv("OPEN_REGISTRATION", "1")
+        return TestClient(app_module.app)
+
+    def test_login_rate_limit_429(self, monkeypatch):
+        client = self._client(monkeypatch)
+        for _ in range(5):
+            r = client.post("/auth/login", json={"username": "abuser", "password": "Password123"})
+            assert r.status_code in (200, 401, 403), r.status_code
+        r = client.post("/auth/login", json={"username": "abuser", "password": "Password123"})
+        assert r.status_code == 429, r.status_code
+        body = r.json()
+        assert body["error"]["code"] == "TOO_MANY_REQUESTS"
+        assert r.headers.get("retry-after")
+        assert r.headers.get("x-ratelimit-limit") == "5"
+
+    def test_register_rate_limit_429(self, monkeypatch):
+        client = self._client(monkeypatch)
+        for _ in range(3):
+            r = client.post(
+                "/auth/register",
+                json={"username": f"user{_}", "password": "Password123", "email": f"u{_}@example.com"},
+            )
+            assert r.status_code in (200, 409, 422), r.status_code
+        r = client.post(
+            "/auth/register",
+            json={"username": "user_extra", "password": "Password123", "email": "extra@example.com"},
+        )
+        assert r.status_code == 429, r.status_code
+        body = r.json()
+        assert body["error"]["code"] == "TOO_MANY_REQUESTS"
+        assert r.headers.get("x-ratelimit-limit") == "3"
+
+    def test_auth_policies_are_isolated(self, monkeypatch):
+        """Login and register have separate keys; exhausting one should not block the other."""
+        client = self._client(monkeypatch)
+        for _ in range(5):
+            client.post("/auth/login", json={"username": "a", "password": "b"})
+        # Login exhausted, register should still be allowed (fresh key).
+        r = client.post(
+            "/auth/register",
+            json={"username": "isolated_user", "password": "Password123", "email": "iso@example.com"},
+        )
+        assert r.status_code in (200, 409), r.status_code
+
+    def test_health_not_rate_limited(self, monkeypatch):
+        monkeypatch.setenv("OPEN_REGISTRATION", "1")
+        client = TestClient(app_module.app)
+        for _ in range(10):
+            r = client.get("/health")
+            assert r.status_code == 200, r.status_code

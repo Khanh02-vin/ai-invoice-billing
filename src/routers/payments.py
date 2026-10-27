@@ -40,6 +40,7 @@ from ..models import (
     UserEmailAccount,
     UserPaymentPreference,
 )
+from ..security.api_rate_limit import rate_limit_dependency
 from ..store.sql_repository import (
     Database,
     InvoiceRepository,
@@ -285,25 +286,35 @@ async def list_transactions(
 
 
 @router.post("/transactions")
-async def create_transaction(body: TransactionCreate, user: User = Depends(current_user)):
+async def create_transaction(
+    body: TransactionCreate,
+    user: User = Depends(current_user),
+    _rl: None = Depends(rate_limit_dependency("rate_limit_upload")),
+):
     tx_repo = TransactionRepository(_get_db())
     tx = PaymentTransaction(user_id=user.id, **body.model_dump())
     tx = tx_repo.create(tx)
-    matched = None
+    match_status = "unmatched"
     if tx.direction == TxDirection.DEBIT and tx.status == TxStatus.PENDING_RECEIPT:
-        from ..payments.matching import pick_invoices
+        from ..payments.matching import pick_invoices_decision
         from ..payments.service import link, link_many
 
         invoice_repo = InvoiceRepository(_get_db())
-        matches = pick_invoices(tx, invoice_repo.list(user_id=user.id, limit=200))
-        if len(matches) > 1:
-            link_many(tx_repo, invoice_repo, tx, matches)
-            matched = True
-        elif matches:
-            link(tx_repo, invoice_repo, tx, matches[0])
-            matched = True
+        decision = pick_invoices_decision(
+            tx, invoice_repo.list(user_id=user.id, limit=200)
+        )
+        if decision.kind == "unique":
+            invoices = decision.invoices
+            if len(invoices) > 1:
+                link_many(tx_repo, invoice_repo, tx, invoices)
+                match_status = "matched"
+            else:
+                link(tx_repo, invoice_repo, tx, invoices[0])
+                match_status = "matched"
+        elif decision.kind == "ambiguous":
+            match_status = "ambiguous"
     result = tx.model_dump(mode="json")
-    result["payment_match_status"] = "matched" if matched else "unmatched"
+    result["payment_match_status"] = match_status
     return result
 
 
@@ -747,7 +758,11 @@ async def connect_email(body: EmailConnectRequest, user: User = Depends(current_
 
 
 @router.post("/camera-upload", response_model=CameraUploadResponse)
-async def camera_upload(file: UploadFile = File(...), user: User = Depends(current_user)):
+async def camera_upload(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    _rl: None = Depends(rate_limit_dependency("rate_limit_upload")),
+):
     """Upload photo from camera capture -> Vision OCR -> extract invoice.
 
     Uses existing extract_invoice pipeline with LLM fallback.
@@ -818,7 +833,11 @@ def _image_draft_fields(raw: str) -> dict[str, str]:
 
 
 @router.post("/image-draft", response_model=ImageDraftResponse)
-async def create_image_draft(file: UploadFile = File(...), user: User = Depends(current_user)):
+async def create_image_draft(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    _rl: None = Depends(rate_limit_dependency("rate_limit_upload")),
+):
     settings = get_settings()
     content = await file.read(settings.max_upload_bytes + 1)
     validated = validate_upload(
