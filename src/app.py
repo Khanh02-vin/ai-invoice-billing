@@ -8,6 +8,7 @@ Nguyên tắc (PLAN mục 3):
 """
 
 import secrets
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,19 +33,19 @@ from .domain.models import (
     InvoiceCreate,
     InvoiceStatus,
     InvoiceUpdate,
+    JobStatus,
     MonthlyReport,
     Token,
     UserCreate,
     UserPublic,
 )
-from .errors import AppError, register_error_handlers, _public_body
-from .extract.extractor import extract_invoice
 from .middleware import (
     RequestIdMiddleware,
     SecurityHeadersMiddleware,
     StructuredLoggingMiddleware,
     configure_cors,
 )
+from .errors import AppError, register_error_handlers, _public_body
 from .models import Invoice, TxDirection, TxStatus, User
 from .observability import metrics as obs_metrics
 from .routers.auth_ext import router as auth_ext_router
@@ -62,7 +63,6 @@ from .security.api_rate_limit import (
 from .store.sql_repository import (
     DuplicateInvoiceError,
     InvoiceRepository,
-    InvoiceTransactionLinkRepository,
     PushSubscriptionRepository,
     TransactionRepository,
     UserRepository,
@@ -141,7 +141,6 @@ db = init_database(settings.database_path)
 repo = InvoiceRepository(db)
 users = UserRepository(db)
 tx_repo = TransactionRepository(db)
-link_repo = InvoiceTransactionLinkRepository(db)
 push_repo = PushSubscriptionRepository(db)
 
 
@@ -394,36 +393,37 @@ async def upload_invoice(
 
     # Lưu file gốc
     storage_key = generate_storage_key(validated.filename, content)
+    storage_dir = os.getenv("STORAGE_DIR", "data/storage")
+    storage = LocalFileStorage(storage_dir)
+    print(f"DEBUG upload: storage_dir={storage_dir!r}, storage_key={storage_key}")
     stored = storage.put(storage_key, content)
 
-    # Trích xuất
-    try:
-        invoice = None
-        if validated.mime_type in ("application/xml", "text/xml"):
-            from .extract.xml_parser import parse_xml_invoice
-
-            invoice = parse_xml_invoice(content)
-            if invoice:
-                invoice.user_id = user.id
-                invoice.source_file = stored.key
-        if invoice is None:
-            invoice = extract_invoice(
-                content=content,
-                mime_type=validated.mime_type,
-                source_file=stored.key,
-                user_id=user.id,
-            )
-    except Exception:
-        storage.delete(stored.key)
-        raise AppError("EXTRACTION_FAILED", "Không thể xử lý tệp hóa đơn.", status=422)
-
-    # Cập nhật provenance với file metadata
-    invoice.file_checksum = compute_fingerprint(content)
-    invoice.file_size = validated.size
-    invoice.page_count = validated.page_count
-    invoice.source_file = file.filename or "upload"
-
-    # Lưu invoice
+    # Tạo bản ghi hóa đơn ở trạng thái đang xử lý (nội dung chưa được trích xuất).
+    invoice = Invoice(
+        invoice_number="unknown",
+        vendor="unknown",
+        buyer="",
+        issue_date=None,
+        due_date=None,
+        currency="VND",
+        subtotal=0.0,
+        total=0.0,
+        tax=0.0,
+        tax_rate=0.0,
+        discount=0.0,
+        amount_due=0.0,
+        status=InvoiceStatus.UNPAID,
+        source_file=storage_key,
+        raw_snippet="",
+        confidence=0.0,
+        user_id=user.id,
+        job_status=JobStatus.PROCESSING,
+        file_checksum=compute_fingerprint(content),
+        file_size=validated.size,
+        page_count=validated.page_count,
+        extraction_provider="",
+        review_history=[],
+    )
     try:
         saved = repo.upsert(invoice)
     except (DuplicateInvoiceError, LegacyDuplicateInvoiceError) as e:
@@ -434,27 +434,38 @@ async def upload_invoice(
             status=409,
             details={"existing_id": e.existing_id},
         )
-    match_status = "unmatched"
-    matched_tx = None
-    if transaction_id:
-        matched_tx = tx_repo.get(transaction_id, user.id)
-        if not matched_tx or getattr(matched_tx.status, "value", matched_tx.status) != "pending_receipt":
-            raise AppError("TRANSACTION_NOT_PENDING", "Giao dịch không còn chờ hóa đơn.", status=409)
-        from .payments.matching import amounts_match
-        if amounts_match(matched_tx.amount, matched_tx.currency, saved.total, saved.currency):
-            from .payments.service import link
-            link(tx_repo, repo, matched_tx, saved)
-            match_status = "matched"
-        else:
-            match_status = "amount_mismatch"
-    else:
-        matched_tx = match_invoice_saved(tx_repo, repo, saved)
-        match_status = "matched" if matched_tx else "unmatched"
+
+    # Đẩy tác vụ trích xuất vào hàng đợi Celery (xử lý bất đồng bộ).
+    try:
+        from .workers.extraction_worker import _do_extract as extract_task
+
+        extract_task(
+            saved.id, storage_key, user.id,
+            invoice_repo=repo, tx_repo=tx_repo,
+            db_path=settings.database_path,
+            storage_dir=storage_dir,
+        )
+    except Exception:
+        # Nếu worker không khả dụng, đánh dấu thất bại để người dùng biết.
+        saved.job_status = JobStatus.FAILED
+        repo.update(
+            saved.id, InvoiceUpdate(job_status=JobStatus.FAILED), user_id=user.id
+        )
+        result = saved.model_dump(mode="json")
+        result["job_status"] = JobStatus.FAILED.value
+        result["payment_match_status"] = "failed"
+        result["matched_transaction_id"] = None
+        _upload_idempotency.set(idem_key, result)
+        return JSONResponse(
+            content=result, status_code=202, headers={"X-Idempotent-Replay": "true"}
+        )
+
     result = saved.model_dump(mode="json")
-    result["payment_match_status"] = match_status
-    result["matched_transaction_id"] = matched_tx.id if matched_tx and match_status == "matched" else None
+    result["job_status"] = JobStatus.PROCESSING.value
+    result["payment_match_status"] = "processing"
+    result["matched_transaction_id"] = None
     _upload_idempotency.set(idem_key, result)
-    return result
+    return JSONResponse(content=result, status_code=202)
 
 
 # ---------- Reports ----------

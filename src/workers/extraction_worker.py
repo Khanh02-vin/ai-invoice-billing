@@ -1,10 +1,12 @@
 """Extraction worker — background OCR + LLM extraction.
 
 This worker processes invoice extraction asynchronously:
-1. Receive invoice_id + file_path from queue
-2. Run OCR/extraction
-3. Update invoice status in database
-4. Handle failures with retry + dead letter queue
+1. Receive invoice_id + storage_key from queue
+2. Read file from storage
+3. Run OCR/extraction (XML first for e-invoice, then general extractor)
+4. Update invoice status in database
+5. Auto-match against pending payment transactions (unique match only)
+6. Handle failures with retry + dead letter queue
 
 Architecture:
 - Tasks are idempotent (check status before processing)
@@ -15,15 +17,149 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import mimetypes
 import time
 from pathlib import Path
 
 from ..config import get_settings
+from ..domain.models import JobStatus
 from ..extract.extractor import extract_invoice as extract_fn
-from ..store.repository import InvoiceRepository
+from ..extract.xml_parser import parse_xml_invoice
+from ..models import Invoice, InvoiceStatus, InvoiceUpdate
+from ..payments.matching import pick_invoices_decision
+from ..payments.service import match_invoice_saved
+from ..store.sql_repository import (
+    InvoiceRepository,
+    InvoiceTransactionLinkRepository,
+    TransactionRepository,
+)
+from ..store.storage import LocalFileStorage, compute_fingerprint
 from .celery_app import app
 
 logger = logging.getLogger(__name__)
+
+
+def _do_extract(
+    invoice_id: str,
+    storage_key: str,
+    user_id: str = "",
+    db_path: str | None = None,
+    storage_dir: str | None = None,
+    invoice_repo=None,
+    tx_repo=None,
+):
+    """Extract invoice data from file asynchronously (core logic).
+
+    Args:
+        invoice_id: Database record ID
+        storage_key: Storage key of the uploaded file
+        user_id: Owner user ID
+        db_path: Optional database path (defaults to settings)
+        storage_dir: Optional storage dir (defaults to settings)
+        invoice_repo: Optional pre-built InvoiceRepository (for tests)
+        tx_repo: Optional pre-built TransactionRepository (for tests)
+    """
+    if invoice_repo is None:
+        _db_path = db_path or get_settings().database_path
+        invoice_repo = InvoiceRepository(_db_path)
+    if tx_repo is None:
+        _db_path2 = db_path or get_settings().database_path
+        tx_repo = TransactionRepository(_db_path2)
+    link_repo = InvoiceTransactionLinkRepository(tx_repo.db)
+    _storage_dir = storage_dir or get_settings().storage_dir
+    print(f"DEBUG _do_extract: storage_dir_param={storage_dir!r}, get_settings().storage_dir={get_settings().storage_dir!r}, storage_key={storage_key}")
+    storage = LocalFileStorage(_storage_dir)
+
+    existing = invoice_repo.get(invoice_id, user_id=user_id)
+    if not existing:
+        raise ValueError(f"Invoice {invoice_id} does not exist")
+    if existing.job_status in (JobStatus.FINALIZED, JobStatus.FAILED):
+        logger.info(f"Invoice {invoice_id} already processed, skipping")
+        return {"status": "skipped", "reason": "already_processed"}
+
+    # Mark as processing
+    existing.job_status = JobStatus.PROCESSING
+    invoice_repo.upsert(existing)
+
+    try:
+        start_time = time.time()
+
+        # Read file from storage
+        file_bytes = storage.get(storage_key)
+        if file_bytes is None:
+            raise ValueError(f"File {storage_key} not found in storage")
+
+        # Determine MIME type
+        mime_type, _ = mimetypes.guess_type(storage_key)
+        mime_type = mime_type or "application/octet-stream"
+
+        # Try XML first (e-invoice), then fall back to general extractor
+        invoice = None
+        if mime_type in ("application/xml", "text/xml"):
+            invoice = parse_xml_invoice(file_bytes)
+            if invoice:
+                invoice.user_id = user_id
+                invoice.source_file = storage_key
+        if invoice is None:
+            invoice = extract_fn(
+                content=file_bytes,
+                mime_type=mime_type,
+                source_file=storage_key,
+                user_id=user_id,
+            )
+        print(f"DEBUG: invoice.provenance = {invoice.provenance}")
+        if not invoice or not invoice.invoice_number or invoice.total <= 0:
+            raise ValueError("Could not extract valid invoice data")
+
+        # Update existing invoice row with extracted data
+        existing.invoice_number = invoice.invoice_number or existing.invoice_number
+        existing.vendor = invoice.vendor or existing.vendor
+        existing.buyer = invoice.buyer or existing.buyer
+        existing.issue_date = invoice.issue_date or existing.issue_date
+        existing.due_date = invoice.due_date or existing.due_date
+        existing.currency = invoice.currency or existing.currency
+        existing.subtotal = invoice.subtotal or existing.subtotal
+        existing.total = invoice.total or existing.total
+        existing.tax = invoice.tax or existing.tax
+        existing.tax_rate = invoice.tax_rate or existing.tax_rate
+        existing.discount = invoice.discount or existing.discount
+        existing.amount_due = invoice.amount_due or existing.amount_due
+        existing.job_status = JobStatus.REVIEW
+        existing.file_checksum = compute_fingerprint(file_bytes)
+        existing.file_size = len(file_bytes)
+
+        # Convert provenance values to plain dict for JSON serialization
+        prov = {}
+        for k, v in (invoice.provenance or {}).items():
+            prov[k] = v.model_dump() if hasattr(v, "model_dump") else dict(v)
+        existing.provenance = prov
+
+        saved = invoice_repo.upsert(existing)
+
+        # Auto-match against pending payment transactions (unique match only;
+        # ambiguous cases are left pending for user review)
+        saved = invoice_repo.get(invoice_id, user_id=user_id)
+        matched_tx = match_invoice_saved(tx_repo, invoice_repo, saved)
+        if matched_tx:
+            saved = invoice_repo.get(invoice_id, user_id=user_id)
+            saved.job_status = JobStatus.FINALIZED
+            saved.status = InvoiceStatus.PAID
+            invoice_repo.upsert(saved)
+        else:
+            saved = invoice_repo.get(invoice_id, user_id=user_id)
+            saved.job_status = JobStatus.REVIEW
+            invoice_repo.upsert(saved)
+
+        elapsed = time.time() - start_time
+        logger.info(f"Extracted invoice {invoice_id} in {elapsed:.2f}s")
+        return {"status": "success", "invoice_id": invoice_id, "elapsed_seconds": elapsed}
+
+    except Exception as exc:
+        logger.error(f"Extraction failed for {invoice_id}: {exc}")
+        if existing:
+            existing.job_status = JobStatus.FAILED
+            invoice_repo.upsert(existing)
+        raise
 
 
 @app.task(
@@ -36,59 +172,20 @@ logger = logging.getLogger(__name__)
     rate_limit="10/m",  # Max 10 extractions per minute
     priority=0,  # High priority
 )
-def extract_invoice(self, invoice_id: str, file_path: str, user_id: str = ""):
-    """Extract invoice data from file.
-
-    Args:
-        invoice_id: Database record ID
-        file_path: Path to uploaded file
-        user_id: Owner user ID
-    """
-    _db_path = get_settings().database_path
-    repo = InvoiceRepository(_db_path)
-
-    # Idempotency check — skip if already processed
-    existing = repo.get(invoice_id)
-    if not existing:
-        raise ValueError(f"Invoice {invoice_id} does not exist")
-    if existing.job_status.value in ("finalized", "review"):
-        logger.info(f"Invoice {invoice_id} already processed, skipping")
-        return {"status": "skipped", "reason": "already_processed"}
-
-    # Mark as processing by persisting the current record.
-    existing.job_status = "processing"
-    repo.upsert(existing)
-
+def extract_invoice(
+    self,
+    invoice_id: str,
+    storage_key: str,
+    user_id: str = "",
+    db_path: str | None = None,
+    storage_dir: str | None = None,
+    invoice_repo=None,
+    tx_repo=None,
+):
+    """Celery task wrapper around _do_extract()."""
     try:
-        start_time = time.time()
-
-        # Run extraction
-        file_bytes = Path(file_path).read_bytes()
-        invoice = extract_fn(
-            content=file_bytes,
-            mime_type=_guess_mime(file_path),
-            source_file=file_path,
-            user_id=user_id,
-        )
-
-        # Update invoice with extracted data
-        invoice.id = invoice_id
-        invoice.user_id = user_id
-        repo.upsert(invoice)
-        elapsed = time.time() - start_time
-        logger.info(f"Extracted invoice {invoice_id} in {elapsed:.2f}s")
-
-        return {"status": "success", "invoice_id": invoice_id, "elapsed_seconds": elapsed}
-
+        return _do_extract(invoice_id, storage_key, user_id, db_path, storage_dir, invoice_repo, tx_repo)
     except Exception as exc:
-        logger.error(f"Extraction failed for {invoice_id}: {exc}")
-
-        # Update status to failed
-        if existing:
-            existing.job_status = "failed"
-            repo.upsert(existing)
-
-        # Retry with exponential backoff
         raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
 
 
@@ -105,24 +202,25 @@ def extract_batch(self, batch_id: str, file_paths: list, user_id: str):
 
     Args:
         batch_id: Batch record ID
-        file_paths: List of (filename, file_path) tuples
+        file_paths: List of (filename, storage_key) tuples
         user_id: Owner user ID
     """
-    from ..store.repository import InvoiceRepository
-
-    repo = InvoiceRepository()
+    _db_path = get_settings().database_path
+    repo = InvoiceRepository(_db_path)
     results = {"successful": 0, "failed": 0, "errors": []}
 
-    for filename, file_path in file_paths:
+    for filename, storage_key in file_paths:
         try:
             # Create invoice record
-            from ..models import Invoice
-
-            invoice = Invoice(user_id=user_id, source_file=filename, job_status="pending")
+            invoice = Invoice(
+                user_id=user_id,
+                source_file=filename,
+                job_status=JobStatus.PENDING,
+            )
             invoice = repo.upsert(invoice)
 
             # Enqueue extraction
-            extract_invoice.delay(invoice.id, file_path, user_id)
+            extract_invoice.delay(invoice.id, storage_key, user_id)
             results["successful"] += 1
 
         except Exception as exc:
@@ -130,16 +228,3 @@ def extract_batch(self, batch_id: str, file_paths: list, user_id: str):
             results["errors"].append({"file": filename, "error": str(exc)})
 
     return results
-
-
-def _guess_mime(file_path: str) -> str:
-    """Guess MIME type from file extension."""
-    ext = Path(file_path).suffix.lower()
-    mime_map = {
-        ".pdf": "application/pdf",
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".txt": "text/plain",
-    }
-    return mime_map.get(ext, "application/octet-stream")

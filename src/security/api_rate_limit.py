@@ -21,7 +21,7 @@ from fastapi import Depends, Request
 
 from ..config import get_settings
 from ..errors import AppError
-from ..security.rate_limit import RateLimiter, check_rate_limit, get_default_limiter
+from ..security.rate_limit import RateLimiter, get_default_limiter
 
 
 class RateLimitExceeded(AppError):
@@ -157,35 +157,3 @@ def rate_limit_dependency(
         }
 
     return _dependency
-
-
-def rate_limit_headers_middleware(app):
-    """ASGI middleware inject headers rate limit từ scope["state"] vào response.
-
-    Chỉ inject khi dependency đã chạy và lưu rate_limit_info vào scope state.
-    """
-
-    async def middleware(scope, receive, send):
-        if scope["type"] != "http":
-            await app(scope, receive, send)
-            return
-
-        async def send_with_headers(message):
-            if message["type"] == "http.response.start":
-                state = scope.get("state", {})
-                info = state.get("rate_limit_info")
-                if info:
-                    headers = list(message.get("headers", []))
-                    headers.append((b"x-ratelimit-limit", str(info["limit"]).encode()))
-                    headers.append(
-                        (b"x-ratelimit-remaining", str(info["remaining"]).encode())
-                    )
-                    headers.append(
-                        (b"retry-after", str(info["retry_after"]).encode())
-                    )
-                    message["headers"] = headers
-            await send(message)
-
-        await app(scope, receive, send_with_headers)
-
-    return middleware

@@ -13,6 +13,9 @@ from __future__ import annotations
 import os
 import tempfile
 
+os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "1")
+os.environ.setdefault("CELERY_TASK_EAGER_PROPAGATES", "1")
+os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")
 _TMP = tempfile.mkdtemp(prefix="invoice-tests-")
 os.environ["DATABASE_PATH"] = os.path.join(_TMP, "invoices.db")
 os.environ["STORAGE_DIR"] = os.path.join(_TMP, "storage")

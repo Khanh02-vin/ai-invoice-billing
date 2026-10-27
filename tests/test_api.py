@@ -4,40 +4,31 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 from src import app as app_module
-from src.store.repository import InvoiceRepository
-from src.store.users import UserRepository
-from src.store.sql_repository import Database, TransactionRepository, UserRepository as SQLUserRepository
+from src.store.sql_repository import Database, InvoiceRepository, TransactionRepository, UserRepository
 from src.models import User
-
+from src.workers.extraction_worker import _do_extract as extract_task
 
 @pytest.fixture(autouse=True)
-def fresh_db(monkeypatch):
-    """Mỗi test dùng DB :memory: mới. Đăng ký mở cho test."""
+def fresh_db(monkeypatch, tmp_path):
+    """Mỗi test dùng DB tạm mới. Đăng ký mở cho test."""
     monkeypatch.setenv("OPEN_REGISTRATION", "1")
-    app_module.repo = InvoiceRepository(db_path=":memory:")
-    app_module.users = UserRepository(db_path=":memory:")
-    app_db = Database(":memory:")
+    monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
+    app_db = Database(str(tmp_path / "test.db"))
     app_db.create_tables()
+    app_module.repo = InvoiceRepository(app_db)
+    app_module.users = UserRepository(app_db)
     app_module.tx_repo = TransactionRepository(app_db)
+    from src.security.idempotency import InMemoryCache
+    app_module._upload_idempotency = InMemoryCache()
     yield
 
 
 @pytest.fixture()
 def transaction_db(tmp_path):
-    previous = app_module.tx_repo
-    db = Database(str(tmp_path / "payment-transactions.db"))
+    # Use the same database as app_module.repo to avoid cross-database FK issues
+    db = app_module.tx_repo.db
     db.create_tables()
-    import hashlib
-    with db.get_session() as session:
-        session.add_all([
-            User(id=hashlib.md5(username.encode()).hexdigest()[:12], username=username,
-                 password_hash="x" * 60, verified=True)
-            for username in ("kien", "alice", "bob")
-        ])
-        session.commit()
-    app_module.tx_repo = TransactionRepository(db)
     yield db
-    app_module.tx_repo = previous
 
 
 @pytest.fixture()
@@ -113,74 +104,112 @@ def test_invalid_token_rejected(client):
 # ---------- Upload & Extraction ----------
 
 def test_upload_gtgt_full_flow(client):
-    """Upload GTGT → trích xuất → lấy invoice."""
+    """Upload GTGT → trả 202 Processing → worker trích xuất → lấy invoice."""
     token = _register(client)
-    # Tạo file text giả lập
     data = GTGT.encode("utf-8")
     r = client.post(
         "/upload",
         files={"file": ("hoadon.txt", data, "text/plain")},
         headers=_auth(token),
     )
-    assert r.status_code == 200, r.text
+    assert r.status_code == 202, r.text
     inv = r.json()
-    assert inv["invoice_number"] == "00012345"
-    assert inv["vendor"] == "CÔNG TY TNHH ABC"
-    assert inv["total"] == 30900000 or inv["total"] == 30900000.0
+    assert inv["job_status"] == "processing"
+    assert inv["payment_match_status"] == "processing"
+    assert inv["matched_transaction_id"] is None
+    assert inv["invoice_number"] == "unknown"
+    assert inv["vendor"] == "unknown"
+    assert inv["total"] == 0.0
+
+    # Chạy worker trích xuất ngay (eager mode trong test)
+    extract_task(
+        inv["id"], inv["source_file"], inv["user_id"],
+        invoice_repo=app_module.repo, tx_repo=app_module.tx_repo,
+    )
+    inv = app_module.repo.get(inv["id"], user_id=inv["user_id"])
+    assert inv.invoice_number == "00012345"
+    assert inv.vendor == "CÔNG TY TNHH ABC"
+    assert inv.total == 30900000.0
+    assert inv.job_status.value == "review"
 
 
 # ---------- Invoice CRUD ----------
 
 def test_upload_for_selected_transaction_matches_exact_idempotently(client, transaction_db, monkeypatch):
+    """Upload kèm transaction_id → 202 Processing → worker đối chiếu sau."""
     token = _register(client)
     owner_id = app_module.users.get_by_username("kien").id
-    from src.payments import service
-    monkeypatch.setattr(service, "link", lambda tx_repo, invoice_repo, tx, invoice: None)
     tx = app_module.tx_repo.create(__import__("src.models", fromlist=["PaymentTransaction"]).PaymentTransaction(
         id="selected-payment", user_id=owner_id, amount=30900000, currency="VND",
         status=__import__("src.domain.payments", fromlist=["TxStatus"]).TxStatus.PENDING_RECEIPT,
     ))
+    data = GTGT.encode("utf-8")
     r = client.post(
         "/upload?transaction_id=selected-payment",
-        files={"file": ("hoadon.txt", GTGT.encode("utf-8"), "text/plain")},
+        files={"file": ("hoadon.txt", data, "text/plain")},
         headers=_auth(token),
     )
-    assert r.status_code == 200, r.text
-    assert r.json()["payment_match_status"] == "matched"
-    assert r.json()["matched_transaction_id"] == tx.id
-    assert app_module.tx_repo.get(tx.id, owner_id).amount == 30900000
+    assert r.status_code == 202, r.text
+    inv = r.json()
+    assert inv["job_status"] == "processing"
+    assert inv["payment_match_status"] == "processing"
+    assert inv["matched_transaction_id"] is None
+
+    extract_task(
+        inv["id"], inv["source_file"], inv["user_id"],
+        invoice_repo=app_module.repo, tx_repo=app_module.tx_repo,
+    )
+    inv = app_module.repo.get(inv["id"], user_id=inv["user_id"])
+    assert inv.job_status.value == "finalized"
+    assert inv.status.value == "paid"
+    assert app_module.tx_repo.get(tx.id, owner_id).matched_invoice_id == inv.id
+    assert app_module.tx_repo.get(tx.id, owner_id).status.value == "matched"
 
 
 def test_selected_transaction_invoice_amount_mismatch_is_not_linked(client, transaction_db):
+    """Upload kèm transaction_id mismatch → 202 Processing → worker sẽ xử lý sau."""
     token = _register(client)
     owner_id = app_module.users.get_by_username("kien").id
     tx = app_module.tx_repo.create(__import__("src.models", fromlist=["PaymentTransaction"]).PaymentTransaction(
         id="mismatch-payment", user_id=owner_id, amount=100, currency="VND",
     ))
+    data = GTGT.encode("utf-8")
     r = client.post(
         "/upload?transaction_id=mismatch-payment",
-        files={"file": ("hoadon.txt", GTGT.encode("utf-8"), "text/plain")},
+        files={"file": ("hoadon.txt", data, "text/plain")},
         headers=_auth(token),
     )
-    assert r.status_code == 200, r.text
-    assert r.json()["payment_match_status"] == "amount_mismatch"
+    assert r.status_code == 202, r.text
+    inv = r.json()
+    assert inv["job_status"] == "processing"
+    assert inv["payment_match_status"] == "processing"
+    assert inv["matched_transaction_id"] is None
+
+    extract_task(
+        inv["id"], inv["source_file"], inv["user_id"],
+        invoice_repo=app_module.repo, tx_repo=app_module.tx_repo,
+    )
+    inv = app_module.repo.get(inv["id"], user_id=inv["user_id"])
+    assert inv.job_status.value == "review"
+    assert inv.status.value == "unpaid"
     assert app_module.tx_repo.get(tx.id, owner_id).matched_invoice_id is None
 
 
 def test_selected_transaction_upload_rejects_foreign_owner(client, transaction_db):
+    """Upload chọn transaction của user khác → từ chối ngay (không tạo invoice)."""
     token = _register(client, "alice", "pass123456")
     other_token = _register(client, "bob", "pass123456")
     owner_id = app_module.users.get_by_username("alice").id
-    foreign_tx = app_module.tx_repo.create(__import__("src.models", fromlist=["PaymentTransaction"]).PaymentTransaction(
+    app_module.tx_repo.create(__import__("src.models", fromlist=["PaymentTransaction"]).PaymentTransaction(
         id="foreign-payment", user_id=owner_id, amount=10,
     ))
+    data = GTGT.encode("utf-8")
     r = client.post(
         "/upload?transaction_id=foreign-payment",
-        files={"file": ("hoadon.txt", GTGT.encode("utf-8"), "text/plain")},
+        files={"file": ("hoadon.txt", data, "text/plain")},
         headers=_auth(other_token),
     )
-    assert r.status_code == 409
-    assert app_module.tx_repo.get(foreign_tx.id, owner_id).matched_invoice_id is None
+    assert r.status_code == 409, r.text
 
 
 def test_edit_invoice_retries_matching_against_pending_transaction(client, transaction_db):
@@ -207,7 +236,7 @@ def test_edit_invoice_retries_matching_against_pending_transaction(client, trans
     assert response.json()["matched_transaction_id"] == transaction.id
     assert app_module.tx_repo.get(transaction.id, user_id).status.value == "matched"
     assert app_module.repo.get(invoice.id, user_id=user_id).status.value == "paid"
-    app_module.repo = InvoiceRepository(db_path=":memory:")
+    app_module.repo = InvoiceRepository(app_module.tx_repo.db)
     app_module.tx_repo = TransactionRepository(Database(":memory:"))
     app_module.tx_repo.db.create_tables()
 

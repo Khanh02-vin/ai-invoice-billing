@@ -155,6 +155,14 @@ class UserRepository:
                 session.add(token)
                 session.commit()
 
+    def set_verified(self, user_id: str, verified: bool = True):
+        with self.db.get_session() as session:
+            user = session.get(User, user_id)
+            if user:
+                user.verified = verified
+                session.add(user)
+                session.commit()
+
     def create_email_verification(self, user_id: str, token: str, expires_at: str):
         ev = EmailVerification(user_id=user_id, token=token, expires_at=expires_at)
         with self.db.get_session() as session:
@@ -341,18 +349,27 @@ class InvoiceRepository:
                             field=field,
                             old_value=old,
                             new_value=value,
-                            confidence=prov.confidence if prov else None,
-                            source=prov.source if prov else None,
+                            confidence=prov.get("confidence") if prov else None,
+                            source=prov.get("source") if prov else None,
                             corrected_by=user_id,
                             corrected_at=datetime.now(UTC).isoformat(),
                         )
                     )
-                    invoice.provenance[field] = FieldProvenance(
-                        value=value,
-                        confidence=1.0,
-                        source="manual",
-                        evidence=f"user-corrected (was {old!r})",
-                    )
+                    new_prov = {}
+                    for k, v in (invoice.provenance or {}).items():
+                        if hasattr(v, "model_dump"):
+                            new_prov[k] = v.model_dump()
+                        elif isinstance(v, dict):
+                            new_prov[k] = v
+                        else:
+                            new_prov[k] = v
+                    new_prov[field] = {
+                        "value": value,
+                        "confidence": 1.0,
+                        "source": "manual",
+                        "evidence": f"user-corrected (was {old!r})",   # } closes {old!r} inside f-string
+                    }   # <-- THIS } closes { from line 366
+                    invoice.provenance = new_prov
 
             if corrections:
                 invoice.review_history = (invoice.review_history or []) + [

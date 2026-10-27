@@ -4,18 +4,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src import app as app_module
-from src.store.repository import InvoiceRepository
-from src.store.users import UserRepository
-from src.store.sql_repository import Database, TransactionRepository
+from src.store.sql_repository import (
+    Database,
+    InvoiceRepository,
+    TransactionRepository,
+    UserRepository,
+)
+from src.models import User
+from src.workers.extraction_worker import _do_extract as extract_task
 
 
 @pytest.fixture(autouse=True)
-def fresh_db(monkeypatch):
+def fresh_db(monkeypatch, tmp_path):
     monkeypatch.setenv("OPEN_REGISTRATION", "1")
-    app_module.repo = InvoiceRepository(db_path=":memory:")
-    app_module.users = UserRepository(db_path=":memory:")
-    app_db = Database(":memory:")
+    app_db = Database(str(tmp_path / "test.db"))
     app_db.create_tables()
+    app_module.repo = InvoiceRepository(app_db)
+    app_module.users = UserRepository(app_db)
     app_module.tx_repo = TransactionRepository(app_db)
     from src.security.idempotency import InMemoryCache
     app_module._upload_idempotency = InMemoryCache()
@@ -51,18 +56,25 @@ Tổng cộng tiền thanh toán: 20,000,000
 
 def _upload(client, h, name, text):
     r = client.post("/upload", files={"file": (name, text.encode(), "text/plain")}, headers=h)
-    assert r.status_code == 200, r.text
-    return r.json()
+    assert r.status_code == 202, r.text
+    inv = r.json()
+    extract_task(
+        inv["id"], inv["source_file"], inv["user_id"],
+        invoice_repo=app_module.repo, tx_repo=app_module.tx_repo,
+    )
+    return app_module.repo.get(inv["id"], user_id=inv["user_id"])
 
 
 def test_upload_fills_provenance(client):
     """Upload → response có provenance từng field (confidence + source) cho UI review."""
     h = _register(client)
     inv = _upload(client, h, "rev1.txt", SAMPLE)
-    prov = inv["provenance"]
-    assert prov["total"]["source"] == "regex"
-    assert 0 < prov["total"]["confidence"] <= 1
-    assert prov["vendor"]["confidence"] == 0.85      # nhãn "Người bán:" rõ ràng
+    prov = inv.provenance
+    assert prov  # provenance đã được lưu
+    total_prov = prov.get("total", {})
+    assert total_prov.get("source") == "regex", f"total_prov={total_prov}, prov={prov}"
+    assert 0 < total_prov.get("confidence", 0) <= 1
+    assert prov.get("vendor", {}).get("confidence") == 0.85      # nhãn "Nhà bán:" rõ ràng
     assert set(prov) >= {"invoice_number", "vendor", "issue_date", "total"}
 
 
@@ -70,9 +82,9 @@ def test_patch_fields_logs_correction(client):
     """User sửa total → review_history ghi old/new + provenance cũ; provenance mới = manual."""
     h = _register(client)
     inv = _upload(client, h, "rev1.txt", SAMPLE)
-    assert inv["total"] == 2000000.0
+    assert inv.total == 2000000.0
 
-    r = client.put(f"/invoices/{inv['id']}", json={"total": 20000000.0}, headers=h)
+    r = client.put(f"/invoices/{inv.id}", json={"total": 20000000.0}, headers=h)
     assert r.status_code == 200, r.text
     updated = r.json()
     assert updated["total"] == 20000000.0
@@ -90,7 +102,7 @@ def test_patch_fields_logs_correction(client):
     assert updated["provenance"]["total"]["confidence"] == 1.0
 
     # GET lại từ DB — correction đã persist
-    got = client.get(f"/invoices/{inv['id']}", headers=h).json()
+    got = client.get(f"/invoices/{inv.id}", headers=h).json()
     assert got["total"] == 20000000.0
     assert len(got["review_history"]) == 1
 
@@ -99,7 +111,7 @@ def test_patch_unchanged_value_not_logged(client):
     """Gửi lại giá trị cũ (không đổi) → không sinh correction rác cho eval."""
     h = _register(client)
     inv = _upload(client, h, "rev2.txt", SAMPLE_TOTAL_OK)
-    r = client.put(f"/invoices/{inv['id']}", json={"total": 20000000.0}, headers=h)
+    r = client.put(f"/invoices/{inv.id}", json={"total": 20000000.0}, headers=h)
     assert r.status_code == 200
     assert r.json()["review_history"] == []
 
@@ -108,7 +120,7 @@ def test_export_corrections_eval_data(client):
     """GET /eval/corrections → data eval: field, old (máy đọc), new (user sửa), confidence."""
     h = _register(client)
     inv = _upload(client, h, "rev1.txt", SAMPLE)
-    client.put(f"/invoices/{inv['id']}", json={"total": 20000000.0, "vendor": "CÔNG TY XYZ (đúng)"}, headers=h)
+    client.put(f"/invoices/{inv.id}", json={"total": 20000000.0, "vendor": "CÔNG TY XYZ (đúng)"}, headers=h)
 
     r = client.get("/eval/corrections", headers=h)
     assert r.status_code == 200, r.text
@@ -118,17 +130,17 @@ def test_export_corrections_eval_data(client):
     assert by_field["total"]["old_value"] == 2000000.0
     assert by_field["total"]["new_value"] == 20000000.0
     assert by_field["vendor"]["source"] == "regex"
-    assert data[0]["invoice_id"] == inv["id"]
+    assert data[0]["invoice_id"] == inv.id
 
 
 def test_corrections_isolated_between_users(client):
     """Corrections của user A không lộ sang user B."""
     ha = _register(client, "alice")
     inv = _upload(client, ha, "a.txt", SAMPLE)
-    client.put(f"/invoices/{inv['id']}", json={"total": 1.0}, headers=ha)
+    client.put(f"/invoices/{inv.id}", json={"total": 1.0}, headers=ha)
 
     hb = _register(client, "bob")
-    assert client.get(f"/invoices/{inv['id']}", headers=hb).status_code == 404
+    assert client.get(f"/invoices/{inv.id}", headers=hb).status_code == 404
     assert client.get("/eval/corrections", headers=hb).json() == []
 
 
@@ -139,8 +151,8 @@ def test_corrected_invoice_via_worker_path(client):
     from src.domain.models import InvoiceUpdate
     repo = app_module.repo
     uid = app_module.users.get_by_username("reviewer").id
-    updated = repo.update(inv["id"], InvoiceUpdate(issue_date="2026-08-07"), user_id=uid)
+    updated = repo.update(inv.id, InvoiceUpdate(issue_date="2026-08-07"), user_id=uid)
     assert updated.issue_date == "2026-08-07"
-    assert updated.provenance["issue_date"].source == "manual"
+    assert updated.provenance["issue_date"]["source"] == "manual"
     assert len(updated.review_history) == 1
     assert updated.review_history[0]["field"] == "issue_date"
