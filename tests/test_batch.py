@@ -24,14 +24,14 @@ def client(monkeypatch):
 
 
 def test_batch_upload_success(client):
-    """Upload nhiều file — ít nhất 2 file text thành công."""
+    """Upload nhiều file — ít nhất 2 file text thành công (202, extraction inline)."""
     h = _register(client)
     text = "HOÁ ĐƠN GTGT\nSố hóa đơn: 001\nNgười bán: Công ty ABC\nTổng cộng: 1,500,000\nThuế GTGT: 150,000\n"
-    # Upload 2 file text riêng lẻ
+    # Upload 2 file text riêng lẻ (cùng nội dung → checksum dedup gộp về 1 id)
     ok_count = 0
     for name in ("a.txt", "b.txt"):
         resp = client.post("/upload", files={"file": (name, text, "text/plain")}, headers=h)
-        if resp.status_code == 200:
+        if resp.status_code == 202:
             ok_count += 1
     assert ok_count >= 2
 

@@ -131,6 +131,42 @@ export default function Invoices({ user, onLogout }) {
     setView("ledger");
   };
 
+  // Polling job trích xuất bất đồng bộ: upload trả 202 + job_status=processing,
+  // hỏi lại /invoices/{id} mỗi 3s cho tới khi xong (review/finalized) hoặc lỗi.
+  const pollTimers = useRef({});
+  const stopPolling = useCallback((id) => {
+    if (pollTimers.current[id]) {
+      clearInterval(pollTimers.current[id]);
+      delete pollTimers.current[id];
+    }
+  }, []);
+  const pollInvoice = useCallback((id) => {
+    if (pollTimers.current[id]) return;
+    pollTimers.current[id] = setInterval(async () => {
+      try {
+        const fresh = await api(`/invoices/${id}`);
+        if (fresh.job_status && fresh.job_status !== "processing" && fresh.job_status !== "pending") {
+          stopPolling(id);
+          setInvoices((prev) => prev.map((item) => (item.id === id ? { ...item, ...fresh } : item)));
+          setMsg({
+            ok: fresh.job_status !== "failed",
+            text: fresh.job_status === "failed"
+              ? "Không trích xuất được hóa đơn. Vui lòng thử lại với ảnh rõ hơn."
+              : fresh.payment_match_status === "matched"
+                ? "Hóa đơn đã trích xuất xong và được ghép với giao dịch."
+                : "Hóa đơn đã trích xuất xong, hãy kiểm tra thông tin.",
+          });
+        }
+      } catch {
+        stopPolling(id);
+      }
+    }, 3000);
+  }, [stopPolling]);
+  useEffect(() => () => {
+    Object.values(pollTimers.current).forEach(clearInterval);
+    pollTimers.current = {};
+  }, []);
+
   const uploadInvoiceForTransaction = async (file, transactionId) => {
     if (!file || !transactionId) return;
     setSubmitting(true); setError(null);
@@ -138,7 +174,12 @@ export default function Invoices({ user, onLogout }) {
       const form = new FormData(); form.append("file", file);
       const data = await api(`/upload?transaction_id=${encodeURIComponent(transactionId)}`, { method: "POST", body: form });
       setInvoices((prev) => [...prev.filter((item) => item.id !== data.id), data]);
-      setMsg({ ok: true, text: data.payment_match_status === "matched" ? "Đã lưu hóa đơn và ghép với giao dịch đã chọn." : "Đã lưu hóa đơn nhưng chưa ghép được với giao dịch; hãy kiểm tra số tiền." });
+      if (data.job_status === "processing" || data.job_status === "pending") {
+        pollInvoice(data.id);
+        setMsg({ ok: true, text: "Đang xử lý hóa đơn, kết quả sẽ tự cập nhật." });
+      } else {
+        setMsg({ ok: true, text: data.payment_match_status === "matched" ? "Đã lưu hóa đơn và ghép với giao dịch đã chọn." : "Đã lưu hóa đơn nhưng chưa ghép được với giao dịch; hãy kiểm tra số tiền." });
+      }
       loadPendingTx();
     } catch (e) { showErr(e); }
     finally { setSubmitting(false); }
@@ -178,7 +219,12 @@ export default function Invoices({ user, onLogout }) {
         body: form,
       });
       setInvoices((prev) => [...prev, data]);
-      setMsg({ ok: true, text: data.payment_match_status === "matched" ? "Đã lưu hóa đơn và ghép với giao dịch đã chọn." : data.payment_match_status === "amount_mismatch" ? "Đã lưu hóa đơn nhưng số tiền không khớp giao dịch. Giao dịch vẫn đang chờ chứng từ." : "Đã upload hóa đơn" });
+      if (data.job_status === "processing" || data.job_status === "pending") {
+        pollInvoice(data.id);
+        setMsg({ ok: true, text: "Đang xử lý hóa đơn, kết quả sẽ tự cập nhật." });
+      } else {
+        setMsg({ ok: true, text: data.payment_match_status === "matched" ? "Đã lưu hóa đơn và ghép với giao dịch." : data.payment_match_status === "amount_mismatch" ? "Đã lưu hóa đơn nhưng số tiền không khớp giao dịch. Giao dịch vẫn đang chờ chứng từ." : "Đã upload hóa đơn" });
+      }
       loadPendingTx();
     } catch (e) {
       showErr(e);
@@ -192,12 +238,19 @@ export default function Invoices({ user, onLogout }) {
     let active = true;
     setLoading(true);
     api("/invoices")
-      .then((data) => { if (active) setInvoices(data); })
+      .then((data) => {
+        if (!active) return;
+        setInvoices(data);
+        // Hóa đơn còn ở trạng thái đang xử lý (upload lần trước) → polling tiếp
+        (data || []).forEach((inv) => {
+          if (inv.job_status === "processing" || inv.job_status === "pending") pollInvoice(inv.id);
+        });
+      })
       .catch((e) => { if (active) showErr(e); })
       .finally(() => { if (active) setLoading(false); });
     loadPendingTx();
     return () => { active = false; };
-  }, [showErr, loadPendingTx]);
+  }, [showErr, loadPendingTx, pollInvoice]);
 
   // Listen for custom events from components
   useEffect(() => {
@@ -522,9 +575,15 @@ export default function Invoices({ user, onLogout }) {
                                 <td>{i.issue_date || i.created_at?.slice(0, 10) || "-"}</td>
                                 <td>{money(i.currency, i.total)}</td>
                                 <td>
-                                  <span className={`status status-${i.status}`}>
-                                    {STATUS_LABEL[i.status] || i.status}
-                                  </span>
+                                  {i.job_status === "processing" || i.job_status === "pending" ? (
+                                    <span className="status status-processing" title="Máy đang đọc hóa đơn — sẽ tự cập nhật">
+                                      Đang xử lý…
+                                    </span>
+                                  ) : (
+                                    <span className={`status status-${i.status}`}>
+                                      {STATUS_LABEL[i.status] || i.status}
+                                    </span>
+                                  )}
                                 </td>
                                 <td className="col-location">
                                   {i.location_lat && i.location_lon ? (

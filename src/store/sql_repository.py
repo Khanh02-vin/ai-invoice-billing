@@ -15,6 +15,7 @@ from sqlalchemy import func
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from src.models import (
+    ApiKey,
     EmailVerification,
     FieldCorrection,
     FieldProvenance,
@@ -820,6 +821,70 @@ class PushSubscriptionRepository:
                 session.commit()
                 return True
             return False
+
+    def list_for_user(self, user_id: str) -> builtins.list[dict]:
+        """Subscription dict dạng webpush subscription_info (endpoint + keys)."""
+        with self.db.get_session() as session:
+            subs = session.exec(
+                select(PushSubscription).where(PushSubscription.user_id == user_id)
+            ).all()
+            return [
+                {"endpoint": s.endpoint, "keys": {"p256dh": s.p256dh, "auth": s.auth}}
+                for s in subs
+            ]
+
+
+class ApiKeyRepository:
+    """API key bên thứ ba — tra cứu theo hash, không lưu plaintext."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def create(self, key: ApiKey) -> ApiKey:
+        with self.db.get_session() as session:
+            session.add(key)
+            session.commit()
+            session.refresh(key)
+            return key
+
+    def get_by_hash(self, key_hash: str) -> ApiKey | None:
+        with self.db.get_session() as session:
+            return session.exec(select(ApiKey).where(ApiKey.key_hash == key_hash)).first()
+
+    def list_for_user(self, user_id: str) -> builtins.list[ApiKey]:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(ApiKey)
+                .where(ApiKey.user_id == user_id)
+                .order_by(ApiKey.created_at.desc())
+            ).all()
+
+    def get(self, key_id: str, user_id: str) -> ApiKey | None:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(ApiKey).where(ApiKey.id == key_id, ApiKey.user_id == user_id)
+            ).first()
+
+    def revoke(self, key_id: str, user_id: str) -> bool:
+        """Hủy key (soft: is_active=False) — giữ lại để audit."""
+        with self.db.get_session() as session:
+            key = session.exec(
+                select(ApiKey).where(ApiKey.id == key_id, ApiKey.user_id == user_id)
+            ).first()
+            if not key:
+                return False
+            key.is_active = False
+            session.add(key)
+            session.commit()
+            return True
+
+    def touch_last_used(self, key_id: str) -> None:
+        with self.db.get_session() as session:
+            key = session.exec(select(ApiKey).where(ApiKey.id == key_id)).first()
+            if key:
+                key.last_used_at = datetime.now(UTC)
+                session.add(key)
+                session.commit()
 
 
 # Initialize database

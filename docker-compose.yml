@@ -40,7 +40,9 @@ services:
       DATABASE_PATH: /app/data/invoices.db
       REDIS_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-      WORKER_ENABLED: "0"
+      # "1" = /upload đẩy extraction vào Celery (trả 202 + client polling);
+      # worker service bên dưới xử lý. Broker chết → tự fallback chạy đồng bộ.
+      WORKER_ENABLED: "1"
       PORT: "8000"
       BILLING_PROVIDER: ${BILLING_PROVIDER:-mock}  # mock|stripe|paddle (mock is safe non-secret default)
     volumes:
@@ -79,6 +81,9 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-production}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      # Phải trùng DATABASE_PATH của backend (volume chung) — nếu không worker
+      # đọc/ghi nhầm file invoices.db khác và hóa đơn không bao giờ được cập nhật.
+      DATABASE_PATH: /app/data/invoices.db
       STORAGE_DIR: /app/data/storage
       REDIS_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1

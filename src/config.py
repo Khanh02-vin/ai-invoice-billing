@@ -122,6 +122,11 @@ class Settings:
         default_factory=lambda: int(os.getenv("UPLOAD_TIMEOUT_SECONDS", "60"))
     )
 
+    # Extraction worker: WORKER_ENABLED=1 -> đẩy trích xuất vào hàng đợi Celery
+    # (cần Redis broker, client polling). Mặc định chạy đồng bộ trong request
+    # (fallback cho dev/test/API-only, không cần broker).
+    worker_enabled: bool = field(default_factory=lambda: _bool_env("WORKER_ENABLED", default=False))
+
     # Rate limiting (sliding window, per endpoint policy)
     # Format for env: RL_AUTH_LOGIN=5:60 means 5 requests per 60 seconds.
     rate_limit_auth_login: str = field(

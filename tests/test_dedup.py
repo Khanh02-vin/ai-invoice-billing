@@ -100,13 +100,13 @@ def _register(c, username: str) -> dict:
 
 
 def test_upload_same_file_twice_one_invoice(client):
-    """Cùng nội dung, tên file khác nhau → vẫn1 hóa đơn, id giữ nguyên."""
+    """Cùng nội dung, tên file khác nhau → vẫn 1 hóa đơn, id giữ nguyên."""
     h = _register(client, "dedup_user")
     data = BILL.encode("utf-8")
     r1 = client.post("/upload", files={"file": ("bill.txt", data, "text/plain")}, headers=h)
     r2 = client.post("/upload", files={"file": ("bill-copy.txt", data, "text/plain")}, headers=h)
-    assert r1.status_code == 200, r1.text
-    assert r2.status_code == 200, r2.text
+    assert r1.status_code == 202, r1.text
+    assert r2.status_code == 202, r2.text
     assert r1.json()["id"] == r2.json()["id"]
     assert len(client.get("/invoices", headers=h).json()) == 1
 

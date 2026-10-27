@@ -322,6 +322,24 @@ class RefreshToken(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class ApiKey(SQLModel, table=True):
+    """API key cho bên thứ ba — DB chỉ lưu hash; plaintext trả về 1 lần lúc tạo."""
+
+    __tablename__ = "api_keys"
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    name: str = ""
+    key_hash: str = Field(unique=True, index=True)
+    key_prefix: str = ""  # "sk_live_ab12…" — hiển thị trong danh sách, không dùng xác thực
+    scopes: str = ""  # "invoices:read,payments:read"
+    rate_limit_per_min: int = 60
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 # --- Pydantic Models for API (request/response) ---
 class UserCreate(SQLModel):
     username: str = Field(min_length=3, max_length=64)
@@ -384,6 +402,32 @@ class MonthlyReport(SQLModel):
     paid_amount: float = 0.0
     unpaid_amount: float = 0.0
     paid_count: int = 0
+
+
+# --- API Keys (bên thứ ba) ---
+class ApiKeyCreate(SQLModel):
+    name: str = Field(min_length=1, max_length=100)
+    scopes: list[str] = Field(default_factory=lambda: ["invoices:read"])
+    rate_limit_per_min: int = Field(default=60, ge=1, le=1000)
+    expires_at: datetime | None = None
+
+
+class ApiKeyPublic(SQLModel):
+    id: str
+    name: str
+    key_prefix: str
+    scopes: list[str]
+    rate_limit_per_min: int
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+    is_active: bool = True
+    created_at: datetime
+
+
+class ApiKeyCreated(ApiKeyPublic):
+    """Response khi tạo key — plaintext `key` chỉ trả về đúng 1 lần này."""
+
+    key: str
 
 
 # --- Payment Event (for parsing) ---

@@ -25,10 +25,11 @@ from ..config import get_settings
 from ..domain.models import JobStatus
 from ..extract.extractor import extract_invoice as extract_fn
 from ..extract.xml_parser import parse_xml_invoice
-from ..models import Invoice, InvoiceStatus, InvoiceUpdate
+from ..models import Invoice, InvoiceStatus, InvoiceUpdate, TxStatus
 from ..payments.matching import pick_invoices_decision
 from ..payments.service import match_invoice_saved
 from ..store.sql_repository import (
+    Database,
     InvoiceRepository,
     InvoiceTransactionLinkRepository,
     TransactionRepository,
@@ -47,6 +48,8 @@ def _do_extract(
     storage_dir: str | None = None,
     invoice_repo=None,
     tx_repo=None,
+    transaction_id: str = "",
+    mark_failed_on_error: bool = True,
 ):
     """Extract invoice data from file asynchronously (core logic).
 
@@ -58,13 +61,17 @@ def _do_extract(
         storage_dir: Optional storage dir (defaults to settings)
         invoice_repo: Optional pre-built InvoiceRepository (for tests)
         tx_repo: Optional pre-built TransactionRepository (for tests)
+        transaction_id: Explicitly selected transaction (POST /upload?transaction_id=).
+            Ưu tiên ghép với giao dịch này; không khớp số tiền thì không ghép gì.
+        mark_failed_on_error: Đánh dấu FAILED ngay khi lỗi. Celery task truyền False
+            (FAILED chỉ đặt khi HẾT lượt retry, để các lần retry chạy lại được).
     """
     if invoice_repo is None:
         _db_path = db_path or get_settings().database_path
-        invoice_repo = InvoiceRepository(_db_path)
+        invoice_repo = InvoiceRepository(Database(_db_path))
     if tx_repo is None:
         _db_path2 = db_path or get_settings().database_path
-        tx_repo = TransactionRepository(_db_path2)
+        tx_repo = TransactionRepository(Database(_db_path2))
     link_repo = InvoiceTransactionLinkRepository(tx_repo.db)
     _storage_dir = storage_dir or get_settings().storage_dir
     print(f"DEBUG _do_extract: storage_dir_param={storage_dir!r}, get_settings().storage_dir={get_settings().storage_dir!r}, storage_key={storage_key}")
@@ -136,19 +143,52 @@ def _do_extract(
 
         saved = invoice_repo.upsert(existing)
 
-        # Auto-match against pending payment transactions (unique match only;
-        # ambiguous cases are left pending for user review)
-        saved = invoice_repo.get(invoice_id, user_id=user_id)
-        matched_tx = match_invoice_saved(tx_repo, invoice_repo, saved)
-        if matched_tx:
-            saved = invoice_repo.get(invoice_id, user_id=user_id)
-            saved.job_status = JobStatus.FINALIZED
-            saved.status = InvoiceStatus.PAID
-            invoice_repo.upsert(saved)
+        # Đối soát: transaction_id chọn tường minh có quyền ưu tiên (giữ hợp đồng
+        # cũ của POST /upload?transaction_id= — khớp số tiền thì link, lệch thì
+        # để giao dịch tiếp tục chờ). Không chọn thì tự ghép giao dịch pending
+        # duy nhất; ambiguous/none -> để người dùng chọn thủ công.
+        matched_tx = None
+        if transaction_id:
+            from ..payments.matching import amounts_match
+            from ..payments.service import link
+
+            tx = tx_repo.get(transaction_id, user_id=user_id)
+            if (
+                tx
+                and getattr(tx.status, "value", tx.status) == TxStatus.PENDING_RECEIPT.value
+                and amounts_match(tx.amount, tx.currency, saved.total, saved.currency)
+            ):
+                link(tx_repo, invoice_repo, tx, saved)
+                matched_tx = tx
         else:
-            saved = invoice_repo.get(invoice_id, user_id=user_id)
-            saved.job_status = JobStatus.REVIEW
-            invoice_repo.upsert(saved)
+            matched_tx = match_invoice_saved(tx_repo, invoice_repo, saved)
+
+        saved = invoice_repo.get(invoice_id, user_id=user_id)
+        saved.job_status = JobStatus.FINALIZED if matched_tx else JobStatus.REVIEW
+        invoice_repo.upsert(saved)
+
+        # Web Push best-effort sau khi trích xuất xong (thiếu VAPID -> im lặng):
+        # đã ghép -> báo matched; chưa -> nhắc vào review các trường máy đọc.
+        try:
+            from ..push import send_push_to_user
+
+            amount = f"{saved.total:,.0f} {saved.currency}"
+            if matched_tx:
+                send_push_to_user(
+                    user_id,
+                    f"Hóa đơn {saved.invoice_number} đã được ghép tự động",
+                    f"Đã đối soát với giao dịch {amount}. Mở app để xem chi tiết.",
+                    url="/",
+                )
+            else:
+                send_push_to_user(
+                    user_id,
+                    f"Hóa đơn {saved.invoice_number} cần bạn kiểm tra",
+                    f"{saved.vendor}: {amount}. Kiểm tra các trường máy đọc rồi xác nhận.",
+                    url="/",
+                )
+        except Exception:
+            logger.exception("Push sau extraction thất bại cho %s", invoice_id)
 
         elapsed = time.time() - start_time
         logger.info(f"Extracted invoice {invoice_id} in {elapsed:.2f}s")
@@ -156,10 +196,25 @@ def _do_extract(
 
     except Exception as exc:
         logger.error(f"Extraction failed for {invoice_id}: {exc}")
-        if existing:
-            existing.job_status = JobStatus.FAILED
-            invoice_repo.upsert(existing)
+        if mark_failed_on_error and existing:
+            try:
+                existing.job_status = JobStatus.FAILED
+                invoice_repo.upsert(existing)
+            except Exception:
+                logger.exception("Không đánh dấu được FAILED cho %s", invoice_id)
         raise
+
+
+def _set_job_status(invoice_id: str, status: JobStatus) -> None:
+    """Cập nhật job_status bằng repo riêng (dùng trong wrapper task, sau khi lỗi)."""
+    try:
+        repo = InvoiceRepository(Database(get_settings().database_path))
+        inv = repo.get(invoice_id)
+        if inv:
+            inv.job_status = status
+            repo.upsert(inv)
+    except Exception:
+        logger.exception("Không cập nhật được job_status=%s cho %s", status, invoice_id)
 
 
 @app.task(
@@ -181,12 +236,25 @@ def extract_invoice(
     storage_dir: str | None = None,
     invoice_repo=None,
     tx_repo=None,
+    transaction_id: str = "",
 ):
-    """Celery task wrapper around _do_extract()."""
+    """Celery task wrapper around _do_extract().
+
+    Retry với backoff; invoice chỉ đánh dấu FAILED khi HẾT lượt retry (các lần
+    retry giữa chừng giữ PROCESSING để chạy lại được — tránh bị skip vì FAILED).
+    """
     try:
-        return _do_extract(invoice_id, storage_key, user_id, db_path, storage_dir, invoice_repo, tx_repo)
+        return _do_extract(
+            invoice_id, storage_key, user_id, db_path, storage_dir,
+            invoice_repo, tx_repo,
+            transaction_id=transaction_id,
+            mark_failed_on_error=False,
+        )
     except Exception as exc:
-        raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
+        if self.request.retries < (self.max_retries or 0):
+            raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
+        _set_job_status(invoice_id, JobStatus.FAILED)
+        raise
 
 
 @app.task(
@@ -206,7 +274,7 @@ def extract_batch(self, batch_id: str, file_paths: list, user_id: str):
         user_id: Owner user ID
     """
     _db_path = get_settings().database_path
-    repo = InvoiceRepository(_db_path)
+    repo = InvoiceRepository(Database(_db_path))
     results = {"successful": 0, "failed": 0, "errors": []}
 
     for filename, storage_key in file_paths:

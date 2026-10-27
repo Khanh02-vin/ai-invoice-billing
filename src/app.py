@@ -50,6 +50,7 @@ from .models import Invoice, TxDirection, TxStatus, User
 from .observability import metrics as obs_metrics
 from .routers.auth_ext import router as auth_ext_router
 from .routers.auth_ext import send_verification_email
+from .routers.api_keys import router as api_keys_router
 from .routers.payments import router as payments_router
 from .routers.push import router as push_router
 from .routers.search import router as search_router
@@ -61,8 +62,10 @@ from .security.api_rate_limit import (
     rate_limit_dependency,
 )
 from .store.sql_repository import (
+    ApiKeyRepository,
     DuplicateInvoiceError,
     InvoiceRepository,
+    InvoiceTransactionLinkRepository,
     PushSubscriptionRepository,
     TransactionRepository,
     UserRepository,
@@ -118,6 +121,7 @@ app.include_router(search_router)
 app.include_router(auth_ext_router)
 app.include_router(push_router)
 app.include_router(payments_router)
+app.include_router(api_keys_router)
 
 # --- IMAP poller (tùy chọn): đọc email báo giao dịch bank/ví -> /payments/ingest ---
 # Chỉ chạy khi cấu hình IMAP_HOST + IMAP_USER; app vẫn boot bình thường khi thiếu.
@@ -142,6 +146,7 @@ repo = InvoiceRepository(db)
 users = UserRepository(db)
 tx_repo = TransactionRepository(db)
 push_repo = PushSubscriptionRepository(db)
+api_keys_repo = ApiKeyRepository(db)
 
 
 # --- Observability (Phase 4) ---
@@ -150,8 +155,21 @@ async def metrics_endpoint():
     return obs_metrics.metrics_response()
 
 
-def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> User:
-    """Resolve the canonical user and require verified email for protected routes."""
+def current_user(
+    request: Request, credentials: HTTPAuthorizationCredentials = Depends(bearer)
+) -> User:
+    """Resolve user từ JWT bearer, hoặc X-API-Key cho bên thứ ba (có scope).
+
+    X-API-Key có mặt -> xác thực qua src/security/api_keys.py (scope theo
+    method+path, rate limit per key); key gắn với đúng 1 user. Route ngoài
+    SCOPE_RULES bị chặn 403 với API key, JWT không bị ảnh hưởng.
+    """
+    from .security.api_keys import user_from_api_key
+
+    api_key_user = user_from_api_key(request, users, api_keys_repo)
+    if api_key_user is not None:
+        return api_key_user
+
     if not credentials:
         raise AppError("UNAUTHORIZED", "Cần đăng nhập.", status=401)
     user_id = decode_token(credentials.credentials)
@@ -350,6 +368,39 @@ async def export_corrections(limit: int = 500, user: User = Depends(current_user
 
 
 # ---------- Upload + Extraction ----------
+def _upload_result(inv: Invoice, transaction_id: str | None) -> dict:
+    """Payload /upload: invoice dump + trạng thái job + trạng thái đối soát.
+
+    job chưa chạy/xong đang chạy -> "processing"; lỗi extraction -> "failed";
+    extraction xong -> matched/amount_mismatch/unmatched theo link trong DB.
+    """
+    result = inv.model_dump(mode="json")
+    result["job_status"] = inv.job_status.value
+    if inv.job_status in (JobStatus.PENDING, JobStatus.PROCESSING):
+        result["payment_match_status"], result["matched_transaction_id"] = "processing", None
+    elif inv.job_status == JobStatus.FAILED:
+        result["payment_match_status"], result["matched_transaction_id"] = "failed", None
+    elif transaction_id:
+        tx = tx_repo.get(transaction_id, inv.user_id)
+        if tx and tx.matched_invoice_id == inv.id:
+            result["payment_match_status"], result["matched_transaction_id"] = "matched", tx.id
+        else:
+            result["payment_match_status"], result["matched_transaction_id"] = (
+                "amount_mismatch",
+                None,
+            )
+    else:
+        links = InvoiceTransactionLinkRepository(tx_repo.db).list_for_invoice(inv.id, inv.user_id)
+        if links:
+            result["payment_match_status"], result["matched_transaction_id"] = (
+                "matched",
+                links[0].transaction_id,
+            )
+        else:
+            result["payment_match_status"], result["matched_transaction_id"] = "unmatched", None
+    return result
+
+
 @app.post("/upload")
 async def upload_invoice(
     file: UploadFile = File(...),
@@ -376,9 +427,14 @@ async def upload_invoice(
     cached = _upload_idempotency.get(idem_key)
     if cached:
         invoice_id = cached.get("id")
-        if invoice_id and repo.get(invoice_id, user_id=user.id):
+        inv = repo.get(invoice_id, user_id=user.id) if invoice_id else None
+        if inv is not None:
+            # Trả trạng thái hiện tại trong DB (replay cũ có thể nói "processing"
+            # trong khi worker đã xong).
             return JSONResponse(
-                content=cached, status_code=200, headers={"X-Idempotent-Replay": "true"}
+                content=_upload_result(inv, transaction_id),
+                status_code=200,
+                headers={"X-Idempotent-Replay": "true"},
             )
 
     # Validate upload
@@ -435,35 +491,34 @@ async def upload_invoice(
             details={"existing_id": e.existing_id},
         )
 
-    # Đẩy tác vụ trích xuất vào hàng đợi Celery (xử lý bất đồng bộ).
-    try:
-        from .workers.extraction_worker import _do_extract as extract_task
+    # Trích xuất: WORKER_ENABLED=1 -> đẩy task Celery và trả 202 "processing"
+    # ngay (client polling /invoices/{id}); không thì chạy đồng bộ tại đây và
+    # trả trạng thái thật (fallback cho dev/test/API-only không cần broker).
+    enqueued = False
+    if get_settings().worker_enabled:
+        try:
+            from .workers.extraction_worker import extract_invoice
 
-        extract_task(
-            saved.id, storage_key, user.id,
-            invoice_repo=repo, tx_repo=tx_repo,
-            db_path=settings.database_path,
-            storage_dir=storage_dir,
-        )
-    except Exception:
-        # Nếu worker không khả dụng, đánh dấu thất bại để người dùng biết.
-        saved.job_status = JobStatus.FAILED
-        repo.update(
-            saved.id, InvoiceUpdate(job_status=JobStatus.FAILED), user_id=user.id
-        )
-        result = saved.model_dump(mode="json")
-        result["job_status"] = JobStatus.FAILED.value
-        result["payment_match_status"] = "failed"
-        result["matched_transaction_id"] = None
-        _upload_idempotency.set(idem_key, result)
-        return JSONResponse(
-            content=result, status_code=202, headers={"X-Idempotent-Replay": "true"}
-        )
+            extract_invoice.delay(saved.id, storage_key, user.id, transaction_id or "")
+            enqueued = True
+        except Exception:
+            logger.warning("upload: không enqueue được Celery task, chuyển sang chạy đồng bộ")
 
-    result = saved.model_dump(mode="json")
-    result["job_status"] = JobStatus.PROCESSING.value
-    result["payment_match_status"] = "processing"
-    result["matched_transaction_id"] = None
+    if not enqueued:
+        try:
+            from .workers.extraction_worker import _do_extract
+
+            _do_extract(
+                saved.id, storage_key, user.id,
+                invoice_repo=repo, tx_repo=tx_repo,
+                db_path=settings.database_path, storage_dir=storage_dir,
+                transaction_id=transaction_id or "",
+            )
+        except Exception:
+            # _do_extract đã tự đánh dấu FAILED; trả trạng thái thật bên dưới.
+            logger.exception("upload: extraction đồng bộ thất bại cho %s", saved.id)
+
+    result = _upload_result(repo.get(saved.id, user_id=user.id) or saved, transaction_id)
     _upload_idempotency.set(idem_key, result)
     return JSONResponse(content=result, status_code=202)
 

@@ -20,7 +20,7 @@ from math import isfinite
 
 import httpx
 from cryptography.fernet import Fernet
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, model_validator
@@ -80,7 +80,24 @@ def _get_db() -> Database:
     return _db
 
 
-def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> User:
+def current_user(
+    request: Request, credentials: HTTPAuthorizationCredentials = Depends(bearer)
+) -> User:
+    # X-API-Key (bên thứ ba, scope payments:read/write) — chung helper với app.py
+    from ..security.api_keys import user_from_api_key
+
+    try:
+        api_repo = getattr(_app_module(), "api_keys_repo", None)
+        app_users = getattr(_app_module(), "users", None)
+        if api_repo is not None and app_users is not None:
+            api_key_user = user_from_api_key(request, app_users, api_repo)
+            if api_key_user is not None:
+                return api_key_user
+    except AppError:
+        raise
+    except Exception:
+        pass
+
     if not credentials:
         raise AppError("UNAUTHORIZED", "Cần đăng nhập.", status=401)
     user_id = decode_token(credentials.credentials)
