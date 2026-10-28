@@ -92,9 +92,10 @@ if Celery is not None:
     )
 
 # ---------------------------------------------------------------------------
-# Auto-discover tasks
+# Task registration — import tường minh (autodiscover chỉ tìm module tên
+# tasks.py nên bỏ sót extraction_worker, task vào queue mà không ai nhận).
 # ---------------------------------------------------------------------------
-app.autodiscover_tasks(["src.workers"])
+app.conf.update(imports=("src.workers.extraction_worker",))
 
 
 # ---------------------------------------------------------------------------
