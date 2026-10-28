@@ -12,7 +12,7 @@ import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 
 import logging
 
@@ -51,6 +51,7 @@ from .observability import metrics as obs_metrics
 from .routers.auth_ext import router as auth_ext_router
 from .routers.auth_ext import send_verification_email
 from .routers.api_keys import router as api_keys_router
+from .routers.organizations import router as organizations_router
 from .routers.payments import router as payments_router
 from .routers.push import router as push_router
 from .routers.search import router as search_router
@@ -66,6 +67,7 @@ from .store.sql_repository import (
     DuplicateInvoiceError,
     InvoiceRepository,
     InvoiceTransactionLinkRepository,
+    OrganizationRepository,
     PushSubscriptionRepository,
     TransactionRepository,
     UserRepository,
@@ -122,6 +124,7 @@ app.include_router(auth_ext_router)
 app.include_router(push_router)
 app.include_router(payments_router)
 app.include_router(api_keys_router)
+app.include_router(organizations_router)
 
 # --- IMAP poller (tùy chọn): đọc email báo giao dịch bank/ví -> /payments/ingest ---
 # Chỉ chạy khi cấu hình IMAP_HOST + IMAP_USER; app vẫn boot bình thường khi thiếu.
@@ -147,6 +150,7 @@ users = UserRepository(db)
 tx_repo = TransactionRepository(db)
 push_repo = PushSubscriptionRepository(db)
 api_keys_repo = ApiKeyRepository(db)
+orgs_repo = OrganizationRepository(db)
 
 
 # --- Observability (Phase 4) ---
@@ -179,6 +183,33 @@ def current_user(
     if not user.verified:
         raise AppError("EMAIL_NOT_VERIFIED", "Vui lòng xác minh email trước.", status=403)
     return user
+
+
+class OrgContext(NamedTuple):
+    """Ngữ cảnh org của request (X-Organization-Id)."""
+
+    id: str
+    role: str
+
+    @property
+    def can_write(self) -> bool:
+        return self.role in ("owner", "admin", "member")
+
+
+def current_organization(request: Request, user: User = Depends(current_user)) -> OrgContext | None:
+    """Org context của request; None = ngữ cảnh cá nhân (spec multi-tenant mục 4).
+
+    Header X-Organization-Id có mặt -> kiểm org tồn tại (404) + membership (403).
+    """
+    org_id = request.headers.get("X-Organization-Id")
+    if not org_id:
+        return None
+    if not orgs_repo.get(org_id):
+        raise AppError("NOT_FOUND", "Không tìm thấy tổ chức.", status=404)
+    membership = orgs_repo.get_membership(org_id, user.id)
+    if not membership:
+        raise AppError("FORBIDDEN", "Bạn không phải thành viên tổ chức này.", status=403)
+    return OrgContext(id=org_id, role=membership.role)
 
 
 # ---------- Health / Readiness ----------
@@ -276,23 +307,39 @@ def _can_access(invoice: Invoice, user: User) -> bool:
 
 @app.get("/invoices", response_model=List[Invoice])
 async def list_invoices(
-    status: InvoiceStatus | None = None, limit: int = 100, user: User = Depends(current_user)
+    status: InvoiceStatus | None = None,
+    limit: int = 100,
+    user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
 ):
-    return repo.list(user_id=user.id, status=status, limit=limit)
+    return repo.list(
+        user_id=user.id, status=status, limit=limit,
+        organization_id=org.id if org else None,
+    )
 
 
 @app.get("/invoices/{invoice_id}", response_model=Invoice)
-async def get_invoice(invoice_id: str, user: User = Depends(current_user)):
-    invoice = repo.get(invoice_id, user_id=user.id)
+async def get_invoice(
+    invoice_id: str,
+    user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
+):
+    invoice = repo.get(invoice_id, user_id=user.id, organization_id=org.id if org else None)
     if not invoice:
         raise AppError("NOT_FOUND", "Không tìm thấy hóa đơn.", status=404)
     return invoice
 
 
 @app.post("/invoices", response_model=Invoice)
-async def create_invoice(data: InvoiceCreate, user: User = Depends(current_user)):
+async def create_invoice(
+    data: InvoiceCreate,
+    user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
+):
+    if org and not org.can_write:
+        raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
     try:
-        invoice = repo.create(data, user_id=user.id)
+        invoice = repo.create(data, user_id=user.id, organization_id=org.id if org else None)
     except (DuplicateInvoiceError, LegacyDuplicateInvoiceError) as e:
         raise AppError(
             "DUPLICATE_INVOICE",
@@ -300,17 +347,29 @@ async def create_invoice(data: InvoiceCreate, user: User = Depends(current_user)
             status=409,
             details={"existing_id": e.existing_id},
         )
-    # Giao dịch đã đến trước? Ghép ngay nếu số tiền khớp
-    match_invoice_saved(tx_repo, repo, invoice)
+    # Giao dịch đã đến trước? Ghép ngay nếu số tiền khớp — reload để response
+    # phản ánh trạng thái PAID sau khi link (object create là bản chưa ghép).
+    matched_tx = match_invoice_saved(tx_repo, repo, invoice)
+    if matched_tx:
+        invoice = repo.get(invoice.id, user_id=user.id, organization_id=org.id if org else None)
     return invoice
 
 
 @app.put("/invoices/{invoice_id}")
-async def update_invoice(invoice_id: str, data: InvoiceUpdate, user: User = Depends(current_user)):
-    invoice = repo.get(invoice_id, user_id=user.id)
+async def update_invoice(
+    invoice_id: str,
+    data: InvoiceUpdate,
+    user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
+):
+    if org and not org.can_write:
+        raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
+    invoice = repo.get(invoice_id, user_id=user.id, organization_id=org.id if org else None)
     if not invoice:
         raise AppError("NOT_FOUND", "Không tìm thấy hóa đơn.", status=404)
-    updated = repo.update(invoice_id, data, user_id=user.id)
+    updated = repo.update(
+        invoice_id, data, user_id=user.id, organization_id=org.id if org else None
+    )
     if not updated:
         raise AppError("UPDATE_FAILED", "Cập nhật thất bại.", status=400)
     matched_tx = None
@@ -323,33 +382,49 @@ async def update_invoice(invoice_id: str, data: InvoiceUpdate, user: User = Depe
 
 
 @app.delete("/invoices/{invoice_id}")
-async def delete_invoice(invoice_id: str, user: User = Depends(current_user)):
-    invoice = repo.get(invoice_id, user_id=user.id)
+async def delete_invoice(
+    invoice_id: str,
+    user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
+):
+    if org and not org.can_write:
+        raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
+    invoice = repo.get(invoice_id, user_id=user.id, organization_id=org.id if org else None)
     if not invoice:
         raise AppError("NOT_FOUND", "Không tìm thấy hóa đơn.", status=404)
-    repo.delete(invoice_id, user_id=user.id)
+    repo.delete(invoice_id, user_id=user.id, organization_id=org.id if org else None)
     return {"deleted": True}
 
 
 # ---------- Review: user sửa field máy đọc sai → data eval ----------
 @app.get("/invoices/{invoice_id}/corrections", response_model=List[FieldCorrection])
-async def list_corrections(invoice_id: str, user: User = Depends(current_user)):
+async def list_corrections(
+    invoice_id: str,
+    user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
+):
     """Lịch sử sửa field của 1 hóa đơn (old→new + provenance lúc máy đọc)."""
-    invoice = repo.get(invoice_id, user_id=user.id)
+    invoice = repo.get(invoice_id, user_id=user.id, organization_id=org.id if org else None)
     if not invoice:
         raise AppError("NOT_FOUND", "Không tìm thấy hóa đơn.", status=404)
     return [FieldCorrection(**c) for c in invoice.review_history]
 
 
 @app.get("/eval/corrections", response_model=List[FieldCorrection])
-async def export_corrections(limit: int = 500, user: User = Depends(current_user)):
+async def export_corrections(
+    limit: int = 500,
+    user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
+):
     """Export toàn bộ corrections của user — data eval cho benchmark.
 
     Mỗi dòng: field, old_value (máy đọc), new_value (user sửa = ground truth),
     confidence/source lúc máy đọc → đo được ngưỡng nào là đáng ngờ.
     """
     out: List[FieldCorrection] = []
-    for inv in repo.list(user_id=user.id, limit=1000):
+    for inv in repo.list(
+        user_id=user.id, limit=1000, organization_id=org.id if org else None
+    ):
         for c in inv.review_history:
             out.append(
                 FieldCorrection(
@@ -390,7 +465,10 @@ def _upload_result(inv: Invoice, transaction_id: str | None) -> dict:
                 None,
             )
     else:
-        links = InvoiceTransactionLinkRepository(tx_repo.db).list_for_invoice(inv.id, inv.user_id)
+        # Link stamp theo user của transaction — org context tra không lọc user
+        links = InvoiceTransactionLinkRepository(tx_repo.db).list_for_invoice(
+            inv.id, "" if inv.organization_id else inv.user_id
+        )
         if links:
             result["payment_match_status"], result["matched_transaction_id"] = (
                 "matched",
@@ -407,12 +485,16 @@ async def upload_invoice(
     request: Request = None,
     transaction_id: str | None = None,
     user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
 ):
     """Upload file hóa đơn → validate → trích xuất → lưu."""
+    if org and not org.can_write:
+        raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
+    org_id = org.id if org else None
     content = await file.read()
 
     if transaction_id:
-        pending = tx_repo.get(transaction_id, user.id)
+        pending = tx_repo.get(transaction_id, user.id, organization_id=org_id)
         if not pending:
             raise AppError("TRANSACTION_NOT_PENDING", "Không tìm thấy giao dịch đã chọn.", status=409)
 
@@ -424,10 +506,13 @@ async def upload_invoice(
         )
     if transaction_id:
         idem_key = f"{idem_key}:{transaction_id}"
+    if org:
+        # Cùng file upload vào org khác nhau là 2 hóa đơn riêng
+        idem_key = f"{idem_key}:org:{org_id}"
     cached = _upload_idempotency.get(idem_key)
     if cached:
         invoice_id = cached.get("id")
-        inv = repo.get(invoice_id, user_id=user.id) if invoice_id else None
+        inv = repo.get(invoice_id, user_id=user.id, organization_id=org_id) if invoice_id else None
         if inv is not None:
             # Trả trạng thái hiện tại trong DB (replay cũ có thể nói "processing"
             # trong khi worker đã xong).
@@ -479,6 +564,7 @@ async def upload_invoice(
         page_count=validated.page_count,
         extraction_provider="",
         review_history=[],
+        organization_id=org_id,
     )
     try:
         saved = repo.upsert(invoice)
@@ -499,7 +585,9 @@ async def upload_invoice(
         try:
             from .workers.extraction_worker import extract_invoice
 
-            extract_invoice.delay(saved.id, storage_key, user.id, transaction_id or "")
+            extract_invoice.delay(
+                saved.id, storage_key, user.id, transaction_id or "", org_id
+            )
             enqueued = True
         except Exception:
             logger.warning("upload: không enqueue được Celery task, chuyển sang chạy đồng bộ")
@@ -513,35 +601,47 @@ async def upload_invoice(
                 invoice_repo=repo, tx_repo=tx_repo,
                 db_path=settings.database_path, storage_dir=storage_dir,
                 transaction_id=transaction_id or "",
+                organization_id=org_id,
             )
         except Exception:
             # _do_extract đã tự đánh dấu FAILED; trả trạng thái thật bên dưới.
             logger.exception("upload: extraction đồng bộ thất bại cho %s", saved.id)
 
-    result = _upload_result(repo.get(saved.id, user_id=user.id) or saved, transaction_id)
+    result = _upload_result(
+        repo.get(saved.id, user_id=user.id, organization_id=org_id) or saved, transaction_id
+    )
     _upload_idempotency.set(idem_key, result)
     return JSONResponse(content=result, status_code=202)
 
 
 # ---------- Reports ----------
 @app.get("/reports/monthly/{period}", response_model=MonthlyReport)
-async def monthly_report(period: str, user: User = Depends(current_user)):
-    report = repo.monthly_report(period, user_id=user.id)
+async def monthly_report(
+    period: str,
+    user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
+):
+    report = repo.monthly_report(period, user_id=user.id, organization_id=org.id if org else None)
     if report is None:
         raise AppError("NOT_FOUND", "Không có hóa đơn trong kỳ này.", status=404)
     return report
 
 
 @app.get("/reports/monthly/{period}/pdf")
-async def monthly_report_pdf(period: str, user: User = Depends(current_user)):
+async def monthly_report_pdf(
+    period: str,
+    user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
+):
     """Xuất báo cáo tháng dạng PDF."""
-    report = repo.monthly_report(period, user_id=user.id)
+    org_id = org.id if org else None
+    report = repo.monthly_report(period, user_id=user.id, organization_id=org_id)
     if report is None:
         raise AppError("NOT_FOUND", "Không có hóa đơn trong kỳ này.", status=404)
     try:
         from .reports.pdf_exporter import export_monthly_pdf
 
-        invoices = repo.list(user_id=user.id)
+        invoices = repo.list(user_id=user.id, organization_id=org_id)
         pdf_bytes = export_monthly_pdf(report, invoices)
         return Response(content=pdf_bytes, media_type="application/pdf")
     except Exception as e:

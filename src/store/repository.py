@@ -66,8 +66,8 @@ _INSERT_INVOICE_SQL = """INSERT INTO invoices (id, invoice_number, vendor, buyer
     source_file, raw_snippet, confidence, user_id, created_at,
     schema_version, supplier_tax_id, customer_tax_id, line_items, provenance,
     job_status, finalized_at, finalized_by, file_checksum, file_size, page_count,
-    extraction_provider, review_history)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    extraction_provider, review_history, organization_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       invoice_number=excluded.invoice_number,
       vendor=excluded.vendor,
@@ -126,7 +126,8 @@ class InvoiceRepository(SQLiteRepo):
                 file_size INTEGER DEFAULT 0,
                 page_count INTEGER,
                 extraction_provider TEXT DEFAULT '',
-                review_history TEXT DEFAULT '[]'
+                review_history TEXT DEFAULT '[]',
+                organization_id TEXT
             )
         """)
         # Migration: DB tạo trước khi có cột mới
@@ -149,6 +150,7 @@ class InvoiceRepository(SQLiteRepo):
             ("page_count", "INTEGER"),
             ("extraction_provider", "TEXT DEFAULT ''"),
             ("review_history", "TEXT DEFAULT '[]'"),
+            ("organization_id", "TEXT"),
         ]
         for col, typ in migrations:
             if col not in cols:
@@ -210,6 +212,7 @@ class InvoiceRepository(SQLiteRepo):
             invoice.page_count,
             invoice.extraction_provider,
             json.dumps(invoice.review_history),
+            invoice.organization_id,
         )
 
     def _row_to_invoice(self, row) -> Invoice:
@@ -235,7 +238,7 @@ class InvoiceRepository(SQLiteRepo):
             data["finalized_at"] = datetime.fromisoformat(data["finalized_at"])
         return Invoice(**data)
 
-    def create(self, data, user_id: str = "") -> Invoice:
+    def create(self, data, user_id: str = "", organization_id: str | None = None) -> Invoice:
         """Tạo hóa đơn mới từ InvoiceCreate."""
         import uuid
 
@@ -250,26 +253,29 @@ class InvoiceRepository(SQLiteRepo):
             tax=data.tax,
             status=data.status,
             user_id=user_id,
+            organization_id=organization_id,
         )
         return self.upsert(invoice)
 
     def _find_duplicate(self, conn, invoice: Invoice) -> tuple[str, bool] | None:
-        """Tìm bản trùng của invoice trong cùng user.
+        """Tìm bản trùng của invoice trong cùng không gian (user, org).
 
         Trả (id bản trùng, cùng_file?): cùng file (checksum) → chắc chắn cùng bill
         → gộp; cùng invoice_number khác file → mâu thuẫn, để caller báo lỗi.
         """
         if invoice.file_checksum:
             row = conn.execute(
-                "SELECT id FROM invoices WHERE user_id = ? AND file_checksum = ? AND id <> ? LIMIT 1",
-                (invoice.user_id, invoice.file_checksum, invoice.id),
+                "SELECT id FROM invoices WHERE user_id = ? AND file_checksum = ? "
+                "AND organization_id IS ? AND id <> ? LIMIT 1",
+                (invoice.user_id, invoice.file_checksum, invoice.organization_id, invoice.id),
             ).fetchone()
             if row:
                 return row["id"], True
         if invoice.invoice_number not in ("", "unknown"):
             row = conn.execute(
-                "SELECT id FROM invoices WHERE user_id = ? AND invoice_number = ? AND id <> ? LIMIT 1",
-                (invoice.user_id, invoice.invoice_number, invoice.id),
+                "SELECT id FROM invoices WHERE user_id = ? AND invoice_number = ? "
+                "AND organization_id IS ? AND id <> ? LIMIT 1",
+                (invoice.user_id, invoice.invoice_number, invoice.organization_id, invoice.id),
             ).fetchone()
             if row:
                 return row["id"], False
@@ -313,20 +319,33 @@ class InvoiceRepository(SQLiteRepo):
                 conn.execute(_INSERT_INVOICE_SQL, self._serialize_invoice(invoice))
         return invoice
 
-    def get(self, invoice_id: str, user_id: str = "") -> Invoice | None:
-        """Lấy hóa đơn theo id (phải thuộc user)."""
+    def get(self, invoice_id: str, user_id: str = "", organization_id: str | None = None) -> Invoice | None:
+        """Lấy hóa đơn theo id — org context lọc theo organization_id, cá nhân theo user_id."""
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM invoices WHERE id = ? AND user_id = ?", (invoice_id, user_id)
-            ).fetchone()
+            if organization_id:
+                row = conn.execute(
+                    "SELECT * FROM invoices WHERE id = ? AND organization_id = ?",
+                    (invoice_id, organization_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM invoices WHERE id = ? AND user_id = ?", (invoice_id, user_id)
+                ).fetchone()
         return self._row_to_invoice(row) if row else None
 
     def list(
-        self, user_id: str = "", status: InvoiceStatus | None = None, limit: int = 100
+        self, user_id: str = "", status: InvoiceStatus | None = None, limit: int = 100,
+        organization_id: str | None = None,
     ) -> list[Invoice]:
-        """Liệt kê hóa đơn của user, có thể lọc theo status."""
-        query = "SELECT * FROM invoices WHERE user_id = ?"
-        params: list = [user_id]
+        """Liệt kê hóa đơn, có thể lọc theo status. Org context lọc theo organization_id."""
+        query = "SELECT * FROM invoices WHERE "
+        params: list = []
+        if organization_id:
+            query += "organization_id = ?"
+            params.append(organization_id)
+        else:
+            query += "user_id = ?"
+            params.append(user_id)
         if status:
             query += " AND status = ?"
             params.append(status.value)
@@ -385,21 +404,35 @@ class InvoiceRepository(SQLiteRepo):
             ]
         return self.upsert(invoice)
 
-    def delete(self, invoice_id: str, user_id: str = "") -> bool:
+    def delete(self, invoice_id: str, user_id: str = "", organization_id: str | None = None) -> bool:
         """Xóa hóa đơn."""
         with self._connect() as conn:
-            cur = conn.execute(
-                "DELETE FROM invoices WHERE id = ? AND user_id = ?", (invoice_id, user_id)
-            )
+            if organization_id:
+                cur = conn.execute(
+                    "DELETE FROM invoices WHERE id = ? AND organization_id = ?",
+                    (invoice_id, organization_id),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM invoices WHERE id = ? AND user_id = ?", (invoice_id, user_id)
+                )
             return cur.rowcount > 0
 
-    def monthly_report(self, period: str, user_id: str = "") -> MonthlyReport | None:
+    def monthly_report(
+        self, period: str, user_id: str = "", organization_id: str | None = None
+    ) -> MonthlyReport | None:
         """Báo cáo theo tháng (YYYY-MM)."""
         with self._connect() as conn:
-            rows = conn.execute(
-                """SELECT * FROM invoices WHERE user_id = ? AND substr(issue_date, 1, 7) = ?""",
-                (user_id, period),
-            ).fetchall()
+            if organization_id:
+                rows = conn.execute(
+                    """SELECT * FROM invoices WHERE organization_id = ? AND substr(issue_date, 1, 7) = ?""",
+                    (organization_id, period),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM invoices WHERE user_id = ? AND substr(issue_date, 1, 7) = ?""",
+                    (user_id, period),
+                ).fetchall()
         if not rows:
             return None
         invoices = [self._row_to_invoice(r) for r in rows]

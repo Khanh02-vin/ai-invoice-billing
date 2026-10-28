@@ -17,6 +17,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from math import isfinite
+from typing import NamedTuple
 
 import httpx
 from cryptography.fernet import Fernet
@@ -118,6 +119,39 @@ def current_user(
     if not user.verified:
         raise AppError("EMAIL_NOT_VERIFIED", "Vui lòng xác minh email trước.", status=403)
     return user
+
+
+class _OrgCtx(NamedTuple):
+    id: str
+    role: str
+
+    @property
+    def can_write(self) -> bool:
+        return self.role in ("owner", "admin", "member")
+
+
+def current_organization(
+    request: Request, user: User = Depends(current_user)
+) -> _OrgCtx | None:
+    """Org context qua header X-Organization-Id (None = cá nhân); 404 nếu org
+    không tồn tại, 403 nếu không phải thành viên."""
+    org_id = request.headers.get("X-Organization-Id")
+    if not org_id:
+        return None
+    try:
+        orgs = getattr(_app_module(), "orgs_repo", None)
+        if orgs is None:
+            from ..store.sql_repository import OrganizationRepository
+
+            orgs = OrganizationRepository(_get_db())
+    except AppError:
+        raise
+    if not orgs.get(org_id):
+        raise AppError("NOT_FOUND", "Không tìm thấy tổ chức.", status=404)
+    membership = orgs.get_membership(org_id, user.id)
+    if not membership:
+        raise AppError("FORBIDDEN", "Bạn không phải thành viên tổ chức này.", status=403)
+    return _OrgCtx(id=org_id, role=membership.role)
 
 
 # ---- Request/Response Models ----
@@ -293,12 +327,14 @@ async def list_transactions(
     from_date: datetime | None = None,
     to_date: datetime | None = None,
     user: User = Depends(current_user),
+    org: _OrgCtx | None = Depends(current_organization),
 ):
     if from_date and to_date and from_date > to_date:
         raise AppError("INVALID_DATE_RANGE", "Khoảng ngày không hợp lệ.", status=400)
     return TransactionRepository(_get_db()).list(
         user_id=user.id, direction=direction, status=status, limit=limit,
         start_date=from_date, end_date=to_date,
+        organization_id=org.id if org else None,
     )
 
 
@@ -306,10 +342,14 @@ async def list_transactions(
 async def create_transaction(
     body: TransactionCreate,
     user: User = Depends(current_user),
+    org: _OrgCtx | None = Depends(current_organization),
     _rl: None = Depends(rate_limit_dependency("rate_limit_upload")),
 ):
+    if org and not org.can_write:
+        raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
+    org_id = org.id if org else None
     tx_repo = TransactionRepository(_get_db())
-    tx = PaymentTransaction(user_id=user.id, **body.model_dump())
+    tx = PaymentTransaction(user_id=user.id, organization_id=org_id, **body.model_dump())
     tx = tx_repo.create(tx)
     match_status = "unmatched"
     if tx.direction == TxDirection.DEBIT and tx.status == TxStatus.PENDING_RECEIPT:
@@ -317,9 +357,12 @@ async def create_transaction(
         from ..payments.service import link, link_many
 
         invoice_repo = InvoiceRepository(_get_db())
-        decision = pick_invoices_decision(
-            tx, invoice_repo.list(user_id=user.id, limit=200)
-        )
+        # Auto-match chỉ trong cùng không gian org/cá nhân với giao dịch
+        pool = [
+            i for i in invoice_repo.list(user_id=user.id, limit=200)
+            if i.organization_id == org_id
+        ]
+        decision = pick_invoices_decision(tx, pool)
         if decision.kind == "unique":
             invoices = decision.invoices
             if len(invoices) > 1:
@@ -337,35 +380,57 @@ async def create_transaction(
 
 @router.put("/transactions/{transaction_id}")
 async def update_transaction(
-    transaction_id: str, body: TransactionUpdate, user: User = Depends(current_user)
+    transaction_id: str,
+    body: TransactionUpdate,
+    user: User = Depends(current_user),
+    org: _OrgCtx | None = Depends(current_organization),
 ):
+    if org and not org.can_write:
+        raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
+    org_id = org.id if org else None
     repo = TransactionRepository(_get_db())
     if not repo.update_details(
         transaction_id, user.id,
         **body.model_dump(exclude_unset=True),
         update_fields=set(body.model_fields_set),
+        organization_id=org_id,
     ):
         raise AppError("NOT_FOUND", "Không tìm thấy giao dịch.", status=404)
-    return repo.get(transaction_id, user.id)
+    return repo.get(transaction_id, user.id, organization_id=org_id)
 
 
 @router.post("/transactions/{transaction_id}/dismiss")
-async def dismiss_transaction(transaction_id: str, user: User = Depends(current_user)):
+async def dismiss_transaction(
+    transaction_id: str,
+    user: User = Depends(current_user),
+    org: _OrgCtx | None = Depends(current_organization),
+):
+    if org and not org.can_write:
+        raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
     repo = TransactionRepository(_get_db())
-    if not repo.set_status(transaction_id, TxStatus.DISMISSED, user_id=user.id):
+    if not repo.set_status(
+        transaction_id, TxStatus.DISMISSED, user_id=user.id,
+        organization_id=org.id if org else None,
+    ):
         raise AppError("NOT_FOUND", "Không tìm thấy giao dịch.", status=404)
     return {"dismissed": True}
 
 
 @router.post("/transactions/{transaction_id}/invoices")
 async def link_invoice_to_transaction(
-    transaction_id: str, body: InvoiceLinkRequest, user: User = Depends(current_user)
+    transaction_id: str,
+    body: InvoiceLinkRequest,
+    user: User = Depends(current_user),
+    org: _OrgCtx | None = Depends(current_organization),
 ):
+    if org and not org.can_write:
+        raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
+    org_id = org.id if org else None
     db = _get_db()
     transactions = TransactionRepository(db)
     invoices = InvoiceRepository(db)
-    tx = transactions.get(transaction_id, user.id)
-    invoice = invoices.get(body.invoice_id, user_id=user.id)
+    tx = transactions.get(transaction_id, user.id, organization_id=org_id)
+    invoice = invoices.get(body.invoice_id, user_id=user.id, organization_id=org_id)
     if not tx or not invoice:
         raise AppError("NOT_FOUND", "Không tìm thấy giao dịch hoặc hóa đơn.", status=404)
     link_repo = InvoiceTransactionLinkRepository(db)
@@ -377,14 +442,22 @@ async def link_invoice_to_transaction(
 
 @router.delete("/transactions/{transaction_id}/invoices/{invoice_id}")
 async def unlink_invoice_from_transaction(
-    transaction_id: str, invoice_id: str, user: User = Depends(current_user)
+    transaction_id: str,
+    invoice_id: str,
+    user: User = Depends(current_user),
+    org: _OrgCtx | None = Depends(current_organization),
 ):
+    if org and not org.can_write:
+        raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
+    org_id = org.id if org else None
     db = _get_db()
-    if not TransactionRepository(db).get(transaction_id, user.id):
+    if not TransactionRepository(db).get(transaction_id, user.id, organization_id=org_id):
         raise AppError("NOT_FOUND", "Không tìm thấy giao dịch.", status=404)
     links = InvoiceTransactionLinkRepository(db).list_for_transaction(transaction_id, user.id)
     link = next((item for item in links if item.invoice_id == invoice_id), None)
-    if not link or not InvoiceRepository(db).get(invoice_id, user_id=user.id):
+    if not link or not InvoiceRepository(db).get(
+        invoice_id, user_id=user.id, organization_id=org_id
+    ):
         raise AppError("NOT_FOUND", "Không tìm thấy liên kết.", status=404)
     InvoiceTransactionLinkRepository(db).delete(link.id, user.id)
     return {"unlinked": True}

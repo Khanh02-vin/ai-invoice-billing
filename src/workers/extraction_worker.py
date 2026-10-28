@@ -49,6 +49,7 @@ def _do_extract(
     invoice_repo=None,
     tx_repo=None,
     transaction_id: str = "",
+    organization_id: str | None = None,
     mark_failed_on_error: bool = True,
 ):
     """Extract invoice data from file asynchronously (core logic).
@@ -63,6 +64,9 @@ def _do_extract(
         tx_repo: Optional pre-built TransactionRepository (for tests)
         transaction_id: Explicitly selected transaction (POST /upload?transaction_id=).
             Ưu tiên ghép với giao dịch này; không khớp số tiền thì không ghép gì.
+        organization_id: Org context của upload (None = cá nhân) — dùng khi tra
+            giao dịch tường minh; auto-match tự scope theo organization_id của
+            bản ghi hóa đơn.
         mark_failed_on_error: Đánh dấu FAILED ngay khi lỗi. Celery task truyền False
             (FAILED chỉ đặt khi HẾT lượt retry, để các lần retry chạy lại được).
     """
@@ -152,7 +156,13 @@ def _do_extract(
             from ..payments.matching import amounts_match
             from ..payments.service import link
 
-            tx = tx_repo.get(transaction_id, user_id=user_id)
+            # Org context: giao dịch tường minh có thể do member khác tạo —
+            # tra theo organization_id thay vì user_id.
+            tx = tx_repo.get(
+                transaction_id,
+                user_id="" if organization_id else user_id,
+                organization_id=organization_id,
+            )
             if (
                 tx
                 and getattr(tx.status, "value", tx.status) == TxStatus.PENDING_RECEIPT.value
@@ -237,6 +247,7 @@ def extract_invoice(
     invoice_repo=None,
     tx_repo=None,
     transaction_id: str = "",
+    organization_id: str | None = None,
 ):
     """Celery task wrapper around _do_extract().
 
@@ -248,6 +259,7 @@ def extract_invoice(
             invoice_id, storage_key, user_id, db_path, storage_dir,
             invoice_repo, tx_repo,
             transaction_id=transaction_id,
+            organization_id=organization_id,
             mark_failed_on_error=False,
         )
     except Exception as exc:

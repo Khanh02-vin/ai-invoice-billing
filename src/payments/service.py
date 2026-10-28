@@ -45,7 +45,8 @@ def link_many(tx_repo, invoice_repo, tx: PaymentTransaction, invoices: list[Invo
 
 
 def ingest(
-    tx_repo, invoice_repo, user_id: str, event: PaymentEvent, raw_text: str, external_ref: str = ""
+    tx_repo, invoice_repo, user_id: str, event: PaymentEvent, raw_text: str, external_ref: str = "",
+    organization_id: str | None = None,
 ) -> tuple[PaymentTransaction, Invoice | None, bool]:
     """Lưu 1 giao dịch và tự ghép hóa đơn.
 
@@ -72,13 +73,18 @@ def ingest(
         external_ref=ref,
         raw_text=raw_text,
         status=TxStatus.RECORDED if event.direction.value == "credit" else TxStatus.PENDING_RECEIPT,
+        organization_id=organization_id,
     )
     tx = tx_repo.create(tx)
     if event.direction.value == "credit":
         return tx, None, False
-    decision = pick_invoices_decision(
-        tx, invoice_repo.list(user_id=user_id, limit=200)
-    )
+    # Auto-match chỉ trong cùng không gian org/cá nhân với giao dịch —
+    # không ghép chéo tiền công ty với tiền cá nhân.
+    pool = [
+        i for i in invoice_repo.list(user_id=user_id, limit=200)
+        if i.organization_id == organization_id
+    ]
+    decision = pick_invoices_decision(tx, pool)
     if decision.kind == "unique":
         invoices = decision.invoices
         if len(invoices) > 1:
@@ -93,19 +99,26 @@ def ingest(
 def match_invoice_saved(tx_repo, invoice_repo, invoice: Invoice) -> PaymentTransaction | None:
     """Gọi sau khi lưu hóa đơn — ghép với giao dịch đang chờ nếu số tiền khớp.
 
-    Chỉ tự ghép khi rozhod định là "unique" (một ứng viên duy nhất). Nếu ambiguous
+    Chỉ tự ghép khi quyết định là "unique" (một ứng viên duy nhất). Nếu ambiguous
     (nhiều ứng viên ngang hàng) hoặc none, giữ giao dịch pending để người dùng
-    chọn thủ công.
+    chọn thủ công. Chỉ ghép trong cùng không gian org/cá nhân với hóa đơn.
     """
     if not invoice.user_id or invoice.total <= 0:
         return None
-    pending = tx_repo.list(
-        user_id=invoice.user_id, status=TxStatus.PENDING_RECEIPT, direction=None, limit=50
-    )
-    for tx in pending:
-        decision: InvoiceMatchResult = pick_invoices_decision(
-            tx, invoice_repo.list(user_id=invoice.user_id, limit=200)
+    org_id = getattr(invoice, "organization_id", None)
+    pending = [
+        t
+        for t in tx_repo.list(
+            user_id=invoice.user_id, status=TxStatus.PENDING_RECEIPT, direction=None, limit=50
         )
+        if t.organization_id == org_id
+    ]
+    pool = [
+        i for i in invoice_repo.list(user_id=invoice.user_id, limit=200)
+        if i.organization_id == org_id
+    ]
+    for tx in pending:
+        decision: InvoiceMatchResult = pick_invoices_decision(tx, pool)
         if decision.kind != "unique":
             continue
         matched = decision.invoices

@@ -97,6 +97,7 @@ class Invoice(BaseModel):
 
     id: str = ""
     user_id: str = ""
+    organization_id: str | None = None  # multi-tenant: NULL = cá nhân
     invoice_number: str = "unknown"
     vendor: str = "unknown"
     buyer: str = ""

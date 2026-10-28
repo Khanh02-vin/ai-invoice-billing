@@ -115,7 +115,86 @@ export default function Invoices({ user, onLogout }) {
     api("/payments/transactions?status=pending_receipt")
       .then(setPendingTx)
       .catch(() => setPendingTx([]));
+  }, [activeOrg]);
+
+  // --- Organizations (multi-tenant) ---
+  const loadOrgs = useCallback(() => {
+    api("/organizations")
+      .then((data) => {
+        setOrgs(data);
+        // Org đang chọn có thể đã bị xóa — rơi về ngữ cảnh cá nhân
+        setActiveOrg((cur) => (data.some((o) => o.id === cur) ? cur : ""));
+      })
+      .catch(() => {});
   }, []);
+
+  useEffect(() => { loadOrgs(); }, [loadOrgs]);
+
+  useEffect(() => {
+    if (activeOrg) localStorage.setItem(ORG_KEY, activeOrg);
+    else localStorage.removeItem(ORG_KEY);
+  }, [activeOrg]);
+
+  const loadOrgMembers = useCallback(() => {
+    if (!activeOrg) { setOrgMembers([]); return; }
+    api(`/organizations/${activeOrg}/members`)
+      .then(setOrgMembers)
+      .catch(() => setOrgMembers([]));
+  }, [activeOrg]);
+
+  useEffect(() => { loadOrgMembers(); }, [loadOrgMembers]);
+
+  const createOrg = async () => {
+    if (!newOrgName.trim()) return;
+    try {
+      const org = await api("/organizations", { method: "POST", body: JSON.stringify({ name: newOrgName.trim() }) });
+      setNewOrgName("");
+      loadOrgs();
+      setActiveOrg(org.id);
+      setMsg({ ok: true, text: `Đã tạo tổ chức "${org.name}" — bạn là chủ sở hữu.` });
+    } catch (e) { showErr(e); }
+  };
+
+  const addOrgMember = async () => {
+    if (!newMember.username.trim()) return;
+    try {
+      await api(`/organizations/${activeOrg}/members`, {
+        method: "POST",
+        body: JSON.stringify({ username: newMember.username.trim(), role: newMember.role }),
+      });
+      setNewMember({ username: "", role: "member" });
+      loadOrgMembers();
+      setMsg({ ok: true, text: "Đã thêm thành viên vào tổ chức." });
+    } catch (e) { showErr(e); }
+  };
+
+  const changeOrgMemberRole = async (userId, role) => {
+    try {
+      await api(`/organizations/${activeOrg}/members/${userId}`, {
+        method: "PATCH", body: JSON.stringify({ role }),
+      });
+      loadOrgMembers();
+    } catch (e) { showErr(e); }
+  };
+
+  const removeOrgMember = async (userId) => {
+    try {
+      await api(`/organizations/${activeOrg}/members/${userId}`, { method: "DELETE" });
+      loadOrgMembers();
+    } catch (e) { showErr(e); }
+  };
+
+  const deleteActiveOrg = async () => {
+    if (!activeOrg) return;
+    const name = orgs.find((o) => o.id === activeOrg)?.name || "tổ chức";
+    if (!window.confirm(`Xóa tổ chức "${name}"? Hóa đơn của org sẽ trở về dữ liệu cá nhân.`)) return;
+    try {
+      await api(`/organizations/${activeOrg}`, { method: "DELETE" });
+      setActiveOrg("");
+      loadOrgs();
+      setMsg({ ok: true, text: `Đã xóa tổ chức "${name}".` });
+    } catch (e) { showErr(e); }
+  };
 
   const dismissTx = async (id) => {
     try {
@@ -185,13 +264,17 @@ export default function Invoices({ user, onLogout }) {
     finally { setSubmitting(false); }
   };
 
-  // Demo data for settings
-  const [teamMembers] = useState([
-    { id: 1, username: "nguyenvan_a", role: "owner", email: "nguyen@example.com" },
-    { id: 2, username: "tranthib", role: "admin", email: "tran@example.com" },
-    { id: 3, username: "lehoangc", role: "member", email: "le@example.com" },
-  ]);
+  // Organizations (multi-tenant) — org đang chọn quyết định không gian dữ liệu
+  const ORG_KEY = "active_org_id";
+  const [orgs, setOrgs] = useState([]);
+  const [activeOrg, setActiveOrg] = useState(() => localStorage.getItem(ORG_KEY) || "");
+  const [orgMembers, setOrgMembers] = useState([]);
+  const [newOrgName, setNewOrgName] = useState("");
+  const [newMember, setNewMember] = useState({ username: "", role: "member" });
+  const myOrgRole = orgs.find((o) => o.id === activeOrg)?.role || "";
+  const canManageOrg = ["owner", "admin"].includes(myOrgRole);
 
+  // Demo data for billing section
   const [billingInfo] = useState({
     plan: "Pro",
     status: "active",
@@ -250,7 +333,7 @@ export default function Invoices({ user, onLogout }) {
       .finally(() => { if (active) setLoading(false); });
     loadPendingTx();
     return () => { active = false; };
-  }, [showErr, loadPendingTx, pollInvoice]);
+  }, [showErr, loadPendingTx, pollInvoice, activeOrg]);
 
   // Listen for custom events from components
   useEffect(() => {
@@ -499,7 +582,14 @@ export default function Invoices({ user, onLogout }) {
                 {/* Recent Invoices Table */}
                 <section className="card table-card" aria-label="Hóa đơn gần đây">
                   <div className="card-head">
-                    <h2>Hóa đơn gần đây</h2>
+                    <h2>
+                      Hóa đơn gần đây
+                      {activeOrg && (
+                        <span className="muted" style={{ fontWeight: 400, fontSize: "var(--fs-sm)", marginLeft: 8 }}>
+                          · Tổ chức: {orgs.find((o) => o.id === activeOrg)?.name || activeOrg}
+                        </span>
+                      )}
+                    </h2>
                     <div className="search-wrap" role="search" aria-label="Tìm kiếm hóa đơn">
                       <span className="search-icon" aria-hidden="true">{Icon.search}</span>
                       <input
@@ -758,38 +848,115 @@ export default function Invoices({ user, onLogout }) {
                     </button>
                     {settingsSections.team && (
                       <div id="settings-team-content" role="region" aria-labelledby="settings-team-heading">
-                        <p className="muted">Quản lý thành viên và quyền truy cập trong tổ chức.</p>
-                        <div className="table-scroll">
-                          <table className="data-table" role="table" aria-label="Danh sách thành viên đội nhóm">
-                            <thead>
-                              <tr>
-                                <th scope="col">Thành viên</th>
-                                <th scope="col">Email</th>
-                                <th scope="col">Vai trò</th>
-                                <th scope="col">Hành động</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {teamMembers.map((member) => (
-                                <tr key={member.id}>
-                                  <td>{member.username}</td>
-                                  <td>{member.email}</td>
-                                  <td>
-                                    <span className={`role role-${member.role}`}>
-                                      {member.role === "owner" ? "Chủ sở hữu" : member.role === "admin" ? "Quản trị viên" : "Thành viên"}
-                                    </span>
-                                  </td>
-                                  <td>
-                                    <button className="btn-ghost" aria-label={`Thay đổi quyền của ${member.username}`}>Thay đổi quyền</button>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                        <p className="muted">Chọn không gian dữ liệu: cá nhân hoặc tổ chức. Trong tổ chức, mọi thành viên thấy chung hóa đơn và giao dịch.</p>
+
+                        {/* Org context switcher */}
+                        <div className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                          <label htmlFor="org-select" className="muted">Không gian:</label>
+                          <select
+                            id="org-select"
+                            className="search-input"
+                            style={{ maxWidth: 240 }}
+                            value={activeOrg}
+                            onChange={(e) => setActiveOrg(e.target.value)}
+                            aria-label="Chọn tổ chức hoặc dữ liệu cá nhân"
+                          >
+                            <option value="">Cá nhân (chỉ mình tôi)</option>
+                            {orgs.map((o) => (
+                              <option key={o.id} value={o.id}>{o.name}{o.role === "owner" ? " (chủ sở hữu)" : ""}</option>
+                            ))}
+                          </select>
+                          {activeOrg && canManageOrg && myOrgRole === "owner" && (
+                            <button className="btn-ghost" onClick={deleteActiveOrg} aria-label="Xóa tổ chức hiện tại">Xóa tổ chức</button>
+                          )}
                         </div>
-                        <button className="btn-primary" aria-label="Mời thành viên mới vào đội nhóm">
-                          + Mời thành viên
-                        </button>
+
+                        {/* Tạo org mới */}
+                        <div className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                          <input
+                            className="search-input"
+                            style={{ maxWidth: 240 }}
+                            placeholder="Tên tổ chức mới…"
+                            aria-label="Tên tổ chức mới"
+                            value={newOrgName}
+                            onChange={(e) => setNewOrgName(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && createOrg()}
+                          />
+                          <button className="btn-small" onClick={createOrg} disabled={!newOrgName.trim()} aria-label="Tạo tổ chức">+ Tạo tổ chức</button>
+                        </div>
+
+                        {activeOrg ? (
+                          <>
+                            <div className="table-scroll">
+                              <table className="data-table" role="table" aria-label="Danh sách thành viên tổ chức">
+                                <thead>
+                                  <tr>
+                                    <th scope="col">Thành viên</th>
+                                    <th scope="col">Vai trò</th>
+                                    {canManageOrg && <th scope="col" className="col-actions">Hành động</th>}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {orgMembers.map((m) => (
+                                    <tr key={m.user_id}>
+                                      <td>{m.username}</td>
+                                      <td>
+                                        {canManageOrg && m.role !== "owner" ? (
+                                          <select
+                                            value={m.role}
+                                            onChange={(e) => changeOrgMemberRole(m.user_id, e.target.value)}
+                                            aria-label={`Vai trò của ${m.username}`}
+                                          >
+                                            <option value="admin">Quản trị viên</option>
+                                            <option value="member">Thành viên</option>
+                                            <option value="viewer">Chỉ xem</option>
+                                          </select>
+                                        ) : (
+                                          <span className={`role role-${m.role}`}>
+                                            {{ owner: "Chủ sở hữu", admin: "Quản trị viên", member: "Thành viên", viewer: "Chỉ xem" }[m.role] || m.role}
+                                          </span>
+                                        )}
+                                      </td>
+                                      {canManageOrg && (
+                                        <td className="col-actions">
+                                          {m.role !== "owner" && (
+                                            <button className="btn-ghost" onClick={() => removeOrgMember(m.user_id)} aria-label={`Xóa ${m.username} khỏi tổ chức`}>Xóa</button>
+                                          )}
+                                        </td>
+                                      )}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                            {canManageOrg ? (
+                              <div className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                                <input
+                                  className="search-input"
+                                  style={{ maxWidth: 200 }}
+                                  placeholder="Tên đăng nhập…"
+                                  aria-label="Tên đăng nhập thành viên mới"
+                                  value={newMember.username}
+                                  onChange={(e) => setNewMember((s) => ({ ...s, username: e.target.value }))}
+                                />
+                                <select
+                                  value={newMember.role}
+                                  onChange={(e) => setNewMember((s) => ({ ...s, role: e.target.value }))}
+                                  aria-label="Vai trò thành viên mới"
+                                >
+                                  <option value="admin">Quản trị viên</option>
+                                  <option value="member">Thành viên</option>
+                                  <option value="viewer">Chỉ xem</option>
+                                </select>
+                                <button className="btn-small" onClick={addOrgMember} disabled={!newMember.username.trim()} aria-label="Thêm thành viên">+ Thêm thành viên</button>
+                              </div>
+                            ) : (
+                              <p className="muted" style={{ marginTop: 12 }}>Bạn là {myOrgRole === "viewer" ? "người chỉ xem" : "thành viên"} — chỉ quản trị viên mới quản lý được thành viên.</p>
+                            )}
+                          </>
+                        ) : (
+                          <p className="muted">Đang dùng dữ liệu cá nhân. Tạo tổ chức để chia sẻ hóa đơn với đồng nghiệp.</p>
+                        )}
                       </div>
                     )}
                   </section>

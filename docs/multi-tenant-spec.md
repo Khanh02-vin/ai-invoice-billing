@@ -116,8 +116,9 @@ owner hiện tại transfer cho 1 admin (phase sau nếu cần).
 ```
 POST   /organizations                      {name}            → tạo org (user thành owner)
 GET    /organizations                                        → các org user thuộc về
-DELETE /organizations/{org_id}                               → chỉ owner
-GET    /organizations/{org_id}/members                      → admin+
+DELETE /organizations/{org_id}                               → chỉ owner (hóa đơn org
+                                                               trở về dữ liệu cá nhân)
+GET    /organizations/{org_id}/members                      → mọi thành viên xem được
 POST   /organizations/{org_id}/members     {username, role}  → admin+ (mời user đã tồn tại)
 PATCH  /organizations/{org_id}/members/{user_id}  {role}    → admin+
 DELETE /organizations/{org_id}/members/{user_id}           → admin+ (không xóa owner)

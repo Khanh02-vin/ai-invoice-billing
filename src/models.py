@@ -90,6 +90,8 @@ class Invoice(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
     user_id: str = Field(foreign_key="users.id", index=True)
+    # Multi-tenant: NULL = dữ liệu cá nhân; set = thuộc org (xem docs/multi-tenant-spec.md)
+    organization_id: str | None = Field(default=None, foreign_key="organizations.id", index=True)
 
     # Core fields
     invoice_number: str = Field(default="unknown", index=True)
@@ -185,6 +187,8 @@ class PaymentTransaction(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
     user_id: str = Field(foreign_key="users.id", index=True)
+    # Multi-tenant: NULL = cá nhân; set = giao dịch của org
+    organization_id: str | None = Field(default=None, foreign_key="organizations.id", index=True)
     amount: float = 0.0
     currency: str = "VND"
     direction: TxDirection = Field(
@@ -340,6 +344,34 @@ class ApiKey(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+# --- Multi-tenant Organization ---
+ORG_ROLES = ("owner", "admin", "member", "viewer")
+
+
+class Organization(SQLModel, table=True):
+    """Tổ chức — nhiều user dùng chung kho hóa đơn/giao dịch."""
+
+    __tablename__ = "organizations"
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
+    name: str = Field(min_length=1, max_length=200)
+    slug: str = Field(unique=True)
+    owner_user_id: str = Field(foreign_key="users.id")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class OrganizationMember(SQLModel, table=True):
+    """Thành viên org + role (owner|admin|member|viewer)."""
+
+    __tablename__ = "organization_members"
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
+    organization_id: str = Field(foreign_key="organizations.id", index=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    role: str = "member"
+    joined_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 # --- Pydantic Models for API (request/response) ---
 class UserCreate(SQLModel):
     username: str = Field(min_length=3, max_length=64)
@@ -428,6 +460,35 @@ class ApiKeyCreated(ApiKeyPublic):
     """Response khi tạo key — plaintext `key` chỉ trả về đúng 1 lần này."""
 
     key: str
+
+
+# --- Organization (multi-tenant) ---
+class OrganizationCreate(SQLModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class OrganizationPublic(SQLModel):
+    id: str
+    name: str
+    slug: str
+    role: str  # role của user hiện tại trong org
+    created_at: datetime
+
+
+class MemberAdd(SQLModel):
+    username: str = Field(min_length=3, max_length=64)
+    role: str = "member"  # admin|member|viewer (owner chỉ qua tạo org)
+
+
+class MemberRoleUpdate(SQLModel):
+    role: str
+
+
+class MemberPublic(SQLModel):
+    user_id: str
+    username: str
+    role: str
+    joined_at: datetime
 
 
 # --- Payment Event (for parsing) ---

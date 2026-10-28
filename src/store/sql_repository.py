@@ -26,6 +26,8 @@ from src.models import (
     InvoiceUpdate,
     LineItem,
     MonthlyReport,
+    Organization,
+    OrganizationMember,
     PasswordReset,
     PaymentTransaction,
     PushSubscription,
@@ -253,7 +255,7 @@ class InvoiceRepository:
             inv.review_history = json.loads(inv.review_history)
         return inv
 
-    def create(self, data: InvoiceCreate, user_id: str) -> Invoice:
+    def create(self, data: InvoiceCreate, user_id: str, organization_id: str | None = None) -> Invoice:
         invoice = Invoice(
             id=uuid.uuid4().hex[:16],
             invoice_number=data.invoice_number,
@@ -265,18 +267,22 @@ class InvoiceRepository:
             tax=data.tax,
             status=data.status,
             user_id=user_id,
+            organization_id=organization_id,
         )
         return self.upsert(invoice)
 
     def upsert(self, invoice: Invoice) -> Invoice:
         with self.db.get_session() as session:
-            # Check for duplicates
+            # Check for duplicates — trong cùng không gian (user, org): bản ghi
+            # cá nhân và bản ghi org là hai hóa đơn khác nhau dù cùng số.
+            org_space = Invoice.organization_id.is_(invoice.organization_id)
             existing = None
             if invoice.file_checksum:
                 existing = session.exec(
                     select(Invoice).where(
                         Invoice.user_id == invoice.user_id,
                         Invoice.file_checksum == invoice.file_checksum,
+                        org_space,
                         Invoice.id != invoice.id,
                     )
                 ).first()
@@ -285,6 +291,7 @@ class InvoiceRepository:
                     select(Invoice).where(
                         Invoice.user_id == invoice.user_id,
                         Invoice.invoice_number == invoice.invoice_number,
+                        org_space,
                         Invoice.id != invoice.id,
                     )
                 ).first()
@@ -300,30 +307,48 @@ class InvoiceRepository:
             session.refresh(invoice)
             return self._row_to_invoice(invoice)
 
-    def get(self, invoice_id: str, user_id: str = "") -> Invoice | None:
+    def get(self, invoice_id: str, user_id: str = "", organization_id: str | None = None) -> Invoice | None:
+        """Org context -> lọc theo organization_id (membership đã kiểm ở route);
+        cá nhân -> lọc theo user_id (spec multi-tenant mục 3)."""
         with self.db.get_session() as session:
             query = select(Invoice).where(Invoice.id == invoice_id)
-            if user_id:
+            if organization_id:
+                query = query.where(Invoice.organization_id == organization_id)
+            elif user_id:
                 query = query.where(Invoice.user_id == user_id)
             invoice = session.exec(query).first()
             return self._row_to_invoice(invoice) if invoice else None
 
     def list(
-        self, user_id: str = "", status: InvoiceStatus | None = None, limit: int = 100
+        self,
+        user_id: str = "",
+        status: InvoiceStatus | None = None,
+        limit: int = 100,
+        organization_id: str | None = None,
     ) -> builtins.list[Invoice]:
         with self.db.get_session() as session:
-            query = select(Invoice).where(Invoice.user_id == user_id)
+            query = select(Invoice)
+            if organization_id:
+                query = query.where(Invoice.organization_id == organization_id)
+            else:
+                query = query.where(Invoice.user_id == user_id)
             if status:
                 query = query.where(Invoice.status == status)
             query = query.order_by(Invoice.created_at.desc()).limit(limit)
             invoices = session.exec(query).all()
             return [self._row_to_invoice(inv) for inv in invoices]
 
-    def update(self, invoice_id: str, data: InvoiceUpdate, user_id: str) -> Invoice | None:
+    def update(
+        self, invoice_id: str, data: InvoiceUpdate, user_id: str,
+        organization_id: str | None = None,
+    ) -> Invoice | None:
         with self.db.get_session() as session:
-            invoice = session.exec(
-                select(Invoice).where(Invoice.id == invoice_id, Invoice.user_id == user_id)
-            ).first()
+            query = select(Invoice).where(Invoice.id == invoice_id)
+            if organization_id:
+                query = query.where(Invoice.organization_id == organization_id)
+            else:
+                query = query.where(Invoice.user_id == user_id)
+            invoice = session.exec(query).first()
             if not invoice:
                 return None
 
@@ -382,10 +407,12 @@ class InvoiceRepository:
             session.refresh(invoice)
             return self._row_to_invoice(invoice)
 
-    def delete(self, invoice_id: str, user_id: str = "") -> bool:
+    def delete(self, invoice_id: str, user_id: str = "", organization_id: str | None = None) -> bool:
         with self.db.get_session() as session:
             query = select(Invoice).where(Invoice.id == invoice_id)
-            if user_id:
+            if organization_id:
+                query = query.where(Invoice.organization_id == organization_id)
+            elif user_id:
                 query = query.where(Invoice.user_id == user_id)
             invoice = session.exec(query).first()
             if invoice:
@@ -394,14 +421,22 @@ class InvoiceRepository:
                 return True
             return False
 
-    def monthly_report(self, period: str, user_id: str) -> MonthlyReport | None:
+    def monthly_report(
+        self, period: str, user_id: str, organization_id: str | None = None
+    ) -> MonthlyReport | None:
         with self.db.get_session() as session:
             # SQLite: substr(issue_date, 1, 7) for YYYY-MM
-            invoices = session.exec(
-                select(Invoice).where(
-                    Invoice.user_id == user_id, func.substr(Invoice.issue_date, 1, 7) == period
-                )
-            ).all()
+            period_cond = func.substr(Invoice.issue_date, 1, 7) == period
+            if organization_id:
+                invoices = session.exec(
+                    select(Invoice).where(
+                        Invoice.organization_id == organization_id, period_cond
+                    )
+                ).all()
+            else:
+                invoices = session.exec(
+                    select(Invoice).where(Invoice.user_id == user_id, period_cond)
+                ).all()
 
             if not invoices:
                 return None
@@ -450,10 +485,13 @@ class TransactionRepository:
             session.refresh(tx)
             return tx
 
-    def get(self, tx_id: str, user_id: str = "") -> PaymentTransaction | None:
+    def get(self, tx_id: str, user_id: str = "", organization_id: str | None = None) -> PaymentTransaction | None:
+        """Org context -> lọc theo organization_id; cá nhân -> theo user_id."""
         with self.db.get_session() as session:
             query = select(PaymentTransaction).where(PaymentTransaction.id == tx_id)
-            if user_id:
+            if organization_id:
+                query = query.where(PaymentTransaction.organization_id == organization_id)
+            elif user_id:
                 query = query.where(PaymentTransaction.user_id == user_id)
             return session.exec(query).first()
 
@@ -492,9 +530,14 @@ class TransactionRepository:
         start_date: datetime | None = None,
         end_date: datetime | None = None,
         limit: int = 50,
+        organization_id: str | None = None,
     ) -> builtins.list[PaymentTransaction]:
         with self.db.get_session() as session:
-            query = select(PaymentTransaction).where(PaymentTransaction.user_id == user_id)
+            query = select(PaymentTransaction)
+            if organization_id:
+                query = query.where(PaymentTransaction.organization_id == organization_id)
+            else:
+                query = query.where(PaymentTransaction.user_id == user_id)
             if status:
                 query = query.where(PaymentTransaction.status == status)
             if direction:
@@ -509,11 +552,14 @@ class TransactionRepository:
             return session.exec(query).all()
 
     def set_status(
-        self, tx_id: str, status: TxStatus, invoice_id: str = "", user_id: str = ""
+        self, tx_id: str, status: TxStatus, invoice_id: str = "", user_id: str = "",
+        organization_id: str | None = None,
     ) -> bool:
         with self.db.get_session() as session:
             query = select(PaymentTransaction).where(PaymentTransaction.id == tx_id)
-            if user_id:
+            if organization_id:
+                query = query.where(PaymentTransaction.organization_id == organization_id)
+            elif user_id:
                 query = query.where(PaymentTransaction.user_id == user_id)
             tx = session.exec(query).first()
             if tx:
@@ -540,13 +586,15 @@ class TransactionRepository:
         merchant: str | None = None,
         occurred_at: str | None = None,
         update_fields: set[str] | None = None,
+        organization_id: str | None = None,
     ) -> bool:
         with self.db.get_session() as session:
-            tx = session.exec(
-                select(PaymentTransaction).where(
-                    PaymentTransaction.id == tx_id, PaymentTransaction.user_id == user_id
-                )
-            ).first()
+            query = select(PaymentTransaction).where(PaymentTransaction.id == tx_id)
+            if organization_id:
+                query = query.where(PaymentTransaction.organization_id == organization_id)
+            else:
+                query = query.where(PaymentTransaction.user_id == user_id)
+            tx = session.exec(query).first()
             if not tx:
                 return False
             for field, value in {
@@ -887,6 +935,133 @@ class ApiKeyRepository:
                 session.commit()
 
 
+class OrganizationRepository:
+    """Organization + membership (multi-tenant, xem docs/multi-tenant-spec.md)."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def create(self, name: str, slug: str, owner_user_id: str) -> tuple[Organization, OrganizationMember]:
+        with self.db.get_session() as session:
+            org = Organization(name=name, slug=slug, owner_user_id=owner_user_id)
+            session.add(org)
+            session.commit()
+            member = OrganizationMember(
+                organization_id=org.id, user_id=owner_user_id, role="owner"
+            )
+            session.add(member)
+            session.commit()
+            # Commit thứ hai expire org — refresh lại sau commit cuối để đối tượng
+            # trả ra còn nguyên thuộc tính ngoài session.
+            session.refresh(org)
+            session.refresh(member)
+            return org, member
+
+    def get(self, org_id: str) -> Organization | None:
+        with self.db.get_session() as session:
+            return session.get(Organization, org_id)
+
+    def get_membership(self, org_id: str, user_id: str) -> OrganizationMember | None:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(OrganizationMember).where(
+                    OrganizationMember.organization_id == org_id,
+                    OrganizationMember.user_id == user_id,
+                )
+            ).first()
+
+    def list_for_user(self, user_id: str) -> builtins.list[tuple[Organization, str]]:
+        """(org, role) của mọi org user thuộc về."""
+        with self.db.get_session() as session:
+            rows = session.exec(
+                select(Organization, OrganizationMember.role)
+                .join(
+                    OrganizationMember,
+                    OrganizationMember.organization_id == Organization.id,
+                )
+                .where(OrganizationMember.user_id == user_id)
+                .order_by(Organization.created_at)
+            ).all()
+            return [(org, role) for org, role in rows]
+
+    def list_members(self, org_id: str) -> builtins.list[dict]:
+        with self.db.get_session() as session:
+            rows = session.exec(
+                select(OrganizationMember, User.username)
+                .join(User, User.id == OrganizationMember.user_id)
+                .where(OrganizationMember.organization_id == org_id)
+                .order_by(OrganizationMember.joined_at)
+            ).all()
+            return [
+                {
+                    "user_id": m.user_id,
+                    "username": username,
+                    "role": m.role,
+                    "joined_at": m.joined_at,
+                }
+                for m, username in rows
+            ]
+
+    def add_member(self, org_id: str, user_id: str, role: str) -> OrganizationMember:
+        with self.db.get_session() as session:
+            member = OrganizationMember(organization_id=org_id, user_id=user_id, role=role)
+            session.add(member)
+            session.commit()
+            session.refresh(member)
+            return member
+
+    def update_role(self, org_id: str, user_id: str, role: str) -> bool:
+        with self.db.get_session() as session:
+            member = self._member(session, org_id, user_id)
+            if not member:
+                return False
+            member.role = role
+            session.add(member)
+            session.commit()
+            return True
+
+    def remove_member(self, org_id: str, user_id: str) -> bool:
+        with self.db.get_session() as session:
+            member = self._member(session, org_id, user_id)
+            if not member:
+                return False
+            session.delete(member)
+            session.commit()
+            return True
+
+    def delete(self, org_id: str) -> bool:
+        """Xóa org + members; hóa đơn/giao dịch thuộc org trở về cá nhân
+        (organization_id = NULL theo user_id chủ bản ghi)."""
+        with self.db.get_session() as session:
+            org = session.get(Organization, org_id)
+            if not org:
+                return False
+            members = session.exec(
+                select(OrganizationMember).where(OrganizationMember.organization_id == org_id)
+            ).all()
+            for m in members:
+                session.delete(m)
+            for model in (Invoice, PaymentTransaction):
+                rows = session.exec(
+                    select(model).where(model.organization_id == org_id)
+                ).all()
+                for row in rows:
+                    row.organization_id = None
+                    session.add(row)
+            session.delete(org)
+            session.commit()
+            return True
+
+    @staticmethod
+    def _member(session: Session, org_id: str, user_id: str) -> OrganizationMember | None:
+        return session.exec(
+            select(OrganizationMember).where(
+                OrganizationMember.organization_id == org_id,
+                OrganizationMember.user_id == user_id,
+            )
+        ).first()
+
+
 # Initialize database
 _database: Database | None = None
 
@@ -902,4 +1077,22 @@ def init_database(db_path: str = "invoices.db") -> Database:
     global _database
     _database = Database(db_path)
     _database.create_tables()
+    _ensure_multi_tenant_columns(_database)
     return _database
+
+
+def _ensure_multi_tenant_columns(db: Database) -> None:
+    """create_all không thêm cột vào bảng đã có — ALTER idempotent khi thiếu
+    (DB cũ mở lại sau nâng cấp vẫn chạy được mà không cần script tay)."""
+    with db.engine.begin() as conn:
+        for table in ("invoices", "payment_transactions"):
+            cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            if "organization_id" not in cols:
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN organization_id TEXT")
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_invoices_org ON invoices(organization_id)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_payment_transactions_org "
+            "ON payment_transactions(organization_id)"
+        )
