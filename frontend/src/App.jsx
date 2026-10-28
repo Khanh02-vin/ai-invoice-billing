@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import Login from "./Login";
 import Invoices from "./Invoices";
 import Ledger from "./Ledger";
-import { api, getToken } from "./api";
+import { api, clearToken, getToken } from "./api";
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -25,5 +25,14 @@ export default function App() {
 
   if (loading) return <div className="loading">Đang tải...</div>;
   if (!user) return <Login onLogin={() => api("/auth/me").then(setUser).catch(() => setUser(null))} />;
-  return <Invoices user={user} onLogout={() => setUser(null)} />;
+  return (
+    <Invoices
+      user={user}
+      onLogout={() => {
+        // Logout phải xóa token + ngữ cảnh org (tránh user kế sau kế thừa phiên)
+        clearToken();
+        setUser(null);
+      }}
+    />
+  );
 }

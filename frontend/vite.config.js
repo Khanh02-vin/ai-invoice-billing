@@ -21,6 +21,8 @@ export default defineConfig({
       "/payments": API_TARGET,
       "/push": API_TARGET,
       "/reports": API_TARGET,
+      "/organizations": API_TARGET,
+      "/api-keys": API_TARGET,
       "/orgs": API_TARGET,
       "/search": API_TARGET,
       "/health": API_TARGET,

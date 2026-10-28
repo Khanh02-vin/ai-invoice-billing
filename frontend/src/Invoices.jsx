@@ -25,6 +25,8 @@ const PAGE_SIZE = 8;
 const fmt = new Intl.NumberFormat("vi-VN");
 const fmtNum = (v) => fmt.format(Math.round(v || 0));
 const money = (currency, v) => (currency === "VND" ? "₫" : currency + " ") + fmt.format(v || 0);
+// Tham chiếu ổn định: CountUp đưa format vào deps, hàm inline mỗi render sẽ khởi động lại animation.
+const fmtVND = (v) => "₫" + fmtNum(v);
 
 const Icon = {
   upload: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M8 11V3m0 0L4.5 6.5M8 3l3.5 3.5M2.5 12.5h11" strokeLinecap="round" strokeLinejoin="round" /></svg>,
@@ -109,6 +111,17 @@ export default function Invoices({ user, onLogout }) {
       setPushBusy(false);
     }
   };
+
+  // Organizations (multi-tenant) — org đang chọn quyết định không gian dữ liệu.
+  // Khai báo TRƯỚC loadPendingTx (deps dùng activeOrg — tránh TDZ).
+  const ORG_KEY = "active_org_id";
+  const [orgs, setOrgs] = useState([]);
+  const [activeOrg, setActiveOrg] = useState(() => localStorage.getItem(ORG_KEY) || "");
+  const [orgMembers, setOrgMembers] = useState([]);
+  const [newOrgName, setNewOrgName] = useState("");
+  const [newMember, setNewMember] = useState({ username: "", role: "member" });
+  const myOrgRole = orgs.find((o) => o.id === activeOrg)?.role || "";
+  const canManageOrg = ["owner", "admin"].includes(myOrgRole);
 
   // Load pending transactions
   const loadPendingTx = useCallback(() => {
@@ -263,16 +276,6 @@ export default function Invoices({ user, onLogout }) {
     } catch (e) { showErr(e); }
     finally { setSubmitting(false); }
   };
-
-  // Organizations (multi-tenant) — org đang chọn quyết định không gian dữ liệu
-  const ORG_KEY = "active_org_id";
-  const [orgs, setOrgs] = useState([]);
-  const [activeOrg, setActiveOrg] = useState(() => localStorage.getItem(ORG_KEY) || "");
-  const [orgMembers, setOrgMembers] = useState([]);
-  const [newOrgName, setNewOrgName] = useState("");
-  const [newMember, setNewMember] = useState({ username: "", role: "member" });
-  const myOrgRole = orgs.find((o) => o.id === activeOrg)?.role || "";
-  const canManageOrg = ["owner", "admin"].includes(myOrgRole);
 
   // Demo data for billing section
   const [billingInfo] = useState({
@@ -462,6 +465,7 @@ export default function Invoices({ user, onLogout }) {
   );
   useEffect(() => { if (page !== safePage) setPage(safePage); }, [page, safePage]);
   const paidRatio = stats.total ? (stats.paid / stats.total) * 100 : 0;
+  const dupOrgNames = new Set(orgs.map((o) => o.name).filter((n, i, a) => a.indexOf(n) !== i));
 
   const toggleSection = (key) => {
     setSettingsSections((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -533,26 +537,26 @@ export default function Invoices({ user, onLogout }) {
                 />
 
                 {/* Stats */}
-                <section className="stats-grid" aria-label="Thống kê">
+                <section className="stat-grid" aria-label="Thống kê">
                   <div className="stat-card accent-blue">
-                    <span className="stat-label">Tổng giá trị</span>
-                    <span className="stat-value"><CountUp to={stats.total} /></span>
+                    <div className="stat-label">Tổng giá trị</div>
+                    <div className="stat-num"><CountUp to={stats.total} format={fmtVND} /></div>
                     <Sparkline data={stats.series} />
                   </div>
                   <div className="stat-card accent-green">
-                    <span className="stat-label">Đã thanh toán</span>
-                    <span className="stat-value"><CountUp to={stats.paid} /></span>
+                    <div className="stat-label">Đã thanh toán</div>
+                    <div className="stat-num"><CountUp to={stats.paid} format={fmtVND} /></div>
                     <div className="progress" role="progressbar" aria-valuenow={Math.round(paidRatio)} aria-valuemin="0" aria-valuemax="100" aria-label="Tỷ lệ thanh toán">
                       <div className="progress-fill" style={{ width: `${paidRatio}%` }} />
                     </div>
                   </div>
                   <div className="stat-card accent-amber">
-                    <span className="stat-label">Chưa thanh toán</span>
-                    <span className="stat-value"><CountUp to={stats.unpaid} /></span>
+                    <div className="stat-label">Chưa thanh toán</div>
+                    <div className="stat-num"><CountUp to={stats.unpaid} format={fmtVND} /></div>
                   </div>
                   <div className="stat-card accent-red">
-                    <span className="stat-label">Quá hạn</span>
-                    <span className="stat-value"><CountUp to={stats.overdue} /></span>
+                    <div className="stat-label">Quá hạn</div>
+                    <div className="stat-num"><CountUp to={stats.overdue} format={fmtVND} /></div>
                   </div>
                 </section>
 
@@ -583,7 +587,7 @@ export default function Invoices({ user, onLogout }) {
                 <section className="card table-card" aria-label="Hóa đơn gần đây">
                   <div className="card-head">
                     <h2>
-                      Hóa đơn gần đây
+                      Hóa đơn gần đây{" "}
                       {activeOrg && (
                         <span className="muted" style={{ fontWeight: 400, fontSize: "var(--fs-sm)", marginLeft: 8 }}>
                           · Tổ chức: {orgs.find((o) => o.id === activeOrg)?.name || activeOrg}
@@ -863,7 +867,9 @@ export default function Invoices({ user, onLogout }) {
                           >
                             <option value="">Cá nhân (chỉ mình tôi)</option>
                             {orgs.map((o) => (
-                              <option key={o.id} value={o.id}>{o.name}{o.role === "owner" ? " (chủ sở hữu)" : ""}</option>
+                              <option key={o.id} value={o.id}>
+                                {o.name}{o.role === "owner" ? " (chủ sở hữu)" : ""}{dupOrgNames.has(o.name) ? ` · ${o.slug.split("-").pop()}` : ""}
+                              </option>
                             ))}
                           </select>
                           {activeOrg && canManageOrg && myOrgRole === "owner" && (
