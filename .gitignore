@@ -49,3 +49,7 @@ data/cord_sample/
 tests/*_err.log
 src/invoice_billing.egg-info/
 *.egg-info/
+
+# Secrets & test artifacts — không bao giờ commit
+.env.dev.backup
+gui-test-screenshots/

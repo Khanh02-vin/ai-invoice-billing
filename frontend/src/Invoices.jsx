@@ -644,7 +644,7 @@ export default function Invoices({ user, onLogout }) {
                   ) : (
                     <>
                       <div className="table-scroll">
-                        <table className="data-table" role="table" aria-rowcount={rows.length}>
+                        <table className="data-table inv-table" role="table" aria-rowcount={rows.length}>
                           <thead>
                             <tr>
                               <th scope="col" aria-sort="none">Mã hóa đơn</th>
@@ -659,16 +659,16 @@ export default function Invoices({ user, onLogout }) {
                           <tbody>
                             {pagedRows.map((i, idx) => (
                               <tr key={i.id} aria-rowindex={idx + 1}>
-                                <td>
+                                <td data-label="Mã">
                                   {needsReview(i) && (
                                     <span className="dot-warn" title="Có field máy đọc không chắc — bấm để sửa" />
                                   )}
                                   {i.invoice_number}
                                 </td>
-                                <td>{i.vendor || "-"}</td>
-                                <td>{i.issue_date || i.created_at?.slice(0, 10) || "-"}</td>
-                                <td>{money(i.currency, i.total)}</td>
-                                <td>
+                                <td data-label="Nhà cung cấp">{i.vendor || "-"}</td>
+                                <td data-label="Ngày">{i.issue_date || i.created_at?.slice(0, 10) || "-"}</td>
+                                <td data-label="Tổng">{money(i.currency, i.total)}</td>
+                                <td data-label="Trạng thái">
                                   {i.job_status === "processing" || i.job_status === "pending" ? (
                                     <span className="status status-processing" title="Máy đang đọc hóa đơn — sẽ tự cập nhật">
                                       Đang xử lý…
@@ -679,7 +679,7 @@ export default function Invoices({ user, onLogout }) {
                                     </span>
                                   )}
                                 </td>
-                                <td className="col-location">
+                                <td className="col-location" data-label="Địa điểm">
                                   {i.location_lat && i.location_lon ? (
                                     <span className="location-badge" title={`${i.location_lat}, ${i.location_lon}`}>
                                       📍 {i.location_name || `${i.location_lat.toFixed(4)}, ${i.location_lon.toFixed(4)}`}
@@ -752,12 +752,15 @@ export default function Invoices({ user, onLogout }) {
             {reviewInvoice && (
               <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Sửa hóa đơn">
                 <div className="modal" style={{ maxWidth: 560 }}>
-                  <h2>Sửa hóa đơn {reviewInvoice.invoice_number}</h2>
-                  <p className="muted" style={{ marginTop: 0 }}>
-                    Ô đỏ là field máy đọc confidence &lt; {CONF_WARN} — sửa rồi lưu;
-                    chỉnh sửa được dùng làm mẫu đánh giá độ chính xác.
-                  </p>
-                  <form onSubmit={saveReview}>
+                  <div className="modal-header">
+                    <h2>Sửa hóa đơn {reviewInvoice.invoice_number}</h2>
+                  </div>
+                  <div className="modal-body">
+                    <p className="muted" style={{ marginTop: 0 }}>
+                      Ô đỏ là field máy đọc confidence &lt; {CONF_WARN} — sửa rồi lưu;
+                      chỉnh sửa được dùng làm mẫu đánh giá độ chính xác.
+                    </p>
+                    <form onSubmit={saveReview}>
                     <div className="modal-fields">
                       {Object.keys(FIELD_LABELS).map((k) => {
                         const prov = reviewInvoice.provenance?.[k];
@@ -791,6 +794,7 @@ export default function Invoices({ user, onLogout }) {
                       </button>
                     </div>
                   </form>
+                  </div>
                 </div>
               </div>
             )}
@@ -1217,6 +1221,16 @@ export default function Invoices({ user, onLogout }) {
           background: var(--accent);
           border-color: var(--accent);
           color: white;
+        }
+        @media (max-width: 760px) {
+          .action-btn {
+            width: 44px;
+            height: 44px;
+            font-size: 16px;
+          }
+          .action-buttons {
+            gap: 8px;
+          }
         }
       `}</style>
     </div>

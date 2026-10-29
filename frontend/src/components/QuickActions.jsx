@@ -560,10 +560,13 @@ export default function QuickActions({ onUpload, onEmailConnect, onCamera }) {
 
         @media (max-width: 760px) {
           .quick-actions-bar {
-            flex-direction: column;
+            flex-direction: row;
+            flex-wrap: wrap;
           }
-          .quick-action-btn {
+          .quick-actions-bar .quick-action-btn {
+            flex: 1 1 auto;
             justify-content: center;
+            min-height: 44px;
           }
           .modal {
             margin: 12px;
