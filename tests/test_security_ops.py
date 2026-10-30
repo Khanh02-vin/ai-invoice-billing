@@ -38,6 +38,7 @@ from src.errors import AppError
 
 # Backup
 from src.store.backup import BackupManager, SecurityError
+from src.security.api_rate_limit import _client_ip_from_scope
 
 
 # ---------- Rate limiting tests ----------
@@ -70,6 +71,32 @@ class TestRateLimiter:
         # Reset manually for test determinism
         limiter.reset(key)
         assert limiter.is_allowed(key, max_requests=2, window_seconds=1) is True
+
+
+class TestClientIpFromScope:
+    """Client IP sau proxy: chỉ tin X-Forwarded-For từ proxy đáng tin cậy,
+    và lấy phần tử CUỐI (proxy nối IP thật vào cuối) chứ không phải đầu."""
+
+    def test_trusted_proxy_uses_last_xff_element(self):
+        scope = {
+            "client": ("172.28.0.10", 54321),
+            "headers": [(b"x-forwarded-for", b"1.2.3.4, 203.0.113.7")],
+        }
+        assert _client_ip_from_scope(scope, {"172.28.0.10"}) == "203.0.113.7"
+
+    def test_untrusted_peer_ignores_xff(self):
+        scope = {
+            "client": ("10.0.0.9", 54321),
+            "headers": [(b"x-forwarded-for", b"1.2.3.4")],
+        }
+        assert _client_ip_from_scope(scope, {"172.28.0.10"}) == "10.0.0.9"
+
+    def test_no_trusted_proxies_ignores_xff(self):
+        scope = {
+            "client": ("10.0.0.9", 54321),
+            "headers": [(b"x-forwarded-for", b"1.2.3.4")],
+        }
+        assert _client_ip_from_scope(scope, set()) == "10.0.0.9"
 
 
 # ---------- Malware scanning tests ----------

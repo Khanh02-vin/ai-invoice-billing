@@ -79,9 +79,11 @@ def _client_ip_from_scope(scope: dict, trusted_proxies: set[str] | None) -> str:
     if client_host not in trusted_proxies:
         return client_host
 
-    # Lấy phần tử đầu tiên (client gốc) từ X-Forwarded-For.
+    # Lấy phần tử CUỐI của X-Forwarded-For: proxy tin cậy nối IP client thật
+    # vào cuối danh sách. Phần tử đầu do client tự gửi nên giả mạo được để né
+    # limit — dùng phần tử cuối thì giả mạo vô hiệu.
     try:
-        forwarded = xff.split(",")[0].strip()
+        forwarded = xff.split(",")[-1].strip()
         ipaddress.ip_address(forwarded)
         return forwarded
     except ValueError:

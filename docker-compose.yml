@@ -109,6 +109,12 @@ services:
       # firewall mở. Không cần certbot riêng.
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
       BACKEND_UPSTREAM: backend:8000
+    networks:
+      default:
+        # IP tĩnh cho Caddy: backend chỉ tin X-Forwarded-For đến từ đúng IP này
+        # (RATE_LIMIT_TRUSTED_PROXIES trong .env) để rate limit theo IP người
+        # dùng thay vì gộp cả app vào một bucket.
+        ipv4_address: 172.28.0.10
     ports:
       - "80:80"
       - "443:443"
@@ -130,3 +136,11 @@ volumes:
     driver: local
   caddy-config:
     driver: local
+
+# Subnet cố định — phải khớp với IP tĩnh của frontend (Caddy) ở trên và với
+# RATE_LIMIT_TRUSTED_PROXIES trong .env. Đổi subnet thì đổi cả hai nơi kia.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
