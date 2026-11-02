@@ -1,13 +1,12 @@
-import { useState, useEffect } from "react";
-import { api } from "../api";
+import { useState } from "react";
 
 const NAV_ITEMS = [
-  { id: "overview", label: "Tổng quan", icon: "📊" },
-  { id: "ledger", label: "Sổ thu chi", icon: "💳" },
-  { id: "report", label: "Báo cáo & Thu chi", icon: "📈" },
-  { id: "history", label: "Lịch sử & Lộ trình", icon: "🗺️", badge: "Mới" },
-  { id: "places", label: "Đề xuất địa điểm", icon: "📍", badge: "Mới" },
-  { id: "settings", label: "Cài đặt", icon: "⚙️" },
+  { id: "overview", label: "Tổng quan", short: "Tổng quan", icon: "📊" },
+  { id: "ledger", label: "Sổ thu chi", short: "Thu chi", icon: "💳" },
+  { id: "report", label: "Báo cáo & Thu chi", short: "Báo cáo", icon: "📈" },
+  { id: "history", label: "Lịch sử & Lộ trình", short: "Lộ trình", icon: "🗺️", badge: "Mới" },
+  { id: "purchases", label: "Mua hàng", short: "Mua hàng", icon: "🛒", badge: "Mới" },
+  { id: "settings", label: "Cài đặt", short: "Cài đặt", icon: "⚙️" },
 ];
 
 const Icon = {
@@ -17,20 +16,6 @@ const Icon = {
 
 export default function Sidebar({ view, setView, user, onLogout }) {
   const [collapsed, setCollapsed] = useState(false);
-  const [emailConnected, setEmailConnected] = useState(false);
-
-  useEffect(() => {
-    // Check if user has IMAP configured
-    const checkEmail = async () => {
-      try {
-        const res = await api("/payments/email-status");
-        setEmailConnected(res.connected);
-      } catch (e) {
-        // Ignore
-      }
-    };
-    checkEmail();
-  }, []);
 
   return (
     <aside className={`sidebar ${collapsed ? "collapsed" : ""}`} aria-label="Điều hướng chính">
@@ -55,6 +40,7 @@ export default function Sidebar({ view, setView, user, onLogout }) {
             key={item.id}
             className={`nav-item ${view === item.id ? "active" : ""} ${item.badge ? "has-badge" : ""}`}
             onClick={() => setView(item.id)}
+            data-short={item.short}
             aria-current={view === item.id ? "page" : undefined}
             title={collapsed ? item.label : undefined}
           >
@@ -68,46 +54,6 @@ export default function Sidebar({ view, setView, user, onLogout }) {
           </button>
         ))}
       </nav>
-
-      {!collapsed && (
-        <div className="sidebar-divider" />
-      )}
-
-      {!collapsed && (
-        <section className="sidebar-quick-actions" aria-label="Thao tác nhanh">
-          <h3 className="quick-actions-title">Nhận giao dịch</h3>
-          <div className="quick-action-buttons">
-            <label className="quick-action-btn" title="Tải hóa đơn lên">
-              <span className="quick-action-icon">📤</span>
-              <span className="quick-action-label">Upload</span>
-              <input
-                type="file"
-                accept="image/*,.pdf"
-                capture="environment"
-                hidden
-                aria-label="Tải lên hóa đơn"
-                onChange={(e) => window.dispatchEvent(new CustomEvent("upload-file", { detail: e.target.files?.[0] }))}
-              />
-            </label>
-            <button
-              className={`quick-action-btn ${emailConnected ? "connected" : ""}`}
-              onClick={() => window.dispatchEvent(new CustomEvent("open-email-connect"))}
-              title="Kết nối Email (nhận bill tự động)"
-            >
-              <span className="quick-action-icon">{emailConnected ? "✅" : "📧"}</span>
-              <span className="quick-action-label">Email</span>
-            </button>
-            <button
-              className="quick-action-btn"
-              onClick={() => window.dispatchEvent(new CustomEvent("open-camera"))}
-              title="Quét ảnh / AI (chụp hóa đơn)"
-            >
-              <span className="quick-action-icon">📷</span>
-              <span className="quick-action-label">Camera</span>
-            </button>
-          </div>
-        </section>
-      )}
 
       <div className="sidebar-footer">
         <div className="user-chip">

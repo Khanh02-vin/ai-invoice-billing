@@ -9,6 +9,7 @@ from enum import Enum
 from typing import Any, List, Optional
 
 from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.orm import Mapped
 from sqlmodel import JSON, Column, Field, Relationship, SQLModel
 
@@ -239,6 +240,59 @@ class TransactionAttachment(SQLModel, table=True):
     transaction: Mapped[Optional["PaymentTransaction"]] = Relationship(back_populates="attachments")
 
 
+class Purchase(SQLModel, table=True):
+    """Manual purchase without invoice — captured from photo + user input."""
+
+    __tablename__ = "purchases"
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    organization_id: str | None = Field(default=None, foreign_key="organizations.id", index=True)
+
+    item: str = ""
+    category: str = ""
+    merchant: str = ""
+    amount: float = 0.0
+    currency: str = "VND"
+    occurred_at: str | None = None
+    notes: str = ""
+    source_file: str = ""
+    file_checksum: str = ""
+    file_size: int = 0
+    mime_type: str = ""
+
+    location_lat: float | None = None
+    location_lon: float | None = None
+    location_name: str | None = None
+    location_address: str | None = None
+    location_captured_at: str | None = None
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class PurchaseLabelSample(SQLModel, table=True):
+    """Đặc trưng ảnh của một purchase đã xác nhận — để nhận diện lại món đã từng mua.
+
+    Nhãn (item/category/merchant) là của người dùng nhập/sửa khi lưu, nên mỗi
+    dòng là một mẫu dạy máy đúng chuẩn; ảnh mới trùng dHash hoặc chữ OCR là
+    điền lại được nhãn cũ."""
+
+    __tablename__ = "purchase_label_samples"
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    purchase_id: str = Field(foreign_key="purchases.id", index=True)
+
+    item: str = ""
+    category: str = ""
+    merchant: str = ""
+    ocr_text: str = ""
+    image_hash: int | None = None  # dHash 64-bit
+    embedding: bytes | None = None  # chỗ cắm vector MobileNet (phase sau)
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class SharedPlaceVisit(SQLModel, table=True):
     """Shared place visit for community suggestions."""
 
@@ -270,6 +324,63 @@ class UserEmailAccount(SQLModel, table=True):
     encrypted_password: str = ""
     folder: str = "INBOX"
     interval_seconds: int = 60
+
+
+class OAuthAccount(SQLModel, table=True):
+    """External identity linked to a local user."""
+
+    __tablename__ = "oauth_accounts"
+    __table_args__ = (
+        # One provider identity can belong to only one local user.
+        UniqueConstraint("provider", "provider_account_id"),
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    provider: str = Field(index=True)
+    provider_account_id: str = Field(index=True)
+    email: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class GmailConnection(SQLModel, table=True):
+    """A user's Gmail connection used for payment-alert ingestion."""
+
+    __tablename__ = "gmail_connections"
+    __table_args__ = (
+        UniqueConstraint("user_id", "gmail_account_id"),
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    gmail_account_id: str = Field(index=True)
+    email: str = Field(default="", index=True)
+    encrypted_refresh_token: str = ""
+    history_id: str | None = None
+    watch_expiration: datetime | None = None
+    watch_topic: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class GmailPaymentAlert(SQLModel, table=True):
+    """A deduplicated payment alert received from a Gmail connection."""
+
+    __tablename__ = "gmail_payment_alerts"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "gmail_message_id"),
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    connection_id: str = Field(foreign_key="gmail_connections.id", index=True)
+    gmail_message_id: str = Field(index=True)
+    thread_id: str = ""
+    sender: str = ""
+    subject: str = ""
+    received_at: datetime | None = None
+    raw_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class PushSubscription(SQLModel, table=True):

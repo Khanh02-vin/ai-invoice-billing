@@ -48,6 +48,55 @@ class Settings:
         default_factory=lambda: _list_env("CORS_ORIGINS", _DEFAULT_DEV_ORIGINS)
     )
 
+    google_oauth_client_id: str = field(default_factory=lambda: os.getenv("GOOGLE_CLIENT_ID", ""))
+    google_oauth_client_secret: str = field(default_factory=lambda: os.getenv("GOOGLE_CLIENT_SECRET", ""))
+    google_oauth_redirect_uri: str = field(default_factory=lambda: os.getenv("GOOGLE_REDIRECT_URI", ""))
+
+    @property
+    def google_oauth_enabled(self) -> bool:
+        return bool(
+            self.google_oauth_client_id
+            and self.google_oauth_client_secret
+            and self.google_oauth_redirect_uri
+        )
+
+    # Gmail metadata OAuth/Pub/Sub (separate from Google Sign-In).
+    gmail_oauth_client_id: str = field(
+        default_factory=lambda: os.getenv("GMAIL_CLIENT_ID", "") or os.getenv("GOOGLE_CLIENT_ID", "")
+    )
+    gmail_oauth_client_secret: str = field(
+        default_factory=lambda: os.getenv("GMAIL_CLIENT_SECRET", "") or os.getenv("GOOGLE_CLIENT_SECRET", "")
+    )
+    gmail_oauth_redirect_uri: str = field(
+        default_factory=lambda: os.getenv("GMAIL_REDIRECT_URI", "")
+        or os.getenv("GOOGLE_REDIRECT_URI", "")
+    )
+    gmail_token_encryption_key: str = field(
+        default_factory=lambda: os.getenv("GMAIL_TOKEN_ENCRYPTION_KEY", "")
+    )
+    gmail_pubsub_verification_token: str = field(
+        default_factory=lambda: os.getenv("GMAIL_PUBSUB_VERIFICATION_TOKEN", "")
+    )
+    gmail_pubsub_audience: str = field(
+        default_factory=lambda: os.getenv("GMAIL_PUBSUB_AUDIENCE", "")
+    )
+    gmail_pubsub_topic: str = field(default_factory=lambda: os.getenv("GMAIL_PUBSUB_TOPIC", ""))
+    gmail_payment_sender_filters: list[str] = field(
+        default_factory=lambda: _list_env("GMAIL_PAYMENT_SENDER_FILTERS", [])
+    )
+    gmail_payment_subject_filters: list[str] = field(
+        default_factory=lambda: _list_env("GMAIL_PAYMENT_SUBJECT_FILTERS", ["payment", "paid", "thanh toan"])
+    )
+
+    @property
+    def gmail_oauth_enabled(self) -> bool:
+        return bool(
+            self.gmail_oauth_client_id
+            and self.gmail_oauth_client_secret
+            and self.gmail_oauth_redirect_uri
+            and self.gmail_token_encryption_key
+        )
+
     # Email transport (SMTP). When configured, offline token returns are disabled.
     smtp_host: str = field(default_factory=lambda: os.getenv("EMAIL_SMTP_HOST", ""))
     smtp_port: int = field(default_factory=lambda: int(os.getenv("EMAIL_SMTP_PORT", "0")))
@@ -203,6 +252,23 @@ class Settings:
             )
         if self.debug:
             raise RuntimeError("Production không cho phép APP_DEBUG=true.")
+        if any((self.google_oauth_client_id, self.google_oauth_client_secret, self.google_oauth_redirect_uri)) and not self.google_oauth_enabled:
+            raise RuntimeError(
+                "Google OAuth production config requires GOOGLE_CLIENT_ID, "
+                "GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI together."
+            )
+        gmail_parts = (
+            self.gmail_oauth_client_id,
+            self.gmail_oauth_client_secret,
+            self.gmail_oauth_redirect_uri,
+            self.gmail_token_encryption_key,
+            self.gmail_pubsub_topic,
+        )
+        if any(gmail_parts) and not self.gmail_oauth_enabled:
+            raise RuntimeError(
+                "Gmail OAuth production config requires client credentials, redirect URI, "
+                "GMAIL_TOKEN_ENCRYPTION_KEY, and GMAIL_PUBSUB_TOPIC."
+            )
         if not self.email_enabled:
             import logging
 

@@ -11,7 +11,7 @@ const STATUS_LABEL = {
   cancelled: "Đã hủy",
 };
 
-export default function HistoryTimeline({ user, onBack }) {
+export default function HistoryTimeline({ onBack }) {
   const [timelineData, setTimelineData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -22,7 +22,6 @@ export default function HistoryTimeline({ user, onBack }) {
   const [filter, setFilter] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [locationFilter, setLocationFilter] = useState(false);
 
   const loadTimeline = useCallback(async () => {
     setLoading(true);
@@ -88,7 +87,6 @@ export default function HistoryTimeline({ user, onBack }) {
   const pageCount = Math.max(1, Math.ceil(invoices.filter(i => {
     if (filter && i.status !== filter) return false;
     if (search.trim() && !(i.invoice_number + " " + (i.vendor || "")).toLowerCase().includes(search.trim().toLowerCase())) return false;
-    if (locationFilter && !(i.location_lat && i.location_lon)) return false;
     return true;
   }).length / 8));
 
@@ -146,14 +144,10 @@ export default function HistoryTimeline({ user, onBack }) {
 
       {/* Place Suggestions */}
       <section className="card" aria-label="Đề xuất địa điểm">
-        <PlaceSuggestions 
-          lat={userLocation.lat} 
-          lon={userLocation.lon} 
+        <PlaceSuggestions
+          lat={userLocation.lat}
+          lon={userLocation.lon}
           radius={2000}
-          onSelect={(place) => {
-            // Could navigate to map or show details
-            console.log("Selected place:", place);
-          }}
         />
       </section>
 

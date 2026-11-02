@@ -20,6 +20,11 @@ Pillow>=10.0.0
 opencv-python-headless>=4.8
 pypdfium2>=4.0
 
+# Nhận diện ảnh cục bộ (purchase memory): vector MobileNetV3 qua ONNX, chạy CPU
+# ~6 ms/ảnh. Chỉ dùng khi có file model xuất sẵn bằng scripts/export_vision_model.py
+# (models/mobilenetv3_embed.onnx); thiếu lib hoặc file thì tự dùng dHash + OCR.
+onnxruntime>=1.16
+
 # Benchmark CORD (tests/benchmark_cord.py) — chỉ cho benchmark, không cần cho app
 # datasets>=2.0
 openai>=1.0

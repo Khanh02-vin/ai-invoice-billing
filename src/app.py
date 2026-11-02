@@ -52,6 +52,8 @@ from .routers.auth_ext import router as auth_ext_router
 from .routers.auth_ext import send_verification_email
 from .routers.api_keys import router as api_keys_router
 from .routers.organizations import router as organizations_router
+from .routers.google_oauth import router as google_oauth_router
+from .routers.gmail_oauth import router as gmail_oauth_router
 from .routers.payments import router as payments_router
 from .routers.push import router as push_router
 from .routers.search import router as search_router
@@ -125,6 +127,8 @@ app.include_router(push_router)
 app.include_router(payments_router)
 app.include_router(api_keys_router)
 app.include_router(organizations_router)
+app.include_router(google_oauth_router)
+app.include_router(gmail_oauth_router)
 
 # --- IMAP poller (tùy chọn): đọc email báo giao dịch bank/ví -> /payments/ingest ---
 # Chỉ chạy khi cấu hình IMAP_HOST + IMAP_USER; app vẫn boot bình thường khi thiếu.
@@ -284,6 +288,8 @@ async def login(
     _rl: None = Depends(rate_limit_dependency("rate_limit_auth_login")),
 ):
     user = users.get_by_username(data.username)
+    if user is None and "@" in data.username:
+        user = users.get_by_email(data.username)
     if not user or not verify_password(data.password, user.password_hash):
         raise AppError("INVALID_CREDENTIALS", "Sai tên người dùng hoặc mật khẩu.", status=401)
     if not user.verified:

@@ -52,4 +52,12 @@ src/invoice_billing.egg-info/
 
 # Secrets & test artifacts — không bao giờ commit
 .env.dev.backup
+.env.production.save*
 gui-test-screenshots/
+
+# Model vision xuất local (tạo lại bằng scripts/export_vision_model.py)
+models/*.onnx
+models/*.onnx.data
+
+# Ảnh người dùng xuất để fine-tune (scripts/export_training_data.py) — không bao giờ commit
+training_data/

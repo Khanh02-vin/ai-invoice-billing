@@ -40,6 +40,8 @@ dependencies = [
     "pillow>=10.0.0",
     "pytesseract>=0.3.10",
     "opencv-python-headless>=4.9.0",
+    # Nhận diện ảnh cục bộ (purchase memory): chạy khi có models/mobilenetv3_embed.onnx
+    "onnxruntime>=1.16",
     # marker-pdf for layout-aware PDF extraction (requires Rust, optional)
     # "marker-pdf>=0.1.0",
 

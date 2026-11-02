@@ -1,14 +1,25 @@
 import { useState, useEffect, useRef } from "react";
 import { api, setToken } from "./api";
 
-export default function Login({ onLogin }) {
+const GOOGLE_AUTH_URL = import.meta.env.VITE_GOOGLE_AUTH_URL || "/auth/google/start";
+
+export default function Login({ onLogin, initialError = "" }) {
   const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(initialError);
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+
+  // Server chưa cấu hình OAuth client thì ẩn nút Google (endpoint public, chỉ trả { enabled })
+  useEffect(() => {
+    fetch("/auth/google/status")
+      .then((r) => r.json())
+      .then((d) => setGoogleEnabled(!!d.enabled))
+      .catch(() => {});
+  }, []);
 
   const errorRef = useRef(null);
   const usernameRef = useRef(null);
@@ -68,14 +79,14 @@ export default function Login({ onLogin }) {
 
           <div className="form-group">
             <label htmlFor="login-username" id="login-username-label">
-              Tên đăng nhập <span className="required" aria-hidden="true">*</span>
+              {isLogin ? "Tên đăng nhập hoặc email" : "Tên đăng nhập"} <span className="required" aria-hidden="true">*</span>
               <span className="sr-only">(bắt buộc)</span>
             </label>
             <input
               ref={usernameRef}
               id="login-username"
               type="text"
-              placeholder="Nhập tên đăng nhập"
+              placeholder={isLogin ? "Nhập tên đăng nhập hoặc email" : "Nhập tên đăng nhập"}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
@@ -148,6 +159,21 @@ export default function Login({ onLogin }) {
           <button type="submit" disabled={loading} aria-busy={loading}>
             {loading ? "Đang xử lý..." : isLogin ? "Đăng nhập" : "Tạo tài khoản"}
           </button>
+
+          {isLogin && googleEnabled && (
+            <>
+              <div className="auth-divider" aria-hidden="true"><span>hoặc</span></div>
+              <button
+                type="button"
+                className="google-button"
+                onClick={() => { window.location.assign(GOOGLE_AUTH_URL); }}
+                disabled={loading}
+              >
+                <span className="google-mark" aria-hidden="true">G</span>
+                Đăng nhập bằng Google
+              </button>
+            </>
+          )}
 
           <p className="toggle">
             {isLogin ? "Chưa có tài khoản? " : "Đã có tài khoản? "}

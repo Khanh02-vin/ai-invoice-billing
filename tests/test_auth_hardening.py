@@ -104,6 +104,33 @@ def test_email_verification_flow(client, user_repo):
     assert r.status_code == 400
 
 
+# ---- Tests: Đăng nhập bằng email ----
+
+def test_login_with_email(client, user_repo):
+    """Đăng nhập được bằng email đã đăng ký, không cần username."""
+    _register(client, username="kien", email="kien@example.com")
+    user_repo.set_verified(user_repo.get_by_username("kien").id)
+
+    r = client.post("/auth/login", json={"username": "kien@example.com", "password": "matkhau123"})
+    assert r.status_code == 200, r.text
+    assert r.json()["access_token"]
+
+
+def test_login_with_email_wrong_password(client, user_repo):
+    """Email đúng nhưng mật khẩu sai vẫn 401."""
+    _register(client, username="kien", email="kien@example.com")
+    user_repo.set_verified(user_repo.get_by_username("kien").id)
+
+    r = client.post("/auth/login", json={"username": "kien@example.com", "password": "saimatkhau"})
+    assert r.status_code == 401
+
+
+def test_login_with_unknown_email(client, user_repo):
+    """Email không tồn tại -> 401 như thường."""
+    r = client.post("/auth/login", json={"username": "nobody@example.com", "password": "matkhau123"})
+    assert r.status_code == 401
+
+
 # ---- Tests: Password reset ----
 
 def test_register_sends_verification_email(monkeypatch, client, user_repo):

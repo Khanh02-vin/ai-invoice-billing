@@ -19,6 +19,8 @@ from src.models import (
     EmailVerification,
     FieldCorrection,
     FieldProvenance,
+    GmailConnection,
+    GmailPaymentAlert,
     Invoice,
     InvoiceCreate,
     InvoiceStatus,
@@ -30,7 +32,9 @@ from src.models import (
     OrganizationMember,
     PasswordReset,
     PaymentTransaction,
+    Purchase,
     PushSubscription,
+    OAuthAccount,
     RefreshToken,
     SharedPlaceVisit,
     TransactionAttachment,
@@ -123,7 +127,55 @@ class UserRepository:
         with self.db.get_session() as session:
             return session.exec(select(User).where(User.username == username)).first()
 
-    def list_verified(self) -> list[User]:
+    def get_by_email(self, email: str) -> User | None:
+        """Find a local account by normalized email without linking identities."""
+        normalized = email.strip().casefold()
+        if not normalized:
+            return None
+        with self.db.get_session() as session:
+            return session.exec(
+                select(User).where(func.lower(User.email) == normalized)
+            ).first()
+
+    def get_oauth_account(self, provider: str, provider_account_id: str) -> OAuthAccount | None:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(OAuthAccount).where(
+                    OAuthAccount.provider == provider,
+                    OAuthAccount.provider_account_id == provider_account_id,
+                )
+            ).first()
+
+    def list_oauth_accounts(self, user_id: str) -> list[OAuthAccount]:
+        with self.db.get_session() as session:
+            return session.exec(select(OAuthAccount).where(OAuthAccount.user_id == user_id)).all()
+
+    def link_oauth_account(self, user_id: str, provider: str, provider_account_id: str, email: str) -> OAuthAccount:
+        account = OAuthAccount(
+            user_id=user_id,
+            provider=provider,
+            provider_account_id=provider_account_id,
+            email=email,
+        )
+        with self.db.get_session() as session:
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+        return account
+
+    def unlink_oauth_account(self, user_id: str, provider: str) -> bool:
+        with self.db.get_session() as session:
+            account = session.exec(
+                select(OAuthAccount).where(
+                    OAuthAccount.user_id == user_id, OAuthAccount.provider == provider
+                )
+            ).first()
+            if not account:
+                return False
+            session.delete(account)
+            session.commit()
+            return True
+
         with self.db.get_session() as session:
             return session.exec(select(User).where(User.verified == True)).all()
 
@@ -165,6 +217,13 @@ class UserRepository:
                 user.verified = verified
                 session.add(user)
                 session.commit()
+
+    def list_verified(self) -> list[User]:
+        """User đã xác minh email — dùng cho IMAP poller và gợi ý địa điểm."""
+        with self.db.get_session() as session:
+            return list(
+                session.exec(select(User).where(User.verified == True)).all()  # noqa: E712
+            )
 
     def create_email_verification(self, user_id: str, token: str, expires_at: str):
         ev = EmailVerification(user_id=user_id, token=token, expires_at=expires_at)
@@ -754,6 +813,48 @@ class TransactionRepository:
             return [dict(row) for row in rows]
 
 
+class PurchaseRepository:
+    """Repository for manual purchases captured from photos."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def create(self, purchase: Purchase) -> Purchase:
+        with self.db.get_session() as session:
+            session.add(purchase)
+            session.commit()
+            session.refresh(purchase)
+            return purchase
+
+    def get(self, purchase_id: str, user_id: str = "", organization_id: str | None = None) -> Purchase | None:
+        with self.db.get_session() as session:
+            query = select(Purchase).where(Purchase.id == purchase_id)
+            if user_id:
+                query = query.where(Purchase.user_id == user_id)
+            if organization_id is not None:
+                query = query.where(Purchase.organization_id == organization_id)
+            return session.exec(query).first()
+
+    def list(self, user_id: str, organization_id: str | None = None, limit: int = 200) -> list[Purchase]:
+        with self.db.get_session() as session:
+            query = select(Purchase).where(Purchase.user_id == user_id)
+            if organization_id is not None:
+                query = query.where(Purchase.organization_id == organization_id)
+            query = query.order_by(Purchase.created_at.desc()).limit(limit)
+            return list(session.exec(query).all())
+
+    def delete(self, purchase_id: str, user_id: str) -> bool:
+        with self.db.get_session() as session:
+            purchase = session.exec(
+                select(Purchase).where(Purchase.id == purchase_id, Purchase.user_id == user_id)
+            ).first()
+            if not purchase:
+                return False
+            session.delete(purchase)
+            session.commit()
+            return True
+
+
 class InvoiceTransactionLinkRepository:
     """Liên kết nhiều-nhiều giao dịch <-> hóa đơn (ghép gộp/trả góp)."""
 
@@ -828,6 +929,268 @@ class InvoiceTransactionLinkRepository:
                 session.commit()
                 return True
             return False
+
+
+class GmailRepository:
+    """Ownership-safe persistence for Gmail connections and payment alerts."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def create_connection(
+        self,
+        user_id: str,
+        gmail_account_id: str,
+        *,
+        email: str = "",
+        encrypted_refresh_token: str = "",
+    ) -> GmailConnection:
+        """Create or return the user's connection for one Gmail account."""
+        with self.db.get_session() as session:
+            connection = session.exec(
+                select(GmailConnection).where(
+                    GmailConnection.user_id == user_id,
+                    GmailConnection.gmail_account_id == gmail_account_id,
+                )
+            ).first()
+            if connection:
+                if email:
+                    connection.email = email
+                if encrypted_refresh_token:
+                    connection.encrypted_refresh_token = encrypted_refresh_token
+                connection.updated_at = datetime.now(UTC)
+            else:
+                connection = GmailConnection(
+                    user_id=user_id,
+                    gmail_account_id=gmail_account_id,
+                    email=email,
+                    encrypted_refresh_token=encrypted_refresh_token,
+                )
+            session.add(connection)
+            session.commit()
+            session.refresh(connection)
+            return connection
+
+    def get_connection(self, connection_id: str, user_id: str) -> GmailConnection | None:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(GmailConnection).where(
+                    GmailConnection.id == connection_id,
+                    GmailConnection.user_id == user_id,
+                )
+            ).first()
+
+    def get_connection_by_account(
+        self, user_id: str, gmail_account_id: str
+    ) -> GmailConnection | None:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(GmailConnection).where(
+                    GmailConnection.user_id == user_id,
+                    GmailConnection.gmail_account_id == gmail_account_id,
+                )
+            ).first()
+
+    def list_connections(self, user_id: str) -> builtins.list[GmailConnection]:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(GmailConnection)
+                .where(GmailConnection.user_id == user_id)
+                .order_by(GmailConnection.created_at.desc())
+            ).all()
+
+    def list_all_connections(self) -> builtins.list[GmailConnection]:
+        """List Gmail connections for trusted maintenance workers."""
+        with self.db.get_session() as session:
+            return session.exec(
+                select(GmailConnection).order_by(GmailConnection.updated_at.asc())
+            ).all()
+
+    def update_cursor(self, connection_id: str, user_id: str, history_id: str) -> GmailConnection | None:
+        with self.db.get_session() as session:
+            connection = self._owned_connection(session, connection_id, user_id)
+            if not connection:
+                return None
+            connection.history_id = history_id
+            connection.updated_at = datetime.now(UTC)
+            session.add(connection)
+            session.commit()
+            session.refresh(connection)
+            return connection
+
+    def update_watch(
+        self,
+        connection_id: str,
+        user_id: str,
+        *,
+        history_id: str | None = None,
+        watch_expiration: datetime | None = None,
+        watch_topic: str | None = None,
+    ) -> GmailConnection | None:
+        with self.db.get_session() as session:
+            connection = self._owned_connection(session, connection_id, user_id)
+            if not connection:
+                return None
+            if history_id is not None:
+                connection.history_id = history_id
+            if watch_expiration is not None:
+                connection.watch_expiration = watch_expiration
+            if watch_topic is not None:
+                connection.watch_topic = watch_topic
+            connection.updated_at = datetime.now(UTC)
+            session.add(connection)
+            session.commit()
+            session.refresh(connection)
+            return connection
+
+    def upsert_payment_alert(
+        self,
+        user_id: str,
+        connection_id: str,
+        gmail_message_id: str,
+        *,
+        thread_id: str = "",
+        sender: str = "",
+        subject: str = "",
+        received_at: datetime | None = None,
+        raw_payload: dict | None = None,
+    ) -> GmailPaymentAlert | None:
+        """Insert an alert once per connection/message, updating duplicate metadata."""
+        with self.db.get_session() as session:
+            if not self._owned_connection(session, connection_id, user_id):
+                return None
+            alert = session.exec(
+                select(GmailPaymentAlert).where(
+                    GmailPaymentAlert.connection_id == connection_id,
+                    GmailPaymentAlert.gmail_message_id == gmail_message_id,
+                )
+            ).first()
+            if alert:
+                alert.thread_id = thread_id
+                alert.sender = sender
+                alert.subject = subject
+                alert.received_at = received_at
+                if raw_payload is not None:
+                    alert.raw_payload = raw_payload
+            else:
+                alert = GmailPaymentAlert(
+                    user_id=user_id,
+                    connection_id=connection_id,
+                    gmail_message_id=gmail_message_id,
+                    thread_id=thread_id,
+                    sender=sender,
+                    subject=subject,
+                    received_at=received_at,
+                    raw_payload=raw_payload or {},
+                )
+            session.add(alert)
+            session.commit()
+            session.refresh(alert)
+            return alert
+
+    def get_payment_alert(self, alert_id: str, user_id: str) -> GmailPaymentAlert | None:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(GmailPaymentAlert).where(
+                    GmailPaymentAlert.id == alert_id,
+                    GmailPaymentAlert.user_id == user_id,
+                )
+            ).first()
+
+    def get_payment_alert_by_message(
+        self, connection_id: str, gmail_message_id: str, user_id: str
+    ) -> GmailPaymentAlert | None:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(GmailPaymentAlert).where(
+                    GmailPaymentAlert.connection_id == connection_id,
+                    GmailPaymentAlert.gmail_message_id == gmail_message_id,
+                    GmailPaymentAlert.user_id == user_id,
+                )
+            ).first()
+
+    def delete_payment_alert(self, alert_id: str, user_id: str) -> bool:
+        with self.db.get_session() as session:
+            alert = session.exec(
+                select(GmailPaymentAlert).where(
+                    GmailPaymentAlert.id == alert_id,
+                    GmailPaymentAlert.user_id == user_id,
+                )
+            ).first()
+            if not alert:
+                return False
+            session.delete(alert)
+            session.commit()
+            return True
+
+    def list_payment_alerts(
+        self, connection_id: str, user_id: str, limit: int = 100
+    ) -> builtins.list[GmailPaymentAlert]:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(GmailPaymentAlert)
+                .where(
+                    GmailPaymentAlert.connection_id == connection_id,
+                    GmailPaymentAlert.user_id == user_id,
+                )
+                .order_by(GmailPaymentAlert.received_at.desc(), GmailPaymentAlert.created_at.desc())
+                .limit(limit)
+            ).all()
+
+    def get_connection_unscoped(self, connection_id: str) -> GmailConnection | None:
+        with self.db.get_session() as session:
+            return session.get(GmailConnection, connection_id)
+
+    def list_connections_by_email(self, email: str) -> builtins.list[GmailConnection]:
+        with self.db.get_session() as session:
+            return session.exec(
+                select(GmailConnection).where(GmailConnection.email == email)
+            ).all()
+
+    def disconnect(self, connection_id: str, user_id: str) -> bool:
+        """Delete a connection and all its alerts only when owned by the user."""
+        with self.db.get_session() as session:
+            connection = self._owned_connection(session, connection_id, user_id)
+            if not connection:
+                return False
+            alerts = session.exec(
+                select(GmailPaymentAlert).where(
+                    GmailPaymentAlert.connection_id == connection_id,
+                    GmailPaymentAlert.user_id == user_id,
+                )
+            ).all()
+            for alert in alerts:
+                session.delete(alert)
+            session.flush()
+            session.delete(connection)
+            session.commit()
+            return True
+
+    def clear_credentials(self, connection_id: str) -> bool:
+        """Disable a connection after Google revokes or invalidates its grant."""
+        with self.db.get_session() as session:
+            connection = session.get(GmailConnection, connection_id)
+            if not connection:
+                return False
+            connection.encrypted_refresh_token = ""
+            connection.history_id = None
+            connection.watch_expiration = None
+            connection.watch_topic = ""
+            connection.updated_at = datetime.now(UTC)
+            session.add(connection)
+            session.commit()
+            return True
+
+    @staticmethod
+    def _owned_connection(
+        session: Session, connection_id: str, user_id: str
+    ) -> GmailConnection | None:
+        return session.exec(
+            select(GmailConnection).where(
+                GmailConnection.id == connection_id,
+                GmailConnection.user_id == user_id,
+            )
+        ).first()
 
 
 class PushSubscriptionRepository:
@@ -1062,6 +1425,39 @@ class OrganizationRepository:
         ).first()
 
 
+
+def _ensure_purchase_table(db: Database) -> None:
+    """Idempotent creation of purchases table (phase 1 manual capture)."""
+    with db.engine.begin() as conn:
+        conn.exec_driver_sql(
+            """CREATE TABLE IF NOT EXISTS purchases (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                organization_id TEXT,
+                item TEXT DEFAULT '',
+                category TEXT DEFAULT '',
+                merchant TEXT DEFAULT '',
+                amount REAL DEFAULT 0,
+                currency TEXT DEFAULT 'VND',
+                occurred_at TEXT,
+                notes TEXT DEFAULT '',
+                source_file TEXT DEFAULT '',
+                file_checksum TEXT DEFAULT '',
+                file_size INTEGER DEFAULT 0,
+                mime_type TEXT DEFAULT '',
+                location_lat REAL,
+                location_lon REAL,
+                location_name TEXT,
+                location_address TEXT,
+                location_captured_at TEXT,
+                created_at TEXT NOT NULL
+            )"""
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_purchases_org ON purchases(organization_id)")
+
+
+
 # Initialize database
 _database: Database | None = None
 
@@ -1078,6 +1474,7 @@ def init_database(db_path: str = "invoices.db") -> Database:
     _database = Database(db_path)
     _database.create_tables()
     _ensure_multi_tenant_columns(_database)
+    _ensure_purchase_table(_database)
     return _database
 
 

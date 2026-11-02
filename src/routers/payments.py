@@ -21,12 +21,13 @@ from typing import NamedTuple
 
 import httpx
 from cryptography.fernet import Fernet
-from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, model_validator
 from sqlmodel import select
 
+from .. import purchase_memory
 from ..auth.security import decode_token
 from ..config import get_settings
 from ..errors import AppError
@@ -34,6 +35,7 @@ from ..extract.extractor import _extract_text, extract_invoice
 from ..llm.base import get_llm_provider
 from ..models import (
     PaymentTransaction,
+    Purchase,
     SharedPlaceVisit,
     TxDirection,
     TxStatus,
@@ -46,6 +48,7 @@ from ..store.sql_repository import (
     Database,
     InvoiceRepository,
     InvoiceTransactionLinkRepository,
+    PurchaseRepository,
     TransactionRepository,
     UserRepository,
     get_database,
@@ -586,6 +589,22 @@ async def _lookup_osm_places(lat: float, lon: float, radius: int):
     return {"places": places[:20]}
 
 
+def _reverse_geocode(lat: float, lon: float) -> str | None:
+    """Đổi tọa độ thành địa chỉ qua Nominatim (OSM, miễn phí). Best-effort — lỗi mạng trả None."""
+    try:
+        response = httpx.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 18,
+                    "addressdetails": 1, "accept-language": "vi"},
+            headers={"User-Agent": "InvoiceBillingMVP/1.0 (contact: admin@localhost)"},
+            timeout=4.0,
+        )
+        response.raise_for_status()
+        display = response.json().get("display_name")
+    except (httpx.HTTPError, ValueError):
+        return None
+    return (display or "").strip() or None
+
 
 def _calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Haversine distance in km."""
@@ -939,6 +958,22 @@ async def create_image_draft(
     if not validated.mime_type.startswith("image/"):
         raise AppError("IMAGE_REQUIRED", "Dùng ảnh sản phẩm hoặc quán cho bản nháp nhận diện.", status=415)
 
+    # Lịch sử mua hàng của chính user trúng trước — khỏi gọi LLM, chạy cả khi offline.
+    try:
+        memory_match = purchase_memory.find_similar_purchase(
+            _get_db(), user_id=user.id, content=content, mime_type=validated.mime_type
+        )
+    except Exception:
+        memory_match = None
+    if memory_match:
+        return ImageDraftResponse(
+            status="review_required",
+            merchant=memory_match.merchant,
+            item=memory_match.item,
+            category=memory_match.category,
+            message="Gợi ý từ lịch sử mua hàng của bạn. Hãy kiểm tra và xác nhận trước khi lưu giao dịch.",
+        )
+
     provider = get_llm_provider()
     complete_image = getattr(provider, "complete_image", None) if provider else None
     if complete_image is None:
@@ -979,3 +1014,175 @@ async def create_image_draft(
             status="manual_review_required",
             message="Không thể nhận diện ảnh lúc này; vui lòng nhập thông tin thủ công.",
         )
+
+
+# ---------- Manual purchase capture (no invoice) ----------
+@router.post("/purchases/manual", status_code=201)
+async def create_manual_purchase(
+    file: UploadFile | None = File(default=None),
+    item: str = Form(default=""),
+    category: str = Form(default=""),
+    merchant: str = Form(default=""),
+    amount: float = Form(default=0.0),
+    currency: str = Form(default="VND"),
+    occurred_at: str | None = Form(default=None),
+    notes: str = Form(default=""),
+    location_lat: float | None = Form(default=None),
+    location_lon: float | None = Form(default=None),
+    location_address: str | None = Form(default=None),
+    location_name: str | None = Form(default=None),
+    user: User = Depends(current_user),
+    _rl: None = Depends(rate_limit_dependency("rate_limit_upload")),
+):
+    """Capture a manual purchase from a photo when no invoice is issued."""
+    settings = get_settings()
+    storage_key = ""
+    file_checksum = ""
+    file_size = 0
+    mime_type = ""
+    if file is not None:
+        content = await file.read(settings.max_upload_bytes + 1)
+        validated = validate_upload(
+            content=content,
+            filename=file.filename or "purchase.jpg",
+            declared_mime=file.content_type or "application/octet-stream",
+            max_bytes=settings.max_upload_bytes,
+            allowed_mimes=settings.allowed_mime_types,
+            max_pdf_pages=settings.max_pdf_pages,
+        )
+        if not validated.mime_type.startswith("image/"):
+            raise AppError("IMAGE_REQUIRED", "Chỉ chấp nhận ảnh cho mua hàng thủ công.", status=415)
+        storage = LocalFileStorage(settings.storage_dir)
+        storage_key = generate_storage_key(file.filename or "purchase.jpg", content)
+        storage.put(storage_key, content)
+        file_checksum = compute_fingerprint(content)
+        file_size = validated.size
+        mime_type = validated.mime_type
+
+    if amount < 0:
+        raise AppError("INVALID_AMOUNT", "Số tiền không hợp lệ.", status=422)
+
+    if location_lat is not None and not (location_address or "").strip():
+        # Trình duyệt đã cho tọa độ → tự đổi thành địa chỉ; lỗi mạng không chặn lưu.
+        location_address = _reverse_geocode(location_lat, location_lon) or location_address
+
+    purchase = Purchase(
+        user_id=user.id,
+        item=item.strip()[:200],
+        category=category.strip()[:64],
+        merchant=merchant.strip()[:120],
+        amount=amount,
+        currency=currency or "VND",
+        occurred_at=occurred_at,
+        notes=notes.strip()[:1000],
+        source_file=storage_key,
+        file_checksum=file_checksum,
+        file_size=file_size,
+        mime_type=mime_type,
+        location_lat=location_lat,
+        location_lon=location_lon,
+        location_name=location_name,
+        location_address=location_address,
+        location_captured_at=datetime.now(timezone.utc).isoformat() if location_lat is not None else None,
+    )
+    try:
+        saved = PurchaseRepository(_get_db()).create(purchase)
+    except Exception:
+        if storage_key:
+            try:
+                LocalFileStorage(settings.storage_dir).delete(storage_key)
+            except Exception:
+                pass
+        raise AppError("PURCHASE_SAVE_FAILED", "Không thể lưu mua hàng.", status=500)
+
+    if storage_key:
+        # Nhãn user vừa xác nhận = mẫu dạy bộ nhớ nhận diện; lỗi trích xuất không chặn lưu.
+        try:
+            purchase_memory.remember_purchase(
+                _get_db(),
+                user_id=user.id,
+                purchase_id=saved.id,
+                content=content,
+                mime_type=mime_type,
+                item=saved.item,
+                category=saved.category,
+                merchant=saved.merchant,
+            )
+        except Exception:
+            pass
+
+    return {
+        "id": saved.id,
+        "item": saved.item,
+        "category": saved.category,
+        "merchant": saved.merchant,
+        "amount": saved.amount,
+        "currency": saved.currency,
+        "occurred_at": saved.occurred_at,
+        "location_lat": saved.location_lat,
+        "location_lon": saved.location_lon,
+        "location_address": saved.location_address,
+        "created_at": saved.created_at.isoformat() if hasattr(saved.created_at, "isoformat") else str(saved.created_at),
+    }
+
+
+@router.get("/purchases")
+async def list_purchases(
+    limit: int = 200,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    user: User = Depends(current_user),
+):
+    db = _get_db()
+    repo = PurchaseRepository(db)
+    rows = repo.list(user.id, limit=min(max(limit, 1), 500))
+    if from_date or to_date:
+        filtered = []
+        for p in rows:
+            day = (p.occurred_at or p.created_at.isoformat() if hasattr(p.created_at, "isoformat") else str(p.created_at))[:10]
+            if from_date and day < from_date:
+                continue
+            if to_date and day > to_date:
+                continue
+            filtered.append(p)
+        rows = filtered
+    return [
+        {
+            "id": p.id,
+            "item": p.item,
+            "category": p.category,
+            "merchant": p.merchant,
+            "amount": p.amount,
+            "currency": p.currency,
+            "occurred_at": p.occurred_at,
+            "notes": p.notes,
+            "source_file": p.source_file,
+            "file_checksum": p.file_checksum,
+            "file_size": p.file_size,
+            "mime_type": p.mime_type,
+            "location_lat": p.location_lat,
+            "location_lon": p.location_lon,
+            "location_name": p.location_name,
+            "location_address": p.location_address,
+            "location_captured_at": p.location_captured_at,
+            "created_at": p.created_at.isoformat() if hasattr(p.created_at, "isoformat") else str(p.created_at),
+        }
+        for p in rows
+    ]
+
+
+@router.delete("/purchases/{purchase_id}", status_code=204)
+async def delete_purchase(purchase_id: str, user: User = Depends(current_user)):
+    db = _get_db()
+    repo = PurchaseRepository(db)
+    purchase = repo.get(purchase_id, user.id)
+    if not purchase:
+        raise AppError("NOT_FOUND", "Không tìm thấy mua hàng.", status=404)
+    if purchase.source_file:
+        try:
+            LocalFileStorage(get_settings().storage_dir).delete(purchase.source_file)
+        except Exception:
+            pass
+    if not repo.delete(purchase_id, user.id):
+        raise AppError("NOT_FOUND", "Không tìm thấy mua hàng.", status=404)
+    return None

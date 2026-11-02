@@ -19,7 +19,7 @@ const CATEGORY_LABELS = {
   nearby: "Gần bạn",
 };
 
-export default function PlaceSuggestions({ lat, lon, radius = 2000, onSelect }) {
+export default function PlaceSuggestions({ lat, lon, radius = 2000 }) {
   const [suggestions, setSuggestions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -116,10 +116,9 @@ export default function PlaceSuggestions({ lat, lon, radius = 2000, onSelect }) 
 
       <div className={`suggestions-list ${!expanded ? "collapsed" : ""}`}>
         {suggestions.map((place, index) => (
-          <div 
+          <div
             key={`${place.lat}-${place.lon}-${place.name}`}
             className="suggestion-item"
-            onClick={() => onSelect?.(place)}
           >
             <div className="suggestion-icon">
               {CATEGORY_ICONS[place.kind] || CATEGORY_ICONS.nearby}
@@ -148,13 +147,6 @@ export default function PlaceSuggestions({ lat, lon, radius = 2000, onSelect }) 
                 />
               </div>
             </div>
-            <button 
-              className="suggestion-action"
-              onClick={(e) => { e.stopPropagation(); onSelect?.(place); }}
-              aria-label={`Chọn ${place.name}`}
-            >
-              →
-            </button>
           </div>
         ))}
       </div>
@@ -209,7 +201,6 @@ export default function PlaceSuggestions({ lat, lon, radius = 2000, onSelect }) 
           gap: 12px;
           padding: 12px 16px;
           border-bottom: 1px solid var(--border);
-          cursor: pointer;
           transition: background 0.15s;
         }
         .suggestion-item:last-child {
@@ -279,19 +270,6 @@ export default function PlaceSuggestions({ lat, lon, radius = 2000, onSelect }) 
           height: 100%;
           border-radius: 999px;
           transition: width 0.3s ease;
-        }
-        .suggestion-action {
-          background: none;
-          border: none;
-          color: var(--text-dim);
-          font-size: 16px;
-          cursor: pointer;
-          padding: 4px;
-          opacity: 0;
-          transition: opacity 0.15s;
-        }
-        .suggestion-item:hover .suggestion-action {
-          opacity: 1;
         }
         .suggestions-loading,
         .suggestions-error,

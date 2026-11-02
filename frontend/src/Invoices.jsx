@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { api, clearToken } from "./api";
+import { api, getToken } from "./api";
 import Ledger from "./Ledger";
+import Purchases from "./Purchases";
 import Sidebar from "./components/Sidebar";
-import QuickActions from "./components/QuickActions";
+import CameraScan from "./components/CameraScan";
+import EmailImap from "./components/EmailImap";
 import HistoryTimeline from "./views/HistoryTimeline";
-import PlaceRecommendations from "./views/PlaceRecommendations";
 import { CountUp, Sparkline } from "./components/mini";
 import { pushSupported, pushStatus, enablePush, disablePush, sendTestPush } from "./push.js";
 
@@ -50,7 +51,6 @@ export default function Invoices({ user, onLogout }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [msg, setMsg] = useState(null);
-  const [reportExpanded, setReportExpanded] = useState(false);
   const [settingsSections, setSettingsSections] = useState({
     team: true,
     billing: true,
@@ -63,6 +63,10 @@ export default function Invoices({ user, onLogout }) {
   // Push notification (PWA)
   const [pushState, setPushState] = useState(pushSupported() ? "off" : "unsupported");
   const [pushBusy, setPushBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [gmailBusy, setGmailBusy] = useState(false);
+  const [gmailState, setGmailState] = useState({ connected: false, email: null });
+  const [gmailAlerts, setGmailAlerts] = useState([]);
 
   // Review panel state
   const [reviewInvoice, setReviewInvoice] = useState(null);
@@ -82,7 +86,16 @@ export default function Invoices({ user, onLogout }) {
     }
   }, []);
 
-  // Load push status
+  useEffect(() => {
+    Promise.all([
+      api("/auth/gmail/status"),
+      api("/auth/gmail/alerts"),
+    ]).then(([status, alerts]) => {
+      setGmailState(status);
+      setGmailAlerts(alerts);
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     pushStatus().then(setPushState).catch(() => {});
   }, []);
@@ -340,9 +353,6 @@ export default function Invoices({ user, onLogout }) {
 
   // Listen for custom events from components
   useEffect(() => {
-    const handleUploadFile = (e) => {
-      if (e.detail) upload(e.detail);
-    };
     const handleRefreshInvoices = () => {
       api("/invoices").then(setInvoices).catch(() => {});
     };
@@ -350,31 +360,13 @@ export default function Invoices({ user, onLogout }) {
       const invoice = invoices.find(i => i.id === e.detail);
       if (invoice) setReviewInvoice({ ...invoice });
     };
-    const handleEditInvoice = (e) => {
-      const invoice = invoices.find(i => i.id === e.detail);
-      if (invoice) setReviewInvoice({ ...invoice });
-    };
-    const handleOpenEmailConnect = () => {
-      // QuickActions handles its own modal
-    };
-    const handleOpenCamera = () => {
-      // QuickActions handles its own modal
-    };
 
-    window.addEventListener("upload-file", handleUploadFile);
     window.addEventListener("refresh-invoices", handleRefreshInvoices);
     window.addEventListener("view-invoice", handleViewInvoice);
-    window.addEventListener("edit-invoice", handleEditInvoice);
-    window.addEventListener("open-email-connect", handleOpenEmailConnect);
-    window.addEventListener("open-camera", handleOpenCamera);
 
     return () => {
-      window.removeEventListener("upload-file", handleUploadFile);
       window.removeEventListener("refresh-invoices", handleRefreshInvoices);
       window.removeEventListener("view-invoice", handleViewInvoice);
-      window.removeEventListener("edit-invoice", handleEditInvoice);
-      window.removeEventListener("open-email-connect", handleOpenEmailConnect);
-      window.removeEventListener("open-camera", handleOpenCamera);
     };
   }, [invoices]);
 
@@ -430,6 +422,24 @@ export default function Invoices({ user, onLogout }) {
       .catch((e) => { showErr(e); });
   };
 
+  // Tải PDF qua fetch kèm Bearer — href trực tiếp bị 401 vì endpoint yêu cầu đăng nhập
+  const downloadReportPdf = async () => {
+    try {
+      const res = await fetch(`/reports/monthly/${month}.pdf`, {
+        headers: { Authorization: `Bearer ${getToken()}` },
+      });
+      if (!res.ok) throw new Error("Không tải được PDF (cần đăng nhập lại?).");
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `bao-cao-${month}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showErr(e);
+    }
+  };
+
   // Stats
   const stats = useMemo(() => {
     const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
@@ -449,13 +459,16 @@ export default function Invoices({ user, onLogout }) {
 
   // Filtered rows for table
   const rows = useMemo(() => {
-    const all = search.trim()
-      ? invoices.filter((i) =>
-          (i.invoice_number + " " + (i.vendor || "")).toLowerCase().includes(search.trim().toLowerCase())
-        )
-      : invoices;
+    const q = search.trim().toLowerCase();
+    let all = invoices;
+    if (q) {
+      all = all.filter((i) =>
+        (i.invoice_number + " " + (i.vendor || "")).toLowerCase().includes(q)
+      );
+    }
+    if (filter) all = all.filter((i) => i.status === filter);
     return all.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
-  }, [invoices, search]);
+  }, [invoices, search, filter]);
 
   const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
@@ -467,15 +480,80 @@ export default function Invoices({ user, onLogout }) {
   const paidRatio = stats.total ? (stats.paid / stats.total) * 100 : 0;
   const dupOrgNames = new Set(orgs.map((o) => o.name).filter((n, i, a) => a.indexOf(n) !== i));
 
+  const startGoogleLink = async () => {
+    setGoogleBusy(true);
+    try {
+      const response = await fetch("/auth/google/link/start", {
+        headers: { Authorization: `Bearer ${getToken()}` },
+        redirect: "manual",
+      });
+      const location = response.headers.get("Location");
+      if (!response.ok && response.status !== 307 && response.status !== 303) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.error?.message || "Không thể liên kết Google.");
+      }
+      if (!location) throw new Error("Không nhận được liên kết Google.");
+      window.location.assign(location);
+    } catch (e) {
+      showErr(e);
+      setGoogleBusy(false);
+    }
+  };
+
+  const startGmailConnect = async () => {
+    setGmailBusy(true);
+    try {
+      const response = await fetch("/auth/gmail/start", {
+        headers: { Authorization: `Bearer ${getToken()}` }, redirect: "manual",
+      });
+      const location = response.headers.get("Location");
+      if (!location) throw new Error("Không nhận được liên kết Gmail.");
+      window.location.assign(location);
+    } catch (e) { showErr(e); setGmailBusy(false); }
+  };
+
+  const disconnectGmail = async () => {
+    if (!window.confirm("Ngắt kết nối Gmail và xóa trạng thái theo dõi?")) return;
+    setGmailBusy(true);
+    try {
+      await api("/auth/gmail", { method: "DELETE" });
+      setGmailState({ connected: false, email: null });
+      setGmailAlerts([]);
+    } catch (e) { showErr(e); } finally { setGmailBusy(false); }
+  };
+
+  const enterGmailAmount = async (alert) => {
+    const raw = window.prompt(`Nhập số tiền đã chuyển cho email “${alert.subject || "không có tiêu đề"}”:`);
+    if (!raw) return;
+    const amount = Number(raw);
+    if (!Number.isFinite(amount) || amount <= 0) { showErr(new Error("Số tiền không hợp lệ.")); return; }
+    try {
+      const result = await api(`/auth/gmail/alerts/${alert.id}/transaction`, {
+        method: "POST", body: JSON.stringify({ amount, currency: "VND" }),
+      });
+      setGmailAlerts((items) => items.filter((item) => item.id !== alert.id));
+      setMsg({ ok: true, text: `Đã tạo giao dịch (${result.payment_match_status}).` });
+    } catch (e) { showErr(e); }
+  };
+
+  const unlinkGoogle = async () => {
+    if (!window.confirm("Hủy liên kết tài khoản Google?")) return;
+    setGoogleBusy(true);
+    try {
+      await api("/auth/google/link", { method: "DELETE" });
+      setMsg({ ok: true, text: "Đã hủy liên kết tài khoản Google." });
+    } catch (e) {
+      showErr(e);
+    } finally {
+      setGoogleBusy(false);
+    }
+  };
+
   const toggleSection = (key) => {
     setSettingsSections((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  // Handle invoice actions
-  const handleViewDetail = (invoice) => {
-    setReviewInvoice({ ...invoice });
-  };
-
+  // Handle invoice actions — bấm dòng hay nút Sửa đều mở panel sửa
   const handleEdit = (invoice) => {
     setReviewInvoice({ ...invoice });
   };
@@ -499,11 +577,11 @@ export default function Invoices({ user, onLogout }) {
 
       <main id="main-content" className="main" tabIndex={-1}>
         {view === "ledger" ? (
-          <Ledger onBack={() => { setView("overview"); setLedgerTransactionId(""); }} onLogout={() => { clearToken(); onLogout?.(); }} initialTransactionId={ledgerTransactionId} />
+          <Ledger onBack={() => { setView("overview"); setLedgerTransactionId(""); }} initialTransactionId={ledgerTransactionId} />
         ) : view === "history" ? (
-          <HistoryTimeline user={user} onBack={() => setView("overview")} />
-        ) : view === "places" ? (
-          <PlaceRecommendations user={user} onBack={() => setView("overview")} />
+          <HistoryTimeline onBack={() => setView("overview")} />
+        ) : view === "purchases" ? (
+          <Purchases onBack={() => setView("overview")} />
         ) : (
           <div>
             {/* Global message / error banner */}
@@ -527,14 +605,14 @@ export default function Invoices({ user, onLogout }) {
                     <h1>Tổng quan</h1>
                     <p className="muted">Theo dõi dòng tiền hóa đơn</p>
                   </div>
+                  <div className="page-actions">
+                    <label className="btn-primary">
+                      {Icon.upload} Thêm hóa đơn
+                      <input type="file" hidden accept="image/*,.pdf" aria-label="Chọn file hóa đơn để upload" onChange={(e) => { if (e.target.files?.[0]) upload(e.target.files[0]); e.target.value = ""; }} />
+                    </label>
+                    <CameraScan />
+                  </div>
                 </header>
-
-                {/* Quick Actions */}
-                <QuickActions 
-                  onUpload={upload}
-                  onEmailConnect={() => {}}
-                  onCamera={() => {}}
-                />
 
                 {/* Stats */}
                 <section className="stat-grid" aria-label="Thống kê">
@@ -567,15 +645,15 @@ export default function Invoices({ user, onLogout }) {
                     <p className="muted">Tiền đã được ghi nhận từ thông báo thanh toán. Tải hóa đơn để đối soát, hoặc chụp sản phẩm nếu không có hóa đơn.</p>
                     <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
                       {pendingTx.map((t) => (
-                        <li key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "10px 0", borderTop: "1px solid var(--border)" }}>
+                        <li key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, padding: "10px 0", borderTop: "1px solid var(--border)" }}>
                           <div>
                             <strong>{money(t.currency, t.amount)}</strong>
                             <span className="muted">{" · "}{t.merchant || t.source}{t.occurred_at ? ` · ${t.occurred_at.slice(0, 10)}` : ""}</span>
                           </div>
-                          <div className="row">
-                            <label className="btn-small">Tải hóa đơn<input type="file" accept="image/*,.pdf" capture="environment" hidden disabled={submitting} onChange={(e) => { uploadInvoiceForTransaction(e.target.files?.[0], t.id); e.target.value = ""; }} /></label>
-                            <button className="btn-small" onClick={() => openPendingTransaction(t.id)}>Không có hóa đơn — chụp sản phẩm</button>
-                            <button className="btn-ghost" onClick={() => dismissTx(t.id)}>Bỏ qua</button>
+                          <div className="row tx-actions">
+                            <label className="btn-small">📎 Hóa đơn<input type="file" accept="image/*,.pdf" hidden disabled={submitting} onChange={(e) => { uploadInvoiceForTransaction(e.target.files?.[0], t.id); e.target.value = ""; }} /></label>
+                            <button className="btn-small" onClick={() => openPendingTransaction(t.id)} title="Không có hóa đơn — chụp sản phẩm">📷 Chụp món</button>
+                            <button className="btn-ghost" onClick={() => dismissTx(t.id)} title="Bỏ qua giao dịch này">✕ Bỏ qua</button>
                           </div>
                         </li>
                       ))}
@@ -635,10 +713,7 @@ export default function Invoices({ user, onLogout }) {
                           Xóa bộ lọc
                         </button>
                       ) : (
-                        <label className="btn-primary">
-                          {Icon.upload} Upload hóa đơn
-                          <input type="file" hidden accept="image/*,.pdf" capture="environment" aria-label="Chụp hoặc tải hóa đơn" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
-                        </label>
+                        <p className="muted" style={{ margin: 0 }}>Bấm “Thêm hóa đơn” hoặc “Camera” ở đầu trang để upload hoặc chụp hóa đơn đầu tiên.</p>
                       )}
                     </div>
                   ) : (
@@ -658,7 +733,7 @@ export default function Invoices({ user, onLogout }) {
                           </thead>
                           <tbody>
                             {pagedRows.map((i, idx) => (
-                              <tr key={i.id} aria-rowindex={idx + 1}>
+                              <tr key={i.id} aria-rowindex={idx + 1} onClick={() => handleEdit(i)} title="Bấm để sửa hóa đơn">
                                 <td data-label="Mã">
                                   {needsReview(i) && (
                                     <span className="dot-warn" title="Có field máy đọc không chắc — bấm để sửa" />
@@ -691,16 +766,8 @@ export default function Invoices({ user, onLogout }) {
                                 <td className="col-actions">
                                   <div className="action-buttons">
                                     <button
-                                      className="action-btn view"
-                                      onClick={() => handleViewDetail(i)}
-                                      aria-label={`Xem chi tiết hóa đơn ${i.invoice_number}`}
-                                      title="Xem chi tiết"
-                                    >
-                                      {Icon.search}
-                                    </button>
-                                    <button
                                       className="action-btn edit"
-                                      onClick={() => handleEdit(i)}
+                                      onClick={(e) => { e.stopPropagation(); handleEdit(i); }}
                                       aria-label={`Chỉnh sửa hóa đơn ${i.invoice_number}`}
                                       title="Chỉnh sửa"
                                     >
@@ -708,7 +775,7 @@ export default function Invoices({ user, onLogout }) {
                                     </button>
                                     <button
                                       className="action-btn delete"
-                                      onClick={() => handleDelete(i)}
+                                      onClick={(e) => { e.stopPropagation(); handleDelete(i); }}
                                       aria-label={`Xóa hóa đơn ${i.invoice_number}`}
                                       title="Xóa"
                                     >
@@ -821,10 +888,14 @@ export default function Invoices({ user, onLogout }) {
                   <button className="btn-primary" onClick={loadReport} aria-label="Xem báo cáo tháng đã chọn">Xem báo cáo</button>
                   {report && (
                     <div className="report-result" role="region" aria-live="polite" aria-label="Kết quả báo cáo">
-                      <p>Tổng doanh thu: <strong>{money(report.currency, report.total_revenue)}</strong></p>
-                      <a className="btn-ghost" href={"/reports/monthly/" + month + ".pdf"} target="_blank" rel="noopener noreferrer">
-                        Tải PDF
-                      </a>
+                      <p className="report-meta">Kỳ {report.period} · {report.invoice_count} hóa đơn</p>
+                      <div className="report-big">
+                        <div className="report-item"><div className="report-label">Tổng</div><div className="report-value">{money("VND", report.total_amount)}</div></div>
+                        <div className="report-item"><div className="report-label">Đã thanh toán</div><div className="report-value">{money("VND", report.paid_amount)}</div></div>
+                        <div className="report-item"><div className="report-label">Chưa thanh toán</div><div className="report-value">{money("VND", report.unpaid_amount)}</div></div>
+                        <div className="report-item"><div className="report-label">Thuế</div><div className="report-value">{money("VND", report.total_tax)}</div></div>
+                      </div>
+                      <button className="btn-ghost" onClick={downloadReportPdf}>Tải PDF</button>
                     </div>
                   )}
                 </section>
@@ -1005,9 +1076,7 @@ export default function Invoices({ user, onLogout }) {
                             <strong>{billingInfo.amount}/tháng</strong>
                           </div>
                         </div>
-                        <button className="btn-primary" aria-label="Nâng cấp gói dịch vụ">
-                          Nâng cấp gói
-                        </button>
+                        <EmailImap />
                       </div>
                     )}
                   </section>
@@ -1027,10 +1096,49 @@ export default function Invoices({ user, onLogout }) {
                     </button>
                     {settingsSections.security && (
                       <div id="settings-security-content" role="region" aria-labelledby="settings-security-heading">
-                        <p className="muted">Quản lý mật khẩu tài khoản.</p>
-                        <button className="btn-ghost" aria-label="Thay đổi mật khẩu tài khoản">
-                          Thay đổi mật khẩu
-                        </button>
+                        <p className="muted">Quản lý mật khẩu tài khoản và phương thức đăng nhập.</p>
+                        <div className="settings-row settings-oauth-row">
+                          <div>
+                            <strong>Google</strong>
+                            <p className="muted">Dùng tài khoản Google để đăng nhập nhanh hơn.</p>
+                          </div>
+                          <div className="row">
+                            <button
+                              className="btn-ghost"
+                              onClick={startGoogleLink}
+                              disabled={googleBusy}
+                            >
+                              Liên kết Google
+                            </button>
+                            <button className="btn-ghost" onClick={unlinkGoogle} disabled={googleBusy}>
+                              Hủy liên kết
+                            </button>
+                          </div>
+                        </div>
+                        <div className="settings-row settings-oauth-row">
+                          <div>
+                            <strong>Gmail thông báo thanh toán</strong>
+                            <p className="muted">{gmailState.connected ? `Đã kết nối ${gmailState.email || "Gmail"}. Chỉ đọc tiêu đề/người gửi.` : "Nhận cảnh báo email thanh toán mà không đọc nội dung thư."}</p>
+                          </div>
+                          <div className="row">
+                            {gmailState.connected ? (
+                              <button className="btn-ghost" onClick={disconnectGmail} disabled={gmailBusy}>Ngắt kết nối Gmail</button>
+                            ) : (
+                              <button className="btn-ghost" onClick={startGmailConnect} disabled={gmailBusy}>Kết nối Gmail để nhận thông báo thanh toán</button>
+                            )}
+                          </div>
+                        </div>
+                        {gmailAlerts.length > 0 && (
+                          <div className="gmail-alert-list">
+                            <strong>Email thanh toán mới</strong>
+                            {gmailAlerts.map((alert) => (
+                              <div className="settings-row" key={alert.id}>
+                                <span><b>{alert.subject || "Không có tiêu đề"}</b><br /><small>{alert.sender}</small></span>
+                                <button className="btn-ghost" onClick={() => enterGmailAmount(alert)}>Nhập số tiền đã chuyển</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </section>
@@ -1153,6 +1261,15 @@ export default function Invoices({ user, onLogout }) {
         }
         .page-header .muted {
           margin: 4px 0 0;
+        }
+        .page-actions {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+        .inv-table tbody tr {
+          cursor: pointer;
         }
         .card-head {
           display: flex;

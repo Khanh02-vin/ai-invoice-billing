@@ -77,6 +77,7 @@ if Celery is not None:
             "src.workers.extraction_worker.*": {"queue": "extraction"},
             "src.workers.billing_worker.*": {"queue": "billing"},
             "src.workers.pdf_worker.*": {"queue": "pdf"},
+            "src.workers.gmail_worker.*": {"queue": "gmail"},
         },
         # Default queue
         task_default_queue="default",
@@ -87,7 +88,11 @@ if Celery is not None:
             "cleanup-expired-tasks": {
                 "task": "src.workers.cleanup_worker.cleanup_expired",
                 "schedule": 3600.0,  # Every hour
-            }
+            },
+            "renew-gmail-watches": {
+                "task": "src.workers.gmail_worker.renew_gmail_watches",
+                "schedule": 1800.0,  # Every 30 minutes
+            },
         },
     )
 
@@ -95,7 +100,7 @@ if Celery is not None:
 # Task registration — import tường minh (autodiscover chỉ tìm module tên
 # tasks.py nên bỏ sót extraction_worker, task vào queue mà không ai nhận).
 # ---------------------------------------------------------------------------
-app.conf.update(imports=("src.workers.extraction_worker",))
+app.conf.update(imports=("src.workers.extraction_worker", "src.workers.gmail_worker"))
 
 
 # ---------------------------------------------------------------------------

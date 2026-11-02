@@ -105,6 +105,12 @@ class UserRepository(SQLiteRepo):
             row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         return self._row_to_user(row) if row else None
 
+    def get_by_email(self, email: str) -> User | None:
+        """Tìm người dùng theo email (đăng nhập bằng email)."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        return self._row_to_user(row) if row else None
+
     def get(self, user_id: str) -> User | None:
         """Tìm người dùng theo id."""
         with self._connect() as conn:

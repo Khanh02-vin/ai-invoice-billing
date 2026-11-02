@@ -211,7 +211,6 @@ export default function JourneyMap({ timelineData, height = 400 }) {
             <span>${transportIcon} ${transportLabel}</span>
             <span>🕐 ${formatTime(point.occurred_at)}</span>
           </p>
-          ${point.invoice_id ? `<button class="popup-btn" data-invoice="${point.invoice_id}">Xem hóa đơn</button>` : ""}
         </div>
       `;
 
@@ -637,10 +636,10 @@ export default function JourneyMap({ timelineData, height = 400 }) {
           border: 3px solid var(--surface);
         }
         .marker-wrapper.start .marker-pin {
-          background: #22c55e;
+          background: var(--success);
         }
         .marker-wrapper.end .marker-pin {
-          background: #ef4444;
+          background: var(--danger);
         }
         .marker-number {
           transform: rotate(45deg);
@@ -675,19 +674,6 @@ export default function JourneyMap({ timelineData, height = 400 }) {
           gap: 4px;
           font-size: var(--fs-xs);
           color: var(--text-dim);
-        }
-        .popup-btn {
-          margin-top: 8px;
-          padding: 6px 12px;
-          background: var(--accent);
-          color: white;
-          border: none;
-          border-radius: var(--r-sm);
-          cursor: pointer;
-          font-size: var(--fs-xs);
-        }
-        .popup-btn:hover {
-          background: var(--accent-hover);
         }
 
         @media (max-width: 760px) {

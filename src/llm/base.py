@@ -21,7 +21,8 @@ def _load_dotenv():
         pass
 
 
-_load_dotenv()
+# Environment variables are supplied by the process/container. Do not implicitly
+# load repository .env files from an imported library module.
 
 
 class LLMProvider(ABC):

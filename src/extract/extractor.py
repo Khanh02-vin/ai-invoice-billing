@@ -24,6 +24,7 @@ class OcrLine(NamedTuple):
 
     text: str
     box: tuple[float, float, float, float]
+    conf: float = 0.0
 
 
 def _llm_threshold() -> float:
@@ -42,8 +43,10 @@ def _llm_threshold() -> float:
 
 
 # --- Nhãn song ngữ (Anh + Việt) ---
+# "so phieu"/"số phiếu": lớp ký tự cho phép cả text OCR mất dấu (phong cách h[oó][aá])
 _INVOICE_NO_RE = re.compile(
-    r"(?:invoice\s*(?:no|number|#)|số\s*h[oó][aá]\s*đơn|hđ\s*số)\s*[:#]?\s*([A-Z0-9\-_/]+)", re.I
+    r"(?:invoice\s*(?:no|number|#)|số\s*h[oó][aá]\s*đơn|hđ\s*số|s[ốo]\s*ph[ií][eêế]?u)\s*[:#]?\s*([A-Z0-9\-_/]+)",
+    re.I,
 )
 
 
@@ -58,8 +61,30 @@ def _clean_vendor_line(s: str) -> str:
 _VENDOR_RE = re.compile(
     r"(?m)^\s*(?:from|vendor|seller|supplier|người\s*bán(?!\s*hàng))\s*[:#]?\s*(.+)", re.I
 )
+
+# Dòng KHÔNG phải tên vendor: timestamp ISO '2026-11-01 09:40', giờ '08:30|...',
+# ngày dd/mm, và dòng thuần số/ký tự phân cách ('37,300', '0347433293') —
+# OCR bán lẻ VN hay in dòng ngày/số trước tên cửa hàng.
+_VENDOR_NO_NAME_RE = re.compile(
+    r"^(?:receipt|invoice|tax invoice|cash|date|doc no|"
+    r"\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?|"
+    r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|"
+    r"\d{1,2}:\d{2}|"
+    r"[\d.,\s|:]+)$",
+    re.I,
+)
+
+
+def _first_vendor_line(text: str) -> str | None:
+    """Dòng đầu tiên trông như tên cửa hàng (bỏ dòng ngày/giờ/thuần số)."""
+    for l in text.splitlines():
+        l = l.strip()
+        if len(l) >= 3 and not _VENDOR_NO_NAME_RE.search(l):
+            return _clean_vendor_line(l[:80])
+    return None
 _DATE_RE = re.compile(
-    r"(?:invoice\s*date|issue\s*date|dated|date(?:\s*time)?|ngày)\s*[:#]?\s*"
+    # \s* giữa 'ngày' và verb: OCR dán liền nhãn ('Ngaytao 2026-11-0109:40' — ảnh thật)
+    r"(?:invoice\s*date|issue\s*date|dated|date(?:\s*time)?|ng[àa]y(?:\s*(?:t[ảạa]o|l[ậa]p|xu[ấa]t|nh[ậa]p|mua|ghi))?)\s*[:#]?\s*"
     r"(\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2})",
     re.I,
 )
@@ -75,6 +100,10 @@ _DUE_RE = re.compile(
 _TOTAL_LABELS = (
     r"nett?\s*total|total\s*due|total\s*payable|final\s*total|total\s*amount|grand\s*total|"
     r"balance\s*due|amount\s*due|rounding|tổng\s*cộng\s*tiền\s*thanh\s*toán|"
+    # receipt bán lẻ VN (PosApp/WinMart): lớp ký tự chấp nhận cả text OCR mất dấu;
+    # 'tổng' gồm đủ 5 dấu (ố ồ ổ ỗ ộ) vì TỔNG in hoa dấu hỏi là biến thể hay gặp
+    r"t[ôốồổỗộo]ng\s*thanh\s*to[áàảãạa]n|ti[ềếểễệe]n\s*c[ầấẩẫậa]n\s*thanh\s*to[áàảãạa]n|"
+    r"t[ôốồổỗộo]ng\s*ti[ềếểễệe]n\s*h[àáảãạa]ng|th[àáảãạa]nh\s*ti[ềếểễệe]n|"
     r"total\s*sales|total\s*includes|net\s*amt|net\s*amount|\btotal\b|sub[\s-]*total"
 )
 
@@ -169,6 +198,9 @@ def _pick_total(text: str, layout: list | None = None) -> str | None:
         rank = 3
         if any(k in lab for k in ("payable", "nett", "grand", "final", "due", "amount")):
             rank = 4
+        # "tổng thanh toán"/"tiền cần thanh toán" (song ngữ có/không dấu) = nhãn mạnh
+        if re.search(r"thanh\s*to[áa]n$|c[ầa]n\s*thanh", lab):
+            rank = 5
         if "rounding" in lab:
             rank = 6
         if (
@@ -198,7 +230,8 @@ _LAYOUT_LABELS = (
     r"nett?\s*total|total\s*due|total\s*payable|final\s*total|total\s*amount|grand\s*total|"
     r"balance\s*due|amount\s*due|total\s*includes|net\s*amt|net\s*amount|\btotal\b|sub[\s-]*total|"
     r"tong\s*cong\b(?!\s*tien\s*hang)|tong\s*cong\s*tien\s*thanh\s*toan|tong\s*phai\s*tra\b|"
-    r"tong\s*tien\b|tong\s*thanh\s*toan\b|\bcan\s*tra\b|khach\s*phai\s*tra\b"
+    r"tong\s*tien\b|tong\s*thanh\s*toan\b|\bcan\s*tra\b|khach\s*phai\s*tra\b|"
+    r"tien\s*can\s*thanh\s*toan\b|thanh\s*tien\b"
 )
 _LAYOUT_AMOUNT_RE = _amount_re(_LAYOUT_LABELS)
 _LAYOUT_LABEL_RE = re.compile(rf"(?P<label>{_LAYOUT_LABELS})", re.I)
@@ -248,7 +281,14 @@ def _layout_priority(label: str, ctx: str) -> int:
         return 4
     if any(
         k in lab
-        for k in ("tong tien", "tong phai tra", "tong thanh toan", "can tra", "khach phai tra")
+        for k in (
+            "tong tien",
+            "tong phai tra",
+            "tong thanh toan",
+            "can tra",
+            "khach phai tra",
+            "tien can thanh toan",
+        )
     ):
         return 4
     if "incl" in ctx:
@@ -312,6 +352,25 @@ def _parse_number(s: str) -> float:
     return _to_float(s, vi=True)
 
 
+def _lines_to_text(lines: list) -> str:
+    """list[OcrLine] → text theo chiều đọc: sort theo bbox (y rồi x), rồi gộp
+    các box cùng in-hàng thành 1 dòng. OCR trả box theo thứ tự riêng và hay
+    tách nhãn/số tiền thành 2 box cạnh nhau — join thẳng theo list là mất cặp
+    nhãn+giá. (Ảnh đơn; PDF đa trang giữ join theo thứ tự trang.)"""
+    lines = sorted(lines, key=lambda l: ((l.box[1] + l.box[3]) / 2, l.box[0]))
+    rows: list[list[tuple[float, str]]] = []
+    prev_cy = prev_h = 0.0
+    for l in lines:
+        x0, y0, x1, y1 = l.box
+        cy, h = (y0 + y1) / 2, y1 - y0
+        if rows and abs(cy - prev_cy) <= 0.5 * max(prev_h, h):
+            rows[-1].append((x0, l.text))
+        else:
+            rows.append([(x0, l.text)])
+        prev_cy, prev_h = cy, h
+    return "\n".join(" ".join(t for _, t in sorted(r)) for r in rows)
+
+
 def _extract_text_with_layout(content: bytes, mime_type: str) -> tuple[str, list | None]:
     """Trả về (text, layout) — layout (list[OcrLine]) chỉ có khi text sinh từ OCR."""
     if mime_type == "application/pdf":
@@ -323,7 +382,7 @@ def _extract_text_with_layout(content: bytes, mime_type: str) -> tuple[str, list
     if mime_type.startswith("image/"):
         layout = _paddle_ocr_lines(content)
         if layout:
-            return "\n".join(l.text for l in layout), layout
+            return _lines_to_text(layout), layout
         return _tesseract_text(content), None
     if mime_type == "text/plain":
         return content.decode("utf-8", errors="ignore"), None
@@ -378,10 +437,59 @@ def _pdf_ocr_lines(content: bytes) -> list:
         return []
 
 
+def _ocr_image(ocr, img) -> list:
+    """OCR 1 mảng ảnh → list[OcrLine] (text + bbox + điểm engine)."""
+    result = ocr.ocr(img, cls=True)
+    lines = []
+    for line in result[0] or []:
+        box = line[0]
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
+        lines.append(OcrLine(line[1][0], (min(xs), min(ys), max(xs), max(ys)), line[1][1]))
+    return lines
+
+
+def _looks_rotated(lines: list) -> bool:
+    """Đa số box OCR dọc (cao gấp 1.5 lần rộng) → ảnh đang bị xoay 90°."""
+    if not lines:
+        return False
+    tall = sum(1 for l in lines if (l.box[3] - l.box[1]) > 1.5 * max(l.box[2] - l.box[0], 1.0))
+    return tall / len(lines) > 0.6
+
+
+def _ocr_with_rotation(ocr_fn, pil_img) -> list:
+    """OCR ảnh PIL qua ocr_fn(np.array)->list[OcrLine]. Đa số box dọc (ảnh chụp
+    bị xoay 90°, EXIF thường mất/khớp sai khi decode bytes) → thử 2 hướng xoay:
+    ưu tiên hướng có nhãn tiền kề số (hóa đơn in số bên phải nhãn — conf không
+    phân biệt vì engine đọc được cả chữ 180°), tie-break bằng conf trung bình."""
+    import numpy as np
+    from PIL import Image
+
+    def run(im):
+        return ocr_fn(np.array(im))
+
+    lines = run(pil_img)
+    if not _looks_rotated(lines):
+        return lines
+    best, best_score = lines, (-1, -1.0)
+    for rot in (Image.ROTATE_270, Image.ROTATE_90):
+        cand = run(pil_img.transpose(rot))
+        if not cand:
+            continue
+        # Match trong 1 dòng in thôi: regex 'nhãn...số' ăn cả \n, match xuyên
+        # dòng ở hướng mirror là ảo (nhãn cuối dòng trên, số đầu dòng dưới).
+        score = (
+            1 if any(_AMOUNT_RE.search(r) for r in _lines_to_text(cand).splitlines()) else 0,
+            sum(l.conf for l in cand) / len(cand),
+        )
+        if score > best_score:
+            best, best_score = cand, score
+    return best
+
+
 def _paddle_ocr_lines(content: bytes) -> list:
     """OCR 1 ảnh bằng PaddleOCR — trả list[OcrLine] giữ bbox từng dòng ([] nếu lỗi)."""
     try:
-        import numpy as np
         from paddleocr import PaddleOCR
         from PIL import Image
 
@@ -389,23 +497,16 @@ def _paddle_ocr_lines(content: bytes) -> list:
         # model "en" mất dấu tiếng Việt, đọc sai vendor/total.
         ocr = PaddleOCR(use_angle_cls=True, lang="vi")
         img = Image.open(io.BytesIO(content))
-        result = ocr.ocr(np.array(img), cls=True)
-        lines = []
-        for line in result[0] or []:
-            box = line[0]
-            xs = [p[0] for p in box]
-            ys = [p[1] for p in box]
-            lines.append(OcrLine(line[1][0], (min(xs), min(ys), max(xs), max(ys))))
-        return lines
+        return _ocr_with_rotation(lambda arr: _ocr_image(ocr, arr), img)
     except Exception:
         return []
 
 
 def _extract_ocr_text(content: bytes) -> str:
-    """OCR ảnh → text."""
+    """OCR ảnh → text (sort box theo chiều đọc, gộp box cùng in-hàng)."""
     lines = _paddle_ocr_lines(content)
     if lines:
-        return "\n".join(l.text for l in lines)
+        return _lines_to_text(lines)
     return _tesseract_text(content)
 
 
@@ -449,23 +550,19 @@ def extract_from_text(text: str, source_file: str = "unknown") -> Invoice:
                 value=invoice.vendor, confidence=0.85, source="regex", text_span=m.group(0)
             )
         else:
-            lines = [l.strip() for l in text.splitlines() if l.strip()]
-            if lines:
-                invoice.vendor = _clean_vendor_line(lines[0][:80])
+            vendor = _first_vendor_line(text)
+            if vendor:
+                invoice.vendor = vendor
                 invoice.provenance["vendor"] = FieldProvenance(
-                    value=invoice.vendor, confidence=0.85, source="regex", text_span=lines[0]
+                    value=invoice.vendor, confidence=0.85, source="regex", text_span=vendor
                 )
     else:
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
-        if lines:
-            first = lines[0]
-            if len(first) >= 3 and not re.match(
-                r"^(receipt|invoice|tax invoice|cash|date|doc no)", first, re.I
-            ):
-                invoice.vendor = _clean_vendor_line(first[:80])
-                invoice.provenance["vendor"] = FieldProvenance(
-                    value=invoice.vendor, confidence=0.85, source="regex", text_span=first
-                )
+        vendor = _first_vendor_line(text)
+        if vendor:
+            invoice.vendor = vendor
+            invoice.provenance["vendor"] = FieldProvenance(
+                value=invoice.vendor, confidence=0.85, source="regex", text_span=vendor
+            )
     # Issue date
     m = _DATE_RE.search(text)
     if m:
@@ -509,6 +606,14 @@ def extract_from_text(text: str, source_file: str = "unknown") -> Invoice:
                 invoice.provenance["issue_date"] = FieldProvenance(
                     value=invoice.issue_date, confidence=0.85, source="regex", text_span=gm.group(0)
                 )
+        if not invoice.issue_date:
+            # ISO thuần không nhãn (receipt PosApp in '2026-11-01 09:40', OCR mất nhãn)
+            gm = re.search(r"\b(\d{4}[-/]\d{1,2}[-/]\d{1,2})\b", text)
+            if gm:
+                invoice.issue_date = gm.group(1)
+                invoice.provenance["issue_date"] = FieldProvenance(
+                    value=invoice.issue_date, confidence=0.8, source="regex", text_span=gm.group(0)
+                )
 
     # Due date
     m = _DUE_RE.search(text)
@@ -546,7 +651,8 @@ def extract_from_text(text: str, source_file: str = "unknown") -> Invoice:
         )
 
     # Currency detection
-    if re.search(r"\b(vnd|₫|đồng)\b", text, re.I):
+    # \d[đd]: receipt VN in '21,000đ' / OCR mất dấu '21,000d' — chỉ khớp khi đ-đứng-sau-số
+    if re.search(r"\b(vnd|₫|đồng)\b", text, re.I) or re.search(r"\d\s*[đd]\b", text, re.I):
         invoice.currency = "VND"
     elif re.search(r"\b(usd|\$|dollar)\b", text, re.I):
         invoice.currency = "USD"
@@ -554,6 +660,9 @@ def extract_from_text(text: str, source_file: str = "unknown") -> Invoice:
         invoice.currency = "EUR"
     elif re.search(r"\b(myr|rm|ringgit)\b", text, re.I):
         invoice.currency = "MYR"
+    elif re.search(r"t[ôo]ng\s*(?:c[ầa]n\s*)?thanh\s*to[áa]n|t[ôo]ng\s*ti[ềe]n\s*h[àa]ng", text, re.I):
+        # Nhãn tiền tiếng Việt không kèm ký hiệu ngoại tệ nào → hóa đơn VN → VND
+        invoice.currency = "VND"
 
     # Confidence tổng: dựa trên số field đã trích xuất
     fields_extracted = len(invoice.provenance)
@@ -615,6 +724,7 @@ def _qr_decode(content: bytes, mime_type: str) -> str | None:
         det = cv2.QRCodeDetector()
         data, _, _ = det.detectAndDecode(img)
         if not data:
+            big = None
             h, w = img.shape[:2]
             if max(h, w) <= 1500:
                 big = cv2.resize(img, (w * 4, h * 4), interpolation=cv2.INTER_NEAREST)
@@ -622,6 +732,20 @@ def _qr_decode(content: bytes, mime_type: str) -> str | None:
                     big, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=(255, 255, 255)
                 )
                 data, _, _ = det.detectAndDecode(big)
+        if not data:
+            # Ảnh chụp cầm tay hay bị xoay (QR ngang/dọc lệch) — thử 3 hướng,
+            # Ảnh phóng trước (detector trượt với ảnh nhỏ), rồi ảnh gốc.
+            for v in (big, img):
+                if v is None:
+                    continue
+                for rot in (
+                    cv2.ROTATE_90_CLOCKWISE,
+                    cv2.ROTATE_180,
+                    cv2.ROTATE_90_COUNTERCLOCKWISE,
+                ):
+                    data, _, _ = det.detectAndDecode(cv2.rotate(v, rot))
+                    if data:
+                        return data
         return data or None
     except Exception:
         return None
@@ -1058,10 +1182,13 @@ def _merge_fields(regex_fields: dict, llm_fields: dict) -> dict:
 
 _VI_DETECT = re.compile(
     r"số\s*h[oó][aá]\s*đơn|tổng\s*cộng|thuế\s*gtgt|người\s*bán|đồng|mst"
-    r"|đơn\s*vị\s*bán|ngày\s*lập|tổng\s*phải\s*trả|giá\s*trị",
+    r"|đơn\s*vị\s*bán|ngày\s*lập|tổng\s*phải\s*trả|giá\s*trị"
+    r"|thanh\s*to[áàảãạa]n|t[ôốồổỗộo]ng\s*ti[ềếểễệe]",
     re.I,
 )
-_CURRENCY_RE = re.compile(r"(USD|EUR|VND|GBP|JPY)", re.I)
+_CURRENCY_RE = re.compile(r"(USD|EUR|VND|GBP|JPY|[đ₫])", re.I)
+# đuôi 'đ'/'d' ngay sau số ('21,000đ'; OCR mất dấu '21,000d') — chỉ khớp sau chữ số
+_VND_TAIL_RE = re.compile(r"[0-9][.,0-9]*\s*[đd]\b")
 
 
 def _extract_regex(text: str, layout: list | None = None) -> tuple:
@@ -1094,22 +1221,14 @@ def _extract_regex(text: str, layout: list | None = None) -> tuple:
             fields["vendor"] = _clean_vendor_line(cand)
             prov["vendor"] = (0.85, m.group(0))
             count += 1
-        else:
-            lines = [l.strip() for l in text.splitlines() if l.strip()]
-            if lines:
-                fields["vendor"] = _clean_vendor_line(lines[0][:80])
-                prov["vendor"] = (0.5, lines[0])
-                count += 1
-    else:
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
-        if lines:
-            first = lines[0]
-            if len(first) >= 3 and not re.match(
-                r"^(receipt|invoice|tax invoice|cash|date|doc no)", first, re.I
-            ):
-                fields["vendor"] = _clean_vendor_line(first[:80])
-                prov["vendor"] = (0.5, first)  # dòng đầu — heuristic, không phải nhãn
-                count += 1
+    if "vendor" not in fields:
+        # Fallback: dòng đầu trông như tên cửa hàng — bỏ dòng ngày/giờ/thuần số
+        # (OCR bán lẻ VN hay in timestamp/số tiền trước tên cửa hàng)
+        v = _first_vendor_line(text)
+        if v:
+            fields["vendor"] = v
+            prov["vendor"] = (0.5, v)  # dòng đầu — heuristic, không phải nhãn
+            count += 1
     m = _DATE_RE.search(text)
     if m:
         fields["issue_date"] = _normalize_date(m.group(1))
@@ -1175,9 +1294,20 @@ def _extract_regex(text: str, layout: list | None = None) -> tuple:
 
     # Currency — dựa trên nội dung tiếng Việt hoặc flag rõ ràng
     m = _CURRENCY_RE.search(text)
-    fields["currency"] = m.group(1) if m else ("VND" if vi else "USD")
-    # có token tiền tệ rõ ràng → tin; suy từ ngôn ngữ → đoán (ô vàng trên UI review)
-    prov["currency"] = (0.8, m.group(0)) if m else (0.5, None)
+    if m:
+        fields["currency"] = "VND" if m.group(1).lower() in ("đ", "₫") else m.group(1)
+        # có token tiền tệ rõ ràng → tin
+        prov["currency"] = (0.8, m.group(0))
+    else:
+        t = _VND_TAIL_RE.search(text)
+        if t:
+            # đuôi đ/d sau số ('21,000đ', OCR mất dấu '21,000d')
+            fields["currency"] = "VND"
+            prov["currency"] = (0.8, t.group(0))
+        else:
+            # suy từ ngôn ngữ → đoán (ô vàng trên UI review)
+            fields["currency"] = "VND" if vi else "USD"
+            prov["currency"] = (0.5, None)
 
     return fields, count, prov
 
