@@ -8,6 +8,7 @@ Nguyên tắc (PLAN mục 3):
 """
 
 import secrets
+from contextlib import asynccontextmanager
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -95,7 +96,16 @@ def match_invoice_saved(tx_repo, invoice_repo, invoice: Invoice):
             raise
         return None
 
-app = FastAPI(title="Invoice & Billing System", version="3.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _imap_poller.start()
+    try:
+        yield
+    finally:
+        _imap_poller.stop()
+
+
+app = FastAPI(title="Invoice & Billing System", version="3.0.0", lifespan=lifespan)
 
 # --- Middleware (order matters: outermost first) ---
 configure_cors(app, settings.cors_origins)
@@ -136,16 +146,6 @@ app.include_router(gmail_oauth_router)
 from .payments.imap_poller import ImapPoller
 
 _imap_poller = ImapPoller()
-
-
-@app.on_event("startup")
-async def _start_imap_poller():
-    _imap_poller.start()
-
-
-@app.on_event("shutdown")
-async def _stop_imap_poller():
-    _imap_poller.stop()
 
 
 # --- Initialize Database ---

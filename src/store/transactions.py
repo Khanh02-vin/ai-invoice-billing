@@ -2,7 +2,7 @@
 
 import math
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from ..domain.payments import PaymentTransaction, TxDirection, TxStatus
 from .db import SQLiteRepo
@@ -116,7 +116,7 @@ class TransactionRepository(SQLiteRepo):
         data["created_at"] = (
             datetime.fromisoformat(data["created_at"])
             if data.get("created_at")
-            else datetime.utcnow()
+            else datetime.now(UTC)
         )
         return PaymentTransaction(**data)
 
@@ -147,7 +147,7 @@ class TransactionRepository(SQLiteRepo):
         mime_type: str,
         size: int,
     ) -> dict:
-        created_at = datetime.utcnow().isoformat()
+        created_at = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO transaction_attachments
@@ -206,7 +206,7 @@ class TransactionRepository(SQLiteRepo):
                     place_kind,
                     lat,
                     lon,
-                    datetime.utcnow().isoformat(),
+                    datetime.now(UTC).isoformat(),
                 ),
             )
 

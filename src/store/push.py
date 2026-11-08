@@ -5,7 +5,7 @@ là khoá tự nhiên của thiết bị; subscribe lại cùng endpoint chỉ c
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from .db import SQLiteRepo
 
@@ -50,7 +50,7 @@ class PushSubscriptionRepository(SQLiteRepo):
                     endpoint,
                     p256dh,
                     auth,
-                    datetime.utcnow().isoformat(),
+                    datetime.now(UTC).isoformat(),
                 ),
             )
 

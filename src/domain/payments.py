@@ -4,7 +4,7 @@ Luồng: text thô thông báo giao dịch -> parse -> PaymentTransaction (pendi
 -> tự ghép hóa đơn theo số tiền -> nhắc user chụp hóa đơn nếu chưa có.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -53,4 +53,4 @@ class PaymentTransaction(BaseModel):
     location_lat: float | None = None
     location_lon: float | None = None
     location_captured_at: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

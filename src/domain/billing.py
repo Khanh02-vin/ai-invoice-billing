@@ -5,7 +5,7 @@ Nguyên tắc:
 - Schema đầy đủ để map trực tiếp từ webhook events (Stripe/Paddle).
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -54,7 +54,7 @@ class Subscription(BaseModel):
     current_period_end: str | None = None
     provider: str = "mock"  # mock | stripe | paddle
     provider_subscription_id: str = ""
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class Entitlement(BaseModel):
@@ -66,7 +66,7 @@ class Entitlement(BaseModel):
     invoice_limit: int = 10
     llm_enabled: bool = False
     pdf_export: bool = False
-    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class CheckoutSession(BaseModel):
@@ -77,7 +77,7 @@ class CheckoutSession(BaseModel):
     plan_id: str = ""
     url: str = ""
     status: str = "open"  # open | complete | expired
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class WebhookEvent(BaseModel):
@@ -88,4 +88,4 @@ class WebhookEvent(BaseModel):
     event_type: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
     processed: bool = False
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())

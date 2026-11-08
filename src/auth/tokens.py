@@ -7,6 +7,7 @@ Nếu token đã thu hồi bị dùng lại -> thu hồi toàn bộ family (phá
 import secrets
 from datetime import UTC, datetime, timedelta
 
+from ..time_utils import as_utc
 from ..store.refresh_tokens import RefreshTokenRepository
 from .security import create_token
 
@@ -41,7 +42,7 @@ def verify_refresh_token(token: str, repo: RefreshTokenRepository | None = None)
     if info["revoked"]:
         return None
     expires_at = datetime.fromisoformat(info["expires_at"])
-    if datetime.now(UTC) > expires_at:
+    if datetime.now(UTC) > as_utc(expires_at):
         return None
     return info["user_id"]
 
@@ -79,7 +80,7 @@ def refresh_access_token(
         return None
 
     expires_at = datetime.fromisoformat(info["expires_at"])
-    if datetime.now(UTC) > expires_at:
+    if datetime.now(UTC) > as_utc(expires_at):
         return None
 
     # Thu hồi token hiện tại.

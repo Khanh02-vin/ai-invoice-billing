@@ -238,7 +238,7 @@ class InvoiceRepository(SQLiteRepo):
         data["created_at"] = (
             datetime.fromisoformat(data["created_at"])
             if data.get("created_at")
-            else datetime.utcnow()
+            else datetime.now(UTC)
         )
         if data.get("finalized_at"):
             data["finalized_at"] = datetime.fromisoformat(data["finalized_at"])
@@ -299,6 +299,12 @@ class InvoiceRepository(SQLiteRepo):
         """
         from datetime import UTC, datetime
 
+        invoice.provenance = {
+            key: value if isinstance(value, FieldProvenance) else FieldProvenance(**(
+                value.model_dump() if hasattr(value, "model_dump") else value
+            ))
+            for key, value in invoice.provenance.items()
+        }
         invoice = Invoice(
             **{**invoice.model_dump(), "created_at": invoice.created_at or datetime.now(UTC)}
         )

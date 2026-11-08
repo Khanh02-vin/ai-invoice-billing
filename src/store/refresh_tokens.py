@@ -5,8 +5,9 @@ Sử dụng SQLiteRepo cơ sở giống UserRepository."""
 
 import hashlib
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 
+from ..time_utils import as_utc
 from .db import SQLiteRepo
 
 
@@ -56,7 +57,7 @@ class RefreshTokenRepository(SQLiteRepo):
             conn.execute(
                 "INSERT INTO refresh_tokens (token_hash, user_id, expires_at, revoked, created_at, family) "
                 "VALUES (?, ?, ?, 0, ?, ?)",
-                (token_hash, user_id, expires_at, datetime.utcnow().isoformat(), family),
+                (token_hash, user_id, expires_at, datetime.now(UTC).isoformat(), family),
             )
 
     def get_token(self, token: str) -> dict | None:
@@ -101,7 +102,7 @@ class RefreshTokenRepository(SQLiteRepo):
             conn.execute(
                 "INSERT INTO email_verifications (token_hash, user_id, expires_at, used, created_at) "
                 "VALUES (?, ?, ?, 0, ?)",
-                (token_hash, user_id, expires_at, datetime.utcnow().isoformat()),
+                (token_hash, user_id, expires_at, datetime.now(UTC).isoformat()),
             )
 
     def verify_email(self, token: str) -> str | None:
@@ -116,7 +117,7 @@ class RefreshTokenRepository(SQLiteRepo):
             if row["used"]:
                 return None
             expires_at = datetime.fromisoformat(row["expires_at"])
-            if datetime.utcnow() > expires_at:
+            if as_utc(datetime.now(UTC)) > as_utc(expires_at):
                 return None
             conn.execute(
                 "UPDATE email_verifications SET used = 1 WHERE token_hash = ?", (token_hash,)
@@ -130,7 +131,7 @@ class RefreshTokenRepository(SQLiteRepo):
             conn.execute(
                 "INSERT INTO password_resets (token_hash, user_id, expires_at, used, created_at) "
                 "VALUES (?, ?, ?, 0, ?)",
-                (token_hash, user_id, expires_at, datetime.utcnow().isoformat()),
+                (token_hash, user_id, expires_at, datetime.now(UTC).isoformat()),
             )
 
     def verify_password_reset(self, token: str) -> str | None:
@@ -145,7 +146,7 @@ class RefreshTokenRepository(SQLiteRepo):
             if row["used"]:
                 return None
             expires_at = datetime.fromisoformat(row["expires_at"])
-            if datetime.utcnow() > expires_at:
+            if as_utc(datetime.now(UTC)) > as_utc(expires_at):
                 return None
             conn.execute("UPDATE password_resets SET used = 1 WHERE token_hash = ?", (token_hash,))
             return row["user_id"]

@@ -4,6 +4,7 @@ import hashlib
 import sqlite3
 from datetime import UTC, datetime
 
+from ..time_utils import as_utc
 from ..models import User
 from .db import SQLiteRepo
 
@@ -233,7 +234,7 @@ class UserRepository(SQLiteRepo):
                 return None
             if row["used"]:
                 return None
-            if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
+            if as_utc(datetime.fromisoformat(row["expires_at"])) < datetime.now(UTC):
                 return None
             conn.execute(
                 "UPDATE email_verifications SET used = 1 WHERE token_hash = ?", (token_hash,)
@@ -269,7 +270,7 @@ class UserRepository(SQLiteRepo):
                 return None
             if row["used"]:
                 return None
-            if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
+            if as_utc(datetime.fromisoformat(row["expires_at"])) < datetime.now(UTC):
                 return None
             conn.execute("UPDATE password_resets SET used = 1 WHERE token_hash = ?", (token_hash,))
             return row["user_id"]
@@ -305,7 +306,7 @@ class UserRepository(SQLiteRepo):
                 return None
             if row["revoked"]:
                 return None
-            if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
+            if as_utc(datetime.fromisoformat(row["expires_at"])) < datetime.now(UTC):
                 return None
             return row["user_id"]
 

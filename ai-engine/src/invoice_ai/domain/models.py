@@ -1,5 +1,5 @@
 """Portable invoice extraction schemas, independent from billing persistence."""
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -58,7 +58,7 @@ class Invoice(BaseModel):
     raw_snippet: str = ""
     confidence: float = 0.0
     user_id: str = ""
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     schema_version: int = 2
     supplier_tax_id: str = ""
     customer_tax_id: str = ""

@@ -5,7 +5,6 @@ Migrated from Pydantic models to SQLModel for type-safe database operations.
 
 import uuid
 from datetime import datetime, timezone
-from enum import Enum
 from typing import Any, List, Optional
 
 from sqlalchemy import Enum as SQLEnum
@@ -13,33 +12,7 @@ from sqlalchemy import UniqueConstraint
 from sqlalchemy.orm import Mapped
 from sqlmodel import JSON, Column, Field, Relationship, SQLModel
 
-
-# --- Enums (same as before) ---
-class JobStatus(str, Enum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-    REVIEW = "review"
-    FINALIZED = "finalized"
-    FAILED = "failed"
-
-
-class InvoiceStatus(str, Enum):
-    UNPAID = "unpaid"
-    PAID = "paid"
-    OVERDUE = "overdue"
-    CANCELLED = "cancelled"
-
-
-class TxDirection(str, Enum):
-    DEBIT = "debit"
-    CREDIT = "credit"
-
-
-class TxStatus(str, Enum):
-    PENDING_RECEIPT = "pending_receipt"
-    MATCHED = "matched"
-    DISMISSED = "dismissed"
-    RECORDED = "recorded"
+from .domain.models import InvoiceStatus, JobStatus, TxDirection, TxStatus
 
 
 # --- Field Provenance (embedded JSON) ---

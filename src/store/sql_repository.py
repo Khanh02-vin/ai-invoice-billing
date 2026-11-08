@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from src.time_utils import as_utc
 from src.models import (
     ApiKey,
     EmailVerification,
@@ -219,7 +220,7 @@ class UserRepository:
     def is_refresh_token_valid(self, jti: str) -> str | None:
         with self.db.get_session() as session:
             token = session.exec(select(RefreshToken).where(RefreshToken.jti == jti)).first()
-            if token and not token.revoked and token.expires_at > datetime.utcnow().isoformat():
+            if token and not token.revoked and token.expires_at and as_utc(datetime.fromisoformat(token.expires_at)) > datetime.now(UTC):
                 return token.user_id
             return None
 
@@ -257,7 +258,7 @@ class UserRepository:
             ev = session.exec(
                 select(EmailVerification).where(EmailVerification.token == token)
             ).first()
-            if ev and not ev.used and ev.expires_at > datetime.utcnow().isoformat():
+            if ev and not ev.used and ev.expires_at and as_utc(datetime.fromisoformat(ev.expires_at)) > datetime.now(UTC):
                 ev.used = True
                 user_id = ev.user_id
                 session.add(ev)
@@ -280,7 +281,7 @@ class UserRepository:
     def consume_password_reset(self, token: str) -> str | None:
         with self.db.get_session() as session:
             pr = session.exec(select(PasswordReset).where(PasswordReset.token == token)).first()
-            if pr and not pr.used and pr.expires_at > datetime.utcnow().isoformat():
+            if pr and not pr.used and pr.expires_at and as_utc(datetime.fromisoformat(pr.expires_at)) > datetime.now(UTC):
                 pr.used = True
                 user_id = pr.user_id
                 session.add(pr)

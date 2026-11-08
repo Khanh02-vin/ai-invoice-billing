@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 
 from ..models import Invoice
 from ..store.db import SQLiteRepo
@@ -70,7 +70,7 @@ class InvoiceVectorStore(SQLiteRepo):
                      vector=excluded.vector,
                      text=excluded.text,
                      updated_at=excluded.updated_at""",
-                (inv.id, inv.user_id, org_id, json.dumps(vec), text, datetime.utcnow().isoformat()),
+                (inv.id, inv.user_id, org_id, json.dumps(vec), text, datetime.now(UTC).isoformat()),
             )
 
     def index_many(self, invoices: Iterable[Invoice], org_id: str = "") -> int:
@@ -100,7 +100,7 @@ class InvoiceVectorStore(SQLiteRepo):
                         org_id,
                         json.dumps(vec),
                         text,
-                        datetime.utcnow().isoformat(),
+                        datetime.now(UTC).isoformat(),
                     ),
                 )
             n += 1
