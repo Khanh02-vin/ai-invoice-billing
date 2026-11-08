@@ -16,6 +16,9 @@ Pillow>=10.0.0
 # nên mặc định TẮT. Bật nếu cần OCR chất lượng cao hơn trên hóa đơn khó.
 # paddleocr>=2.7.0
 
+# RapidOCR là fallback tự chạy nếu PaddleOCR không có; không cần binary hệ thống.
+rapidocr-onnxruntime>=1.2.3
+
 # QR hóa đơn điện tử + render PDF scan (đối chiếu total/vendor qua QR)
 opencv-python-headless>=4.8
 pypdfium2>=4.0

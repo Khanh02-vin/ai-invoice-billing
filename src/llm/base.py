@@ -40,12 +40,19 @@ class OpenAIProvider(LLMProvider):
         self.base_url = os.getenv("LLM_BASE_URL", "https://api.qwencoder.cloud/api/v1")
         self.api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY", "")
         self.model = os.getenv("LLM_MODEL", "qwen3.7-max")
+        self._client = None
+
+    @property
+    def client(self):
+        """Client dùng lại giữa các lần gọi — không tạo HTTP pool mới mỗi request."""
+        if self._client is None:
+            from openai import OpenAI
+
+            self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+        return self._client
 
     def complete(self, system: str, user: str) -> str:
-        from openai import OpenAI
-
-        client = OpenAI(base_url=self.base_url, api_key=self.api_key)
-        r = client.chat.completions.create(
+        r = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0,
@@ -53,10 +60,7 @@ class OpenAIProvider(LLMProvider):
         return self._content(r)
 
     def complete_image(self, system: str, user: str, image_data_url: str) -> str:
-        from openai import OpenAI
-
-        client = OpenAI(base_url=self.base_url, api_key=self.api_key)
-        r = client.chat.completions.create(
+        r = self.client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": system},

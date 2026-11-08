@@ -195,6 +195,41 @@ def test_ocr_uses_vietnamese_model(monkeypatch):
     assert captured.get("lang") == "vi"
 
 
+def test_rapidocr_fallback_when_paddle_unavailable(monkeypatch):
+    """App dùng RapidOCR và vẫn giữ bbox khi PaddleOCR không được cài."""
+    import io as _io
+    import sys
+    import types
+    from PIL import Image
+    import src.extract.extractor as ext
+
+    calls = {"init": 0}
+
+    class FakeRapidOCR:
+        def __init__(self):
+            calls["init"] += 1
+
+        def __call__(self, arr):
+            box = [[5, 5], [95, 5], [95, 20], [5, 20]]
+            return [[box, "Tong thanh toan 49,200", 0.97]], 0.01
+
+    rapid = types.ModuleType("rapidocr_onnxruntime")
+    rapid.RapidOCR = FakeRapidOCR
+    monkeypatch.setitem(sys.modules, "paddleocr", None)
+    monkeypatch.setitem(sys.modules, "rapidocr_onnxruntime", rapid)
+    monkeypatch.setattr(ext, "_rapid_ocr_engine", None)
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (100, 50), "white").save(buf, format="PNG")
+    content = buf.getvalue()
+
+    assert ext._extract_ocr_text(content) == "Tong thanh toan 49,200"
+    lines = ext._paddle_ocr_lines(content)
+    assert lines[0].box == (5.0, 5.0, 95.0, 20.0)
+    assert lines[0].conf == 0.97
+    assert calls["init"] == 1
+
+
 # --- Layout-aware total (bbox từ OCR) ---
 
 

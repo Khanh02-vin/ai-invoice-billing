@@ -10,13 +10,19 @@ Nguyên tắc (PLAN mục 3):
 """
 
 import difflib
+import io
 import json
+import logging
 import os
 import re
 import unicodedata
 from typing import NamedTuple
 
+from ..llm.base import get_llm_provider
 from ..models import FieldProvenance, Invoice, JobStatus, LineItem
+
+_logger = logging.getLogger(__name__)
+_rapid_ocr_engine = None
 
 
 class OcrLine(NamedTuple):
@@ -488,17 +494,52 @@ def _ocr_with_rotation(ocr_fn, pil_img) -> list:
 
 
 def _paddle_ocr_lines(content: bytes) -> list:
-    """OCR 1 ảnh bằng PaddleOCR — trả list[OcrLine] giữ bbox từng dòng ([] nếu lỗi)."""
+    """OCR ảnh, ưu tiên PaddleOCR tiếng Việt rồi RapidOCR; giữ bbox cho parse layout."""
     try:
         from paddleocr import PaddleOCR
         from PIL import Image
 
-        # lang="vi": khớp pipeline benchmark (MCOCR/CORD) và hóa đơn tiếng Việt —
-        # model "en" mất dấu tiếng Việt, đọc sai vendor/total.
+        # Model tiếng Việt giữ dấu tốt hơn trên hóa đơn VN.
         ocr = PaddleOCR(use_angle_cls=True, lang="vi")
         img = Image.open(io.BytesIO(content))
-        return _ocr_with_rotation(lambda arr: _ocr_image(ocr, arr), img)
-    except Exception:
+        lines = _ocr_with_rotation(lambda arr: _ocr_image(ocr, arr), img)
+        if lines:
+            return lines
+    except Exception as exc:
+        _logger.debug("PaddleOCR unavailable/failed, trying RapidOCR: %s", exc)
+    return _rapid_ocr_lines(content)
+
+
+def _rapid_ocr_lines(content: bytes) -> list:
+    """Fallback OCR bằng RapidOCR, khởi tạo model lười và tái sử dụng."""
+    global _rapid_ocr_engine
+    try:
+        import numpy as np
+        from PIL import Image
+        from rapidocr_onnxruntime import RapidOCR
+
+        if _rapid_ocr_engine is None:
+            _rapid_ocr_engine = RapidOCR()
+        img = Image.open(io.BytesIO(content))
+
+        def run(arr):
+            result, _ = _rapid_ocr_engine(arr)
+            lines = []
+            for box, text, score in result or []:
+                xs = [point[0] for point in box]
+                ys = [point[1] for point in box]
+                lines.append(
+                    OcrLine(
+                        text,
+                        (float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))),
+                        float(score),
+                    )
+                )
+            return lines
+
+        return _ocr_with_rotation(run, img)
+    except Exception as exc:
+        _logger.warning("RapidOCR unavailable/failed: %s", exc)
         return []
 
 
@@ -681,11 +722,17 @@ def extract_from_text(text: str, source_file: str = "unknown") -> Invoice:
 def extract_invoice(
     content: bytes, mime_type: str, source_file: str = "unknown", user_id: str = ""
 ) -> Invoice:
-    """Trích xuất hóa đơn từ file content — hàm chính cho API upload."""
+    """Trích xuất hóa đơn từ file content — hàm chính cho API upload.
+
+    LLM fallback được resolve từ get_llm_provider() (src/llm/base.py) — trả None
+    khi chưa cấu hình key → hành vi cũ (chỉ regex), không crash upload.
+    """
     import uuid
 
     text, layout = _extract_text_with_layout(content, mime_type)
-    invoice = extract_from_text(text, source_file=source_file, layout=layout)
+    invoice = extract_from_text(
+        text, source_file=source_file, llm=get_llm_provider(), layout=layout
+    )
     # QR HĐ điện tử (ảnh/PDF): đối chiếu total/vendor — khớp → tăng confidence,
     # OCR đọc sai total → QR sửa. File text không có QR → None, không đổi gì.
     payload = _qr_decode(content, mime_type)
@@ -982,8 +1029,6 @@ def _apply_qr_crosscheck(invoice: Invoice, payload: str) -> None:
     if boost:
         invoice.confidence = min(1.0, invoice.confidence + boost)
 
-
-import io
 
 # --- Helpers for backward compatibility with existing tests ---
 
