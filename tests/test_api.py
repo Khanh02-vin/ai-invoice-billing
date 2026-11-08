@@ -1,6 +1,6 @@
 """API integration tests — luồng thật: register → login → upload → report.
 Dùng :memory: cho repo/users, không đụng DB file."""
-import os
+from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from src import app as app_module
@@ -101,6 +101,40 @@ def test_invalid_token_rejected(client):
 
 
 # ---------- Upload & Extraction ----------
+
+def test_invoice_original_is_scoped_and_served_inline(client):
+    token = _register(client)
+    data = GTGT.encode("utf-8")
+    uploaded = client.post(
+        "/upload",
+        files={"file": ("hoadon.txt", data, "text/plain")},
+        headers=_auth(token),
+    )
+    assert uploaded.status_code == 202, uploaded.text
+    invoice_id = uploaded.json()["id"]
+
+    original = client.get(f"/invoices/{invoice_id}/original", headers=_auth(token))
+    assert original.status_code == 200
+    assert original.content == data
+    assert original.headers["content-type"].startswith("text/plain")
+
+    other_token = _register(client, "otheruser", "matkhau456")
+    other_file = client.get(f"/invoices/{invoice_id}/original", headers=_auth(other_token))
+    assert other_file.status_code == 404
+
+    missing_source = client.post(
+        "/upload",
+        files={"file": ("missing.txt", b"missing source", "text/plain")},
+        headers=_auth(token),
+    )
+    assert missing_source.status_code == 202
+    missing_source_path = Path(app_module.get_settings().storage_dir) / missing_source.json()["source_file"]
+    missing_source_path.unlink()
+    missing_response = client.get(
+        f"/invoices/{missing_source.json()['id']}/original", headers=_auth(token)
+    )
+    assert missing_response.status_code == 404
+
 
 def test_upload_gtgt_full_flow(client):
     """Upload GTGT → extraction chạy xong (fallback đồng bộ) → trả trạng thái thật."""

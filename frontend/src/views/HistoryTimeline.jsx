@@ -11,7 +11,7 @@ const STATUS_LABEL = {
   cancelled: "Đã hủy",
 };
 
-export default function HistoryTimeline({ onBack }) {
+export default function HistoryTimeline({ onBack, onEditInvoice }) {
   const [timelineData, setTimelineData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -53,21 +53,13 @@ export default function HistoryTimeline({ onBack }) {
     loadInvoices();
   }, [loadTimeline, loadInvoices]);
 
-  // Get user's last known location for place suggestions
-  const [userLocation, setUserLocation] = useState({ lat: 10.7769, lon: 106.7009 }); // Default HCMC
+  // Use only locations already associated with recorded transactions; never request GPS implicitly.
+  const [userLocation, setUserLocation] = useState(null);
 
   useEffect(() => {
-    if (timelineData?.points?.length > 0) {
-      // Use the last point as current location
-      const last = timelineData.points[timelineData.points.length - 1];
-      setUserLocation({ lat: last.lat, lon: last.lon });
-    } else if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        ({ coords }) => setUserLocation({ lat: coords.latitude, lon: coords.longitude }),
-        () => {},
-        { timeout: 5000 }
-      );
-    }
+    const points = timelineData?.points || [];
+    const last = [...points].reverse().find((point) => point.lat != null && point.lon != null);
+    setUserLocation(last ? { lat: last.lat, lon: last.lon } : null);
   }, [timelineData]);
 
   const handleDateChange = (field, value) => {
@@ -142,14 +134,9 @@ export default function HistoryTimeline({ onBack }) {
         </section>
       )}
 
-      {/* Place Suggestions */}
-      <section className="card" aria-label="Đề xuất địa điểm">
-        <PlaceSuggestions
-          lat={userLocation.lat}
-          lon={userLocation.lon}
-          radius={2000}
-        />
-      </section>
+      {userLocation ? <section className="card" aria-label="Đề xuất địa điểm">
+        <PlaceSuggestions lat={userLocation.lat} lon={userLocation.lon} radius={2000} />
+      </section> : <section className="card" aria-label="Đề xuất địa điểm"><p className="muted">Chưa có vị trí đã lưu để gợi ý địa điểm. GPS không được thu thập tự động.</p></section>}
 
       {/* Invoice Table */}
       <section className="card" aria-label="Danh sách hóa đơn">
@@ -167,7 +154,7 @@ export default function HistoryTimeline({ onBack }) {
           setFilter={setFilter}
           setSearch={setSearch}
           onViewDetail={(inv) => { setSelectedInvoice(inv); setShowInvoiceDetail(true); }}
-          onEdit={(inv) => { setSelectedInvoice(inv); setShowInvoiceDetail(true); }}
+          onEdit={onEditInvoice}
           onDelete={async (inv) => {
             try {
               await api(`/invoices/${inv.id}`, { method: "DELETE" });
@@ -208,7 +195,7 @@ export default function HistoryTimeline({ onBack }) {
                   <span className="detail-label">Trạng thái</span>
                   <span className={`detail-value status status-${selectedInvoice.status}`}>{STATUS_LABEL[selectedInvoice.status] || selectedInvoice.status}</span>
                 </div>
-                {selectedInvoice.location_lat && selectedInvoice.location_lon && (
+                {selectedInvoice.location_lat != null && selectedInvoice.location_lon != null && (
                   <>
                     <div className="detail-item">
                       <span className="detail-label">Địa điểm</span>

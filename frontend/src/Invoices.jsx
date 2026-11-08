@@ -58,6 +58,9 @@ export default function Invoices({ user, onLogout }) {
     notifications: true,
   });
   const [pendingTx, setPendingTx] = useState([]);
+  const [invoiceChoices, setInvoiceChoices] = useState({});
+  const [matchingTxId, setMatchingTxId] = useState("");
+  const [manualInvoiceId, setManualInvoiceId] = useState("");
   const [ledgerTransactionId, setLedgerTransactionId] = useState("");
 
   // Push notification (PWA)
@@ -219,6 +222,32 @@ export default function Invoices({ user, onLogout }) {
       setActiveOrg("");
       loadOrgs();
       setMsg({ ok: true, text: `Đã xóa tổ chức "${name}".` });
+    } catch (e) { showErr(e); }
+  };
+
+  const reviewTransactionMatches = async (transactionId) => {
+    if (matchingTxId === transactionId) {
+      setMatchingTxId("");
+      return;
+    }
+    setMatchingTxId(transactionId);
+    try {
+      const result = await api(`/payments/transactions/${transactionId}/invoice-candidates`);
+      setInvoiceChoices((prev) => ({ ...prev, [transactionId]: result }));
+    } catch (e) {
+      setMatchingTxId("");
+      showErr(e);
+    }
+  };
+
+  const linkPendingTransaction = async (transactionId, invoiceId) => {
+    try {
+      const result = await api(`/payments/transactions/${transactionId}/invoices`, {
+        method: "POST", body: JSON.stringify({ invoice_id: invoiceId }),
+      });
+      setMsg({ ok: true, text: `Đã liên kết ${money("VND", result.allocated_amount)} với hóa đơn. Đây không phải xác nhận thanh toán.` });
+      setInvoiceChoices((prev) => ({ ...prev, [transactionId]: null }));
+      loadPendingTx();
     } catch (e) { showErr(e); }
   };
 
@@ -579,7 +608,7 @@ export default function Invoices({ user, onLogout }) {
         {view === "ledger" ? (
           <Ledger onBack={() => { setView("overview"); setLedgerTransactionId(""); }} initialTransactionId={ledgerTransactionId} />
         ) : view === "history" ? (
-          <HistoryTimeline onBack={() => setView("overview")} />
+          <HistoryTimeline onBack={() => setView("overview")} onEditInvoice={(invoice) => { setView("overview"); setReviewInvoice({ ...invoice }); }} />
         ) : view === "purchases" ? (
           <Purchases onBack={() => setView("overview")} />
         ) : (
@@ -652,9 +681,37 @@ export default function Invoices({ user, onLogout }) {
                           </div>
                           <div className="row tx-actions">
                             <label className="btn-small">📎 Hóa đơn<input type="file" accept="image/*,.pdf" hidden disabled={submitting} onChange={(e) => { uploadInvoiceForTransaction(e.target.files?.[0], t.id); e.target.value = ""; }} /></label>
+                            <button className="btn-small" onClick={() => reviewTransactionMatches(t.id)} aria-expanded={matchingTxId === t.id}>🔗 Đối soát</button>
                             <button className="btn-small" onClick={() => openPendingTransaction(t.id)} title="Không có hóa đơn — chụp sản phẩm">📷 Chụp món</button>
                             <button className="btn-ghost" onClick={() => dismissTx(t.id)} title="Bỏ qua giao dịch này">✕ Bỏ qua</button>
                           </div>
+                          {matchingTxId === t.id && invoiceChoices[t.id] && (
+                            <div style={{ flexBasis: "100%", padding: 12, background: "var(--surface-2, #f7f8fa)", borderRadius: 8 }}>
+                              <p className="muted" role="status">{invoiceChoices[t.id].match_status === "ambiguous" ? "Có nhiều hóa đơn phù hợp — hãy chọn đúng hóa đơn." : invoiceChoices[t.id].match_status === "unique" ? "Có một hóa đơn phù hợp; hãy xác nhận liên kết." : "Không tìm thấy hóa đơn khớp chính xác. Bạn vẫn có thể chọn hóa đơn để phân bổ thủ công bên dưới."}</p>
+                              <p className="muted">Đã phân bổ {money(invoiceChoices[t.id].currency || "VND", invoiceChoices[t.id].allocated_amount || 0)} · còn lại {money(invoiceChoices[t.id].currency || "VND", invoiceChoices[t.id].remaining_amount || 0)}.</p>
+                              {invoiceChoices[t.id].candidates.length ? (
+                                <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                                  {invoiceChoices[t.id].candidates.map((invoice) => (
+                                    <li key={invoice.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 0" }}>
+                                      <span><strong>{invoice.invoice_number}</strong> · {invoice.vendor || "Nhà cung cấp chưa rõ"} · {money(invoice.currency, invoice.total)}</span>
+                                      <button className="btn-small" onClick={() => linkPendingTransaction(t.id, invoice.id)}>Liên kết</button>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div>
+                                  <label>Chọn hóa đơn để phân bổ thủ công
+                                    <select value={manualInvoiceId} onChange={(e) => setManualInvoiceId(e.target.value)}>
+                                      <option value="">— Chọn hóa đơn —</option>
+                                      {invoices.filter((i) => i.status !== "cancelled").map((i) => <option key={i.id} value={i.id}>{i.invoice_number} · {i.vendor || "—"} · {money(i.currency, i.total)}</option>)}
+                                    </select>
+                                  </label>
+                                  <button className="btn-small" disabled={!manualInvoiceId} onClick={() => { linkPendingTransaction(t.id, manualInvoiceId); setManualInvoiceId(""); }}>Liên kết hóa đơn đã chọn</button>
+                                </div>
+                              )}
+                              <small className="muted">Liên kết chỉ dùng để đối soát hồ sơ, không xác nhận giao dịch đã thanh toán.</small>
+                            </div>
+                          )}
                         </li>
                       ))}
                     </ul>

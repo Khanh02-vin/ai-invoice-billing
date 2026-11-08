@@ -66,6 +66,27 @@ _UPDATABLE_FIELDS = {
     "tax",
     "currency",
     "status",
+    "location_lat",
+    "location_lon",
+    "location_name",
+    "location_address",
+    "payment_lat",
+    "payment_lon",
+    "payment_captured_at",
+    "payment_accuracy_m",
+    "payment_source",
+    "payment_provider",
+    "merchant_poi_id",
+    "merchant_name",
+    "merchant_address",
+    "merchant_lat",
+    "merchant_lon",
+    "merchant_source",
+    "merchant_confidence",
+    "merchant_verified_by_user",
+    "purchase_context_type",
+    "evidence_refs",
+    "user_confirmed_location",
 }
 
 
@@ -289,7 +310,7 @@ class InvoiceRepository:
             return {}
         try:
             raw = json.loads(data)
-            return {k: FieldProvenance(**v) if isinstance(v, dict) else v for k, v in raw.items()}
+            return raw if isinstance(raw, dict) else {}
         except Exception:
             return {}
 
@@ -305,13 +326,29 @@ class InvoiceRepository:
             return []
 
     def _row_to_invoice(self, inv: Invoice) -> Invoice:
-        """Ensure JSON fields are properly deserialized."""
-        if isinstance(inv.provenance, str):
+        """Ensure legacy and JSON fields are usable by repository callers."""
+        if inv.provenance is None:
+            inv.provenance = {}
+        elif isinstance(inv.provenance, str):
             inv.provenance = self._deserialize_provenance(inv.provenance)
-        if isinstance(inv.line_items, str):
+        elif not isinstance(inv.provenance, dict):
+            inv.provenance = {}
+        if inv.line_items is None:
+            inv.line_items = []
+        elif isinstance(inv.line_items, str):
             inv.line_items = self._deserialize_line_items(inv.line_items)
-        if isinstance(inv.review_history, str):
-            inv.review_history = json.loads(inv.review_history)
+        elif not isinstance(inv.line_items, list):
+            inv.line_items = []
+        if inv.review_history is None:
+            inv.review_history = []
+        elif isinstance(inv.review_history, str):
+            try:
+                history = json.loads(inv.review_history)
+            except (TypeError, ValueError):
+                history = []
+            inv.review_history = history if isinstance(history, list) else []
+        elif not isinstance(inv.review_history, list):
+            inv.review_history = []
         return inv
 
     def create(self, data: InvoiceCreate, user_id: str, organization_id: str | None = None) -> Invoice:
@@ -331,35 +368,52 @@ class InvoiceRepository:
         return self.upsert(invoice)
 
     def upsert(self, invoice: Invoice) -> Invoice:
+        # JSON columns must receive plain Python data, even when a repository
+        # read or extractor has populated them with nested SQLModel instances.
+        invoice.provenance = {
+            key: value.model_dump() if hasattr(value, "model_dump") else value
+            for key, value in (invoice.provenance or {}).items()
+        }
+        invoice.line_items = [
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in (invoice.line_items or [])
+        ]
         with self.db.get_session() as session:
-            # Check for duplicates — trong cùng không gian (user, org): bản ghi
-            # cá nhân và bản ghi org là hai hóa đơn khác nhau dù cùng số.
-            org_space = Invoice.organization_id.is_(invoice.organization_id)
+            # Check for duplicates within the personal or organization context.
+            # Organization invoices are shared across members, unlike personal rows.
+            context_scope = (
+                Invoice.organization_id == invoice.organization_id
+                if invoice.organization_id
+                else (Invoice.organization_id.is_(None) & (Invoice.user_id == invoice.user_id))
+            )
             existing = None
             if invoice.file_checksum:
                 existing = session.exec(
                     select(Invoice).where(
-                        Invoice.user_id == invoice.user_id,
+                        context_scope,
                         Invoice.file_checksum == invoice.file_checksum,
-                        org_space,
                         Invoice.id != invoice.id,
                     )
                 ).first()
             if not existing and invoice.invoice_number not in ("", "unknown"):
                 existing = session.exec(
                     select(Invoice).where(
-                        Invoice.user_id == invoice.user_id,
+                        context_scope,
                         Invoice.invoice_number == invoice.invoice_number,
-                        org_space,
                         Invoice.id != invoice.id,
                     )
                 ).first()
 
             if existing:
-                if existing.file_checksum == invoice.file_checksum:
-                    invoice.id = existing.id
+                if existing.file_checksum and existing.file_checksum == invoice.file_checksum:
+                    # Same file: return the persisted row instead of attaching a
+                    # second ORM object with its id (which violates the PK).
+                    return self._row_to_invoice(existing)
                 elif invoice.invoice_number not in ("", "unknown"):
-                    raise Exception(f"Duplicate invoice number: {invoice.invoice_number}")
+                    # Lỗi định kiểu (có existing_id/invoice_number) để cả /upload,
+                    # /invoices và /payments/camera-upload đều báo DUPLICATE_INVOICE
+                    # 409 theo cùng một luật — trước đó raise Exception chung.
+                    raise DuplicateInvoiceError(existing.id, invoice.invoice_number)
 
             session.add(invoice)
             session.commit()
@@ -410,6 +464,7 @@ class InvoiceRepository:
             invoice = session.exec(query).first()
             if not invoice:
                 return None
+            self._row_to_invoice(invoice)
 
             corrections = []
             for field, value in data.model_dump(exclude_unset=True).items():
@@ -420,6 +475,23 @@ class InvoiceRepository:
                     value = InvoiceStatus(value)
                 if _same_value(old, value):
                     continue
+                if field == "invoice_number" and value not in ("", "unknown"):
+                    duplicate_query = select(Invoice).where(
+                        Invoice.invoice_number == value,
+                        Invoice.id != invoice.id,
+                    )
+                    if organization_id:
+                        duplicate_query = duplicate_query.where(
+                            Invoice.organization_id == organization_id
+                        )
+                    else:
+                        duplicate_query = duplicate_query.where(
+                            Invoice.user_id == user_id,
+                            Invoice.organization_id.is_(None),
+                        )
+                    duplicate = session.exec(duplicate_query).first()
+                    if duplicate:
+                        raise DuplicateInvoiceError(duplicate.id, value)
                 setattr(invoice, field, value)
 
                 if field != "status":
@@ -639,6 +711,23 @@ class TransactionRepository:
         location_lat: float | None = None,
         location_lon: float | None = None,
         location_captured_at: str | None = None,
+        payment_lat: float | None = None,
+        payment_lon: float | None = None,
+        payment_captured_at: str | None = None,
+        payment_accuracy_m: float | None = None,
+        payment_source: str | None = None,
+        payment_provider: str | None = None,
+        merchant_poi_id: str | None = None,
+        merchant_name: str | None = None,
+        merchant_address: str | None = None,
+        merchant_lat: float | None = None,
+        merchant_lon: float | None = None,
+        merchant_source: str | None = None,
+        merchant_confidence: float | None = None,
+        merchant_verified_by_user: bool | None = None,
+        purchase_context_type: str | None = None,
+        evidence_refs: list[str] | None = None,
+        user_confirmed_location: bool | None = None,
         amount: float | None = None,
         currency: str | None = None,
         direction: TxDirection | None = None,
@@ -659,6 +748,18 @@ class TransactionRepository:
             for field, value in {
                 "note": note, "category": category, "location_lat": location_lat,
                 "location_lon": location_lon, "location_captured_at": location_captured_at,
+                "payment_lat": payment_lat, "payment_lon": payment_lon,
+                "payment_captured_at": payment_captured_at,
+                "payment_accuracy_m": payment_accuracy_m, "payment_source": payment_source,
+                "payment_provider": payment_provider,
+                "merchant_poi_id": merchant_poi_id, "merchant_name": merchant_name,
+                "merchant_address": merchant_address, "merchant_lat": merchant_lat,
+                "merchant_lon": merchant_lon, "merchant_source": merchant_source,
+                "merchant_confidence": merchant_confidence,
+                "merchant_verified_by_user": merchant_verified_by_user,
+                "purchase_context_type": purchase_context_type,
+                "evidence_refs": evidence_refs,
+                "user_confirmed_location": user_confirmed_location,
                 "amount": amount, "currency": currency, "direction": direction,
                 "merchant": merchant, "occurred_at": occurred_at,
             }.items():
@@ -1469,12 +1570,95 @@ def get_database(db_path: str = "invoices.db") -> Database:
     return _database
 
 
+def _ensure_location_columns(db: Database) -> None:
+    """Idempotent ALTER: thêm cột location mới (ADR-0002) cho invoices,
+    payment_transactions, purchases. Backward compat: không xóa cột cũ."""
+    new_cols = {
+        "invoices": [
+            "payment_lat REAL", "payment_lon REAL", "payment_captured_at TEXT",
+            "payment_accuracy_m REAL", "payment_source TEXT", "payment_provider TEXT",
+            "merchant_poi_id TEXT", "merchant_name TEXT", "merchant_address TEXT",
+            "merchant_lat REAL", "merchant_lon REAL", "merchant_source TEXT",
+            "merchant_confidence REAL", "merchant_verified_by_user INTEGER DEFAULT 0",
+            "purchase_context_type TEXT", "evidence_refs TEXT", "user_confirmed_location INTEGER DEFAULT 0",
+        ],
+        "payment_transactions": [
+            "payment_lat REAL", "payment_lon REAL", "payment_captured_at TEXT",
+            "payment_accuracy_m REAL", "payment_source TEXT", "payment_provider TEXT",
+            "merchant_poi_id TEXT", "merchant_name TEXT", "merchant_address TEXT",
+            "merchant_lat REAL", "merchant_lon REAL", "merchant_source TEXT",
+            "merchant_confidence REAL", "merchant_verified_by_user INTEGER DEFAULT 0",
+            "purchase_context_type TEXT", "evidence_refs TEXT", "user_confirmed_location INTEGER DEFAULT 0",
+        ],
+        "purchases": [
+            "payment_lat REAL", "payment_lon REAL", "payment_captured_at TEXT",
+            "payment_accuracy_m REAL", "payment_source TEXT", "payment_provider TEXT",
+            "merchant_poi_id TEXT", "merchant_name TEXT", "merchant_address TEXT",
+            "merchant_lat REAL", "merchant_lon REAL", "merchant_source TEXT",
+            "merchant_confidence REAL", "merchant_verified_by_user INTEGER DEFAULT 0",
+            "purchase_context_type TEXT", "evidence_refs TEXT", "user_confirmed_location INTEGER DEFAULT 0",
+        ],
+    }
+    with db.engine.begin() as conn:
+        for table, cols in new_cols.items():
+            existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            for coldef in cols:
+                colname = coldef.split()[0]
+                if colname not in existing:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {coldef}")
+
+
+def _ensure_sync_tables(db: Database) -> None:
+    """Idempotent creation of sync outbox/cursor tables (Phase 1)."""
+    with db.engine.begin() as conn:
+        conn.exec_driver_sql(
+            """CREATE TABLE IF NOT EXISTS sync_outbox (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                synced_at TEXT
+            )"""
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_sync_outbox_user_status ON sync_outbox(user_id, status)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_sync_outbox_created ON sync_outbox(created_at)"
+        )
+        conn.exec_driver_sql(
+            """CREATE TABLE IF NOT EXISTS sync_cursor (
+                user_id TEXT PRIMARY KEY,
+                last_sync_at TEXT NOT NULL,
+                server_cursor TEXT
+            )"""
+        )
+
+
+def _ensure_invoice_mime_column(db: Database) -> None:
+    """Idempotent ALTER: thêm cột mime_type cho invoices (nếu DB cũ chưa có)."""
+    with db.engine.begin() as conn:
+        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(invoices)")}
+        if "mime_type" not in existing:
+            conn.exec_driver_sql("ALTER TABLE invoices ADD COLUMN mime_type TEXT DEFAULT ''")
+
+
 def init_database(db_path: str = "invoices.db") -> Database:
     global _database
     _database = Database(db_path)
     _database.create_tables()
     _ensure_multi_tenant_columns(_database)
     _ensure_purchase_table(_database)
+    _ensure_location_columns(_database)
+    _ensure_invoice_mime_column(_database)
+    _ensure_sync_tables(_database)
+    _backfill_location_data(_database)
     return _database
 
 
@@ -1493,3 +1677,48 @@ def _ensure_multi_tenant_columns(db: Database) -> None:
             "CREATE INDEX IF NOT EXISTS idx_payment_transactions_org "
             "ON payment_transactions(organization_id)"
         )
+
+
+def _backfill_location_data(db: Database) -> None:
+    """Backfill dữ liệu từ cột location_* cũ sang cột mới (ADR-0002).
+
+    - Nếu có location_captured_at -> payment_lat/lon/captured_at
+    - Nếu không -> merchant_lat/lon (coi là merchant location)
+    Idempotent: chỉ backfill khi cột mới đang NULL.
+    """
+    tables = ("invoices", "payment_transactions", "purchases")
+    with db.engine.begin() as conn:
+        for table in tables:
+            cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            if not {"location_lat", "location_lon"} <= cols:
+                continue
+            has_captured = "location_captured_at" in cols
+            has_location_name = "location_name" in cols
+            has_location_address = "location_address" in cols
+            # payment location backfill (có captured_at) — chỉ khi bảng có cột captured_at
+            if has_captured:
+                conn.exec_driver_sql(
+                    f"""UPDATE {table}
+                        SET payment_lat = location_lat,
+                            payment_lon = location_lon,
+                            payment_captured_at = location_captured_at
+                        WHERE payment_lat IS NULL
+                          AND location_lat IS NOT NULL
+                          AND location_captured_at IS NOT NULL
+                    """
+                )
+            # merchant location backfill
+            set_parts = ["merchant_lat = location_lat", "merchant_lon = location_lon"]
+            if has_location_name:
+                set_parts.append("merchant_name = COALESCE(NULLIF(merchant_name, ''), location_name)")
+            if has_location_address:
+                set_parts.append("merchant_address = COALESCE(NULLIF(merchant_address, ''), location_address)")
+            where = "merchant_lat IS NULL AND location_lat IS NOT NULL"
+            if has_captured:
+                where += " AND location_captured_at IS NULL"
+            conn.exec_driver_sql(
+                f"""UPDATE {table}
+                    SET {', '.join(set_parts)}
+                    WHERE {where}
+                """
+            )

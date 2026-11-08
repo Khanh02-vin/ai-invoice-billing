@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, NamedTuple, Optional
 
 import logging
+import mimetypes
 
 logger = logging.getLogger("invoice.app")
 
@@ -324,6 +325,21 @@ async def list_invoices(
     )
 
 
+@app.get("/invoices/{invoice_id}/original")
+async def get_invoice_original(
+    invoice_id: str,
+    user: User = Depends(current_user),
+    org: OrgContext | None = Depends(current_organization),
+):
+    invoice = repo.get(invoice_id, user_id=user.id, organization_id=org.id if org else None)
+    if not invoice or not invoice.source_file:
+        raise AppError("NOT_FOUND", "Không tìm thấy tệp hóa đơn.", status=404)
+    content = LocalFileStorage(get_settings().storage_dir).get(invoice.source_file)
+    if content is None:
+        raise AppError("NOT_FOUND", "Không tìm thấy tệp hóa đơn.", status=404)
+    return Response(content, media_type=invoice.mime_type or mimetypes.guess_type(invoice.source_file)[0] or "application/octet-stream", headers={"Content-Disposition": "inline"})
+
+
 @app.get("/invoices/{invoice_id}", response_model=Invoice)
 async def get_invoice(
     invoice_id: str,
@@ -373,9 +389,17 @@ async def update_invoice(
     invoice = repo.get(invoice_id, user_id=user.id, organization_id=org.id if org else None)
     if not invoice:
         raise AppError("NOT_FOUND", "Không tìm thấy hóa đơn.", status=404)
-    updated = repo.update(
-        invoice_id, data, user_id=user.id, organization_id=org.id if org else None
-    )
+    try:
+        updated = repo.update(
+            invoice_id, data, user_id=user.id, organization_id=org.id if org else None
+        )
+    except DuplicateInvoiceError as e:
+        raise AppError(
+            "DUPLICATE_INVOICE",
+            f"Hóa đơn số {e.invoice_number} đã tồn tại.",
+            status=409,
+            details={"existing_id": e.existing_id},
+        )
     if not updated:
         raise AppError("UPDATE_FAILED", "Cập nhật thất bại.", status=400)
     matched_tx = None
@@ -567,6 +591,7 @@ async def upload_invoice(
         job_status=JobStatus.PROCESSING,
         file_checksum=compute_fingerprint(content),
         file_size=validated.size,
+        mime_type=validated.mime_type,
         page_count=validated.page_count,
         extraction_provider="",
         review_history=[],

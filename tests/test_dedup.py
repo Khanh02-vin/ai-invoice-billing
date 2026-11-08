@@ -55,6 +55,34 @@ def test_same_number_isolated_per_user():
     assert len(repo.list(user_id="u2")) == 1
 
 
+def test_legacy_personal_and_org_number_are_separate_contexts():
+    repo = InvoiceRepository(db_path=":memory:")
+    repo.upsert(_inv("personal", number="SAME-NUMBER"))
+
+    organization_invoice = _inv("organization", number="SAME-NUMBER")
+    organization_invoice.organization_id = "org-1"
+    saved = repo.upsert(organization_invoice)
+
+    assert saved.id == "organization"
+    rows = repo.list(user_id="u1")
+    assert {row.id for row in rows} == {"personal", "organization"}
+    assert len(repo.list(organization_id="org-1")) == 1
+
+
+def test_legacy_org_duplicates_are_shared_across_members():
+    repo = InvoiceRepository(db_path=":memory:")
+    first = _inv("org-first", user_id="u1", number="ORG-SHARED")
+    first.organization_id = "org-1"
+    repo.upsert(first)
+    second = _inv("org-second", user_id="u2", number="ORG-SHARED")
+    second.organization_id = "org-1"
+
+    with pytest.raises(DuplicateInvoiceError) as error:
+        repo.upsert(second)
+
+    assert error.value.existing_id == "org-first"
+
+
 def test_race_two_uploads_fallback_merges(monkeypatch):
     """Hai request cùng lúc lọt qua check → IntegrityError → gộp lần 2."""
     repo = InvoiceRepository(db_path=":memory:")

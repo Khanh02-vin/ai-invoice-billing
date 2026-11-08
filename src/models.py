@@ -120,7 +120,7 @@ class Invoice(SQLModel, table=True):
     supplier_tax_id: str = ""
     customer_tax_id: str = ""
     line_items: list[LineItem] = Field(default_factory=list, sa_column=Column(JSON))
-    provenance: dict[str, FieldProvenance] = Field(default_factory=dict, sa_column=Column(JSON))
+    provenance: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     job_status: JobStatus = Field(
         default=JobStatus.REVIEW, sa_column=Column("job_status", type_=SQLEnum(JobStatus))
     )
@@ -128,17 +128,41 @@ class Invoice(SQLModel, table=True):
     finalized_by: str | None = None
     file_checksum: str = ""
     file_size: int = 0
+    mime_type: str = ""
     page_count: int | None = None
     extraction_provider: str = ""
     review_history: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
 
-    # Location/route fields (new)
+    # Location/route fields (legacy, deprecated — xem ADR-0002)
     location_lat: float | None = None
     location_lon: float | None = None
     location_name: str | None = None
     location_address: str | None = None
     transport_mode: str | None = None
     route_sequence: int | None = None
+
+    # Payment location (nơi thực hiện thanh toán)
+    payment_lat: float | None = None
+    payment_lon: float | None = None
+    payment_captured_at: str | None = None
+    payment_accuracy_m: float | None = None
+    payment_source: str | None = None  # gps | network | fused | manual
+    payment_provider: str | None = None
+
+    # Merchant location (vị trí cửa hàng)
+    merchant_poi_id: str | None = None
+    merchant_name: str | None = None
+    merchant_address: str | None = None
+    merchant_lat: float | None = None
+    merchant_lon: float | None = None
+    merchant_source: str | None = None  # poi_match | user_input | receipt_address | osm | google
+    merchant_confidence: float | None = None
+    merchant_verified_by_user: bool = False
+
+    # Purchase context
+    purchase_context_type: str | None = None  # physical | online | remote
+    evidence_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    user_confirmed_location: bool = False
 
     # Relationships
     user: Mapped["User"] = Relationship(back_populates="invoices")
@@ -206,9 +230,34 @@ class PaymentTransaction(SQLModel, table=True):
     raw_text: str = ""
     note: str = ""
     category: str = ""
+    # Legacy (deprecated)
     location_lat: float | None = None
     location_lon: float | None = None
     location_captured_at: str | None = None
+
+    # Payment location
+    payment_lat: float | None = None
+    payment_lon: float | None = None
+    payment_captured_at: str | None = None
+    payment_accuracy_m: float | None = None
+    payment_source: str | None = None
+    payment_provider: str | None = None
+
+    # Merchant location
+    merchant_poi_id: str | None = None
+    merchant_name: str | None = None
+    merchant_address: str | None = None
+    merchant_lat: float | None = None
+    merchant_lon: float | None = None
+    merchant_source: str | None = None
+    merchant_confidence: float | None = None
+    merchant_verified_by_user: bool = False
+
+    # Purchase context
+    purchase_context_type: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    user_confirmed_location: bool = False
+
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Relationships
@@ -261,11 +310,35 @@ class Purchase(SQLModel, table=True):
     file_size: int = 0
     mime_type: str = ""
 
+    # Legacy (deprecated)
     location_lat: float | None = None
     location_lon: float | None = None
     location_name: str | None = None
     location_address: str | None = None
     location_captured_at: str | None = None
+
+    # Payment location
+    payment_lat: float | None = None
+    payment_lon: float | None = None
+    payment_captured_at: str | None = None
+    payment_accuracy_m: float | None = None
+    payment_source: str | None = None
+    payment_provider: str | None = None
+
+    # Merchant location
+    merchant_poi_id: str | None = None
+    merchant_name: str | None = None
+    merchant_address: str | None = None
+    merchant_lat: float | None = None
+    merchant_lon: float | None = None
+    merchant_source: str | None = None
+    merchant_confidence: float | None = None
+    merchant_verified_by_user: bool = False
+
+    # Purchase context
+    purchase_context_type: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    user_confirmed_location: bool = False
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -523,6 +596,27 @@ class InvoiceUpdate(SQLModel):
     due_date: str | None = None
     tax: float | None = None
     currency: str | None = None
+    location_lat: float | None = None
+    location_lon: float | None = None
+    location_name: str | None = None
+    location_address: str | None = None
+    payment_lat: float | None = None
+    payment_lon: float | None = None
+    payment_captured_at: str | None = None
+    payment_accuracy_m: float | None = None
+    payment_source: str | None = None
+    payment_provider: str | None = None
+    merchant_poi_id: str | None = None
+    merchant_name: str | None = None
+    merchant_address: str | None = None
+    merchant_lat: float | None = None
+    merchant_lon: float | None = None
+    merchant_source: str | None = None
+    merchant_confidence: float | None = None
+    merchant_verified_by_user: bool | None = None
+    purchase_context_type: str | None = None
+    evidence_refs: list[str] | None = None
+    user_confirmed_location: bool | None = None
 
 
 class FieldCorrection(SQLModel):

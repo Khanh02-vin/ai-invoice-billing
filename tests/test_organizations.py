@@ -178,6 +178,60 @@ def test_non_member_forbidden_and_org_404(client):
     assert r.status_code == 404
 
 
+def test_member_can_unlink_org_invoice_link_created_by_another_member(client):
+    from src.models import InvoiceStatus, TxStatus
+    from src.store.sql_repository import InvoiceRepository, InvoiceTransactionLinkRepository, TransactionRepository
+
+    org_id, tokens = _setup_org(client)
+    headers_a = {**_auth(tokens["a"]), "X-Organization-Id": org_id}
+    headers_b = {**_auth(tokens["b"]), "X-Organization-Id": org_id}
+
+    tx_response = client.post(
+        "/payments/transactions",
+        json={"amount": 100, "currency": "VND"},
+        headers=headers_a,
+    )
+    assert tx_response.status_code == 200, tx_response.text
+    tx_id = tx_response.json()["id"]
+
+    invoice_response = client.post(
+        "/invoices",
+        json={"invoice_number": "SHARED-LINK", "vendor": "Vendor", "total": 100, "currency": "VND"},
+        headers=headers_a,
+    )
+    assert invoice_response.status_code == 200, invoice_response.text
+    invoice_id = invoice_response.json()["id"]
+
+    linked = client.post(
+        f"/payments/transactions/{tx_id}/invoices",
+        json={"invoice_id": invoice_id},
+        headers=headers_a,
+    )
+    assert linked.status_code == 200, linked.text
+    assert linked.json()["id"]
+    assert linked.json()["allocated_amount"] == 100
+
+    # Member B can see the shared link state and remove a link created by A.
+    candidates = client.get(
+        f"/payments/transactions/{tx_id}/invoice-candidates", headers=headers_b
+    )
+    assert candidates.status_code == 200, candidates.text
+    assert candidates.json()["allocated_amount"] == 100
+
+    unlinked = client.delete(
+        f"/payments/transactions/{tx_id}/invoices/{invoice_id}", headers=headers_b
+    )
+    assert unlinked.status_code == 200, unlinked.text
+    assert unlinked.json() == {"unlinked": True}
+    assert not InvoiceTransactionLinkRepository(app_module.repo.db).list_for_transaction(tx_id)
+    assert TransactionRepository(app_module.repo.db).get(
+        tx_id, organization_id=org_id
+    ).status == TxStatus.PENDING_RECEIPT
+    assert InvoiceRepository(app_module.repo.db).get(
+        invoice_id, organization_id=org_id
+    ).status == InvoiceStatus.UNPAID
+
+
 # ---------- Semantics dữ liệu org ----------
 
 def test_member_sees_other_members_org_invoices(client):
@@ -237,6 +291,88 @@ def test_member_can_edit_other_members_org_invoice(client):
     )
     assert r.status_code == 200, r.text
     assert r.json()["total"] == 60.0
+
+
+def test_org_duplicate_is_shared_across_members(client):
+    org_id, t = _setup_org(client)
+    h_a = {**_auth(t["a"]), "X-Organization-Id": org_id}
+    h_b = {**_auth(t["b"]), "X-Organization-Id": org_id}
+    body = {"invoice_number": "ORG-SHARED-DUP", "vendor": "Vendor", "total": 50.0}
+
+    first = client.post("/invoices", json=body, headers=h_a)
+    duplicate = client.post("/invoices", json=body, headers=h_b)
+
+    assert first.status_code == 200, first.text
+    assert duplicate.status_code == 409, duplicate.text
+    assert duplicate.json()["error"]["code"] == "DUPLICATE_INVOICE"
+    org_invoices = client.get("/invoices", headers=h_a).json()
+    assert len([inv for inv in org_invoices if inv["invoice_number"] == body["invoice_number"]]) == 1
+
+
+def test_org_same_checksum_is_shared_across_members(client):
+    org_id, t = _setup_org(client)
+    repo = app_module.repo
+    from src.models import Invoice
+
+    repo.upsert(Invoice(
+        id="org-checksum-first", user_id=app_module.users.get_by_username("ownera").id,
+        organization_id=org_id, invoice_number="ORG-CHECKSUM-1", file_checksum="same-file",
+    ))
+    duplicate = Invoice(
+        id="org-checksum-second", user_id=app_module.users.get_by_username("memberb").id,
+        organization_id=org_id, invoice_number="ORG-CHECKSUM-2", file_checksum="same-file",
+    )
+
+    merged = repo.upsert(duplicate)
+
+    assert merged.id == "org-checksum-first"
+    assert len([inv for inv in repo.list(organization_id=org_id) if inv.file_checksum == "same-file"]) == 1
+
+
+def test_invoice_number_duplicates_are_scoped_to_personal_or_org_context(client):
+    org_id, t = _setup_org(client)
+    body = {"invoice_number": "SAME-CONTEXT-NUMBER", "vendor": "Vendor", "total": 50.0}
+
+    personal = client.post("/invoices", json=body, headers=_auth(t["a"]))
+    org = client.post(
+        "/invoices",
+        json=body,
+        headers={**_auth(t["a"]), "X-Organization-Id": org_id},
+    )
+
+    assert personal.status_code == 200, personal.text
+    assert org.status_code == 200, org.text
+    assert personal.json()["id"] != org.json()["id"]
+
+
+def test_member_cannot_edit_invoice_number_to_existing_org_number(client):
+    org_id, t = _setup_org(client)
+    h_a = {**_auth(t["a"]), "X-Organization-Id": org_id}
+    h_b = {**_auth(t["b"]), "X-Organization-Id": org_id}
+    first = client.post(
+        "/invoices",
+        json={"invoice_number": "ORG-EDIT-1", "vendor": "Vendor", "total": 50.0},
+        headers=h_a,
+    )
+    second = client.post(
+        "/invoices",
+        json={"invoice_number": "ORG-EDIT-2", "vendor": "Vendor", "total": 60.0},
+        headers=h_a,
+    )
+    assert first.status_code == second.status_code == 200
+
+    conflict = client.put(
+        f"/invoices/{first.json()['id']}",
+        json={"invoice_number": "ORG-EDIT-2"},
+        headers=h_b,
+    )
+
+    assert conflict.status_code == 409, conflict.text
+    assert conflict.json()["error"]["code"] == "DUPLICATE_INVOICE"
+    invoices = client.get("/invoices", headers=h_b).json()
+    by_id = {inv["id"]: inv for inv in invoices}
+    assert by_id[first.json()["id"]]["invoice_number"] == "ORG-EDIT-1"
+    assert by_id[second.json()["id"]]["invoice_number"] == "ORG-EDIT-2"
 
 
 def test_auto_match_does_not_cross_org_boundary(client):

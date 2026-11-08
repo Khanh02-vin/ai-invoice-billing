@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # --- Shared Enums (source of truth for both API and DB) ---
 
@@ -160,6 +160,44 @@ class InvoiceUpdate(BaseModel):
     due_date: str | None = None
     tax: float | None = None
     currency: str | None = None
+    location_lat: float | None = None
+    location_lon: float | None = None
+    location_name: str | None = None
+    location_address: str | None = None
+    payment_lat: float | None = None
+    payment_lon: float | None = None
+    payment_captured_at: str | None = None
+    payment_accuracy_m: float | None = None
+    payment_source: str | None = None
+    payment_provider: str | None = None
+    merchant_poi_id: str | None = None
+    merchant_name: str | None = None
+    merchant_address: str | None = None
+    merchant_lat: float | None = None
+    merchant_lon: float | None = None
+    merchant_source: str | None = None
+    merchant_confidence: float | None = Field(default=None, ge=0, le=1)
+    merchant_verified_by_user: bool | None = None
+    purchase_context_type: str | None = None
+    evidence_refs: list[str] | None = None
+    user_confirmed_location: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_location(self):
+        for lat, lon in (
+            (self.payment_lat, self.payment_lon),
+            (self.merchant_lat, self.merchant_lon),
+            (self.location_lat, self.location_lon),
+        ):
+            if (lat is None) != (lon is None):
+                raise ValueError("Latitude and longitude must be supplied together")
+            if lat is not None and not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError("Location coordinates are out of range")
+        if self.payment_accuracy_m is not None and self.payment_accuracy_m < 0:
+            raise ValueError("Payment accuracy cannot be negative")
+        if self.purchase_context_type not in (None, "physical", "online", "remote"):
+            raise ValueError("Invalid purchase context type")
+        return self
 
 
 class FieldCorrection(BaseModel):

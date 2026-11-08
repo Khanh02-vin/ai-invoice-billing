@@ -159,13 +159,19 @@ class InvoiceRepository(SQLiteRepo):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_invoices_date ON invoices(issue_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_invoices_user ON invoices(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_invoices_job_status ON invoices(job_status)")
-        # Chống trùng mỗi user: 1 file, 1 số hóa đơn thật — 'unknown'/'' là số
-        # chưa trích được (mọi bill không có số đều mang) nên không được chặn.
+        # Personal records are unique per user; organization records are shared
+        # across members. Keep the two namespaces distinct in the index key.
         for ddl in (
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_invoices_user_no "
-            "ON invoices(user_id, invoice_number) WHERE invoice_number NOT IN ('', 'unknown')",
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_invoices_user_fp "
-            "ON invoices(user_id, file_checksum) WHERE file_checksum <> ''",
+            "DROP INDEX IF EXISTS ux_invoices_user_no",
+            "DROP INDEX IF EXISTS ux_invoices_user_fp",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_invoices_context_no "
+            "ON invoices(CASE WHEN organization_id IS NULL "
+            "THEN 'personal:' || user_id ELSE 'org:' || organization_id END, invoice_number) "
+            "WHERE invoice_number NOT IN ('', 'unknown')",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_invoices_context_fp "
+            "ON invoices(CASE WHEN organization_id IS NULL "
+            "THEN 'personal:' || user_id ELSE 'org:' || organization_id END, file_checksum) "
+            "WHERE file_checksum <> ''",
         ):
             try:
                 conn.execute(ddl)
@@ -263,19 +269,23 @@ class InvoiceRepository(SQLiteRepo):
         Trả (id bản trùng, cùng_file?): cùng file (checksum) → chắc chắn cùng bill
         → gộp; cùng invoice_number khác file → mâu thuẫn, để caller báo lỗi.
         """
+        scope_sql = (
+            "organization_id = ?" if invoice.organization_id else "organization_id IS NULL AND user_id = ?"
+        )
+        scope_value = invoice.organization_id or invoice.user_id
         if invoice.file_checksum:
             row = conn.execute(
-                "SELECT id FROM invoices WHERE user_id = ? AND file_checksum = ? "
-                "AND organization_id IS ? AND id <> ? LIMIT 1",
-                (invoice.user_id, invoice.file_checksum, invoice.organization_id, invoice.id),
+                f"SELECT id FROM invoices WHERE {scope_sql} AND file_checksum = ? "
+                "AND id <> ? LIMIT 1",
+                (scope_value, invoice.file_checksum, invoice.id),
             ).fetchone()
             if row:
                 return row["id"], True
         if invoice.invoice_number not in ("", "unknown"):
             row = conn.execute(
-                "SELECT id FROM invoices WHERE user_id = ? AND invoice_number = ? "
-                "AND organization_id IS ? AND id <> ? LIMIT 1",
-                (invoice.user_id, invoice.invoice_number, invoice.organization_id, invoice.id),
+                f"SELECT id FROM invoices WHERE {scope_sql} AND invoice_number = ? "
+                "AND id <> ? LIMIT 1",
+                (scope_value, invoice.invoice_number, invoice.id),
             ).fetchone()
             if row:
                 return row["id"], False

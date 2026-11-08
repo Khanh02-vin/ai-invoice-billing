@@ -57,21 +57,28 @@ export default function Ledger({ onBack, onLogout, initialTransactionId = "" }) 
   const locate = () => new Promise((resolve) => {
     if (!navigator.geolocation) return resolve(null);
     navigator.geolocation.getCurrentPosition(
-      ({ coords }) => resolve({ location_lat: coords.latitude, location_lon: coords.longitude, location_captured_at: new Date().toISOString() }),
+      ({ coords }) => resolve({ payment_lat: coords.latitude, payment_lon: coords.longitude, payment_captured_at: new Date().toISOString(), payment_accuracy_m: coords.accuracy, payment_source: "gps" }),
       () => resolve(null), { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 },
     );
   });
+  const [paymentLocation, setPaymentLocation] = useState(null);
+  const capturePaymentLocation = async () => {
+    const location = await locate();
+    if (!location) { setError("Không lấy được vị trí hoặc bạn đã từ chối quyền. Giao dịch vẫn có thể lưu mà không có vị trí."); return; }
+    setPaymentLocation(location);
+    setError("");
+  };
 
   const save = async (event) => {
     event.preventDefault();
     setBusy(true); setError("");
     try {
-      const location = await locate();
       const created = await api("/payments/transactions", {
         method: "POST",
-        body: JSON.stringify({ ...form, amount: Number(form.amount), ...location }),
+        body: JSON.stringify({ ...form, amount: Number(form.amount), ...(paymentLocation || {}) }),
       });
       setForm({ amount: "", direction: "debit", merchant: "", category: "", note: "" });
+      setPaymentLocation(null);
       await load();
       if (created.payment_match_status === "matched") {
         setError("");
@@ -108,8 +115,9 @@ export default function Ledger({ onBack, onLogout, initialTransactionId = "" }) 
       if (draftForm.merchant) patch.merchant = draftForm.merchant;
       if (draftForm.category) patch.category = draftForm.category;
       if (description) patch.note = [selected.note, description].filter(Boolean).join(" · ").slice(0, 1000);
-      const location = await locate();
-      if (location) Object.assign(patch, location);
+      for (const field of ["payment_lat", "payment_lon", "payment_captured_at", "payment_accuracy_m", "payment_source"]) {
+        if (draftForm[field] !== undefined) patch[field] = draftForm[field];
+      }
       if (Object.keys(patch).length) {
         const updated = await api(`/payments/transactions/${selected.id}`, { method: "PUT", body: JSON.stringify(patch) });
         setSelected(updated);
@@ -123,15 +131,35 @@ export default function Ledger({ onBack, onLogout, initialTransactionId = "" }) 
 
   const clearLocation = async () => {
     try {
-      const updated = await api(`/payments/transactions/${selected.id}`, { method: "PUT", body: JSON.stringify({ note: selected.note || "", category: selected.category || "", location_lat: null, location_lon: null, location_captured_at: null }) });
+      const updated = await api(`/payments/transactions/${selected.id}`, { method: "PUT", body: JSON.stringify({ note: selected.note || "", category: selected.category || "", payment_lat: null, payment_lon: null, payment_captured_at: null, payment_accuracy_m: null, payment_source: null, location_lat: null, location_lon: null, location_captured_at: null }) });
+      setSelected(updated); await load();
+    } catch (e) { setError(e.message); }
+  };
+  const clearMerchantLocation = async () => {
+    try {
+      const updated = await api(`/payments/transactions/${selected.id}`, { method: "PUT", body: JSON.stringify({ merchant_lat: null, merchant_lon: null, merchant_name: null, merchant_address: null, merchant_source: null, merchant_confidence: null, merchant_verified_by_user: false }) });
       setSelected(updated); await load();
     } catch (e) { setError(e.message); }
   };
 
-  const mapLink = (tx) => `https://www.openstreetmap.org/?mlat=${tx.location_lat}&mlon=${tx.location_lon}#map=17/${tx.location_lat}/${tx.location_lon}`;
+  const unlinkInvoice = async () => {
+    if (!selected?.matched_invoice_id) return;
+    try {
+      await api(`/payments/transactions/${selected.id}/invoices/${selected.matched_invoice_id}`, { method: "DELETE" });
+      await load();
+      setSelected(null);
+      window.dispatchEvent(new CustomEvent("refresh-invoices"));
+    } catch (e) { setError(e.message); }
+  };
+
+  const mapLink = (tx) => {
+    const lat = tx.payment_lat ?? tx.location_lat;
+    const lon = tx.payment_lon ?? tx.location_lon;
+    return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=17/${lat}/${lon}`;
+  };
   const updateSelected = async (patch) => {
     try {
-      const updated = await api(`/payments/transactions/${selected.id}`, { method: "PUT", body: JSON.stringify({ note: selected.note || "", category: selected.category || "", location_lat: selected.location_lat, location_lon: selected.location_lon, location_captured_at: selected.location_captured_at, ...patch }) });
+      const updated = await api(`/payments/transactions/${selected.id}`, { method: "PUT", body: JSON.stringify({ note: selected.note || "", category: selected.category || "", ...patch }) });
       setSelected(updated); await load();
     } catch (e) { setError(e.message); }
   };
@@ -200,7 +228,7 @@ export default function Ledger({ onBack, onLogout, initialTransactionId = "" }) 
       <label>Người bán / nguồn<input value={form.merchant} onChange={(e) => setForm({ ...form, merchant: e.target.value })} maxLength="120" /></label>
       <label>Nhóm<input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} maxLength="64" /></label>
       <label className="ledger-wide">Ghi chú<input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} maxLength="1000" /></label>
-      <p className="ledger-wide ledger-hint">Sau khi bấm lưu, ứng dụng có thể xin quyền vị trí một lần. Nếu từ chối hoặc không khả dụng, giao dịch vẫn được lưu bình thường.</p>
+      <div className="ledger-wide"><button className="btn-small" type="button" onClick={capturePaymentLocation}>{paymentLocation ? "Đã thêm vị trí thanh toán" : "Thêm vị trí thanh toán (tùy chọn)"}</button><p className="ledger-hint">Chỉ lấy GPS khi bạn bấm nút. Đây là vị trí thiết bị lúc thanh toán, không xác nhận cửa hàng hoặc việc thanh toán; có thể lưu không có vị trí.</p></div>
       <button className="btn-primary" disabled={busy}>{busy ? "Đang lưu…" : "Lưu khoản thu/chi"}</button>
     </form></section>
     {selected?.status === "pending_receipt" && <section className="card"><div className="card-head"><h2>Không có hóa đơn? Bổ sung ảnh sản phẩm</h2></div>
@@ -215,7 +243,8 @@ export default function Ledger({ onBack, onLogout, initialTransactionId = "" }) 
         <label>Danh mục<input value={draftForm.category} onChange={(e) => setDraftForm({ ...draftForm, category: e.target.value })} maxLength="64" /></label>
         <label className="ledger-wide">Chữ đọc được trên bao bì<textarea value={draftForm.packaging_text} onChange={(e) => setDraftForm({ ...draftForm, packaging_text: e.target.value })} maxLength="1000" /></label>
         <label className="ledger-wide">Địa chỉ ghi trên ảnh<input value={draftForm.address} onChange={(e) => setDraftForm({ ...draftForm, address: e.target.value })} maxLength="240" /></label>
-        <p className="ledger-wide ledger-hint">Khi xác nhận, ảnh và mô tả sẽ được đính kèm. Ứng dụng xin quyền GPS một lần để ghi vị trí lúc mua; nếu từ chối, ảnh vẫn được lưu.</p>
+        <p className="ledger-wide ledger-hint">Khi xác nhận, ảnh và mô tả sẽ được đính kèm. Vị trí thanh toán không được lấy tự động; dùng nút bên dưới nếu bạn muốn thêm GPS.</p>
+        <button type="button" className="btn-small" onClick={async () => { const location = await locate(); if (location) setDraftForm((current) => ({ ...current, ...location })); else setError("Không lấy được vị trí hoặc bạn đã từ chối quyền. Ảnh vẫn có thể được lưu."); }}>Thêm GPS thanh toán (tùy chọn)</button>
         <button className="btn-primary" disabled={busy}>{busy ? "Đang lưu…" : "Xác nhận ảnh và vị trí"}</button>
         <button type="button" className="btn-link" onClick={() => { setDraft(null); setDraftFile(null); }}>Hủy</button>
       </form>}
@@ -226,8 +255,19 @@ export default function Ledger({ onBack, onLogout, initialTransactionId = "" }) 
         {!transactions.length && <tr><td className="empty" colSpan="5">Chưa có giao dịch trong khoảng thời gian này.</td></tr>}
       </tbody></table></div></section>
     {selected && <div className="modal-backdrop" onClick={() => setSelected(null)}><section className="modal ledger-detail" role="dialog" aria-modal="true" aria-labelledby="ledger-detail-title" onClick={(e) => e.stopPropagation()}><div className="card-head"><h2 id="ledger-detail-title">Chi tiết giao dịch</h2><button className="btn-link" onClick={() => setSelected(null)}>Đóng</button></div>
-      <dl className="ledger-details"><dt>Số tiền</dt><dd>{money(selected)}</dd><dt>Loại</dt><dd>{selected.direction === "credit" ? "Thu" : "Chi"}</dd><dt>Người bán / nguồn</dt><dd>{selected.merchant || "—"}</dd><dt>Ngày</dt><dd>{selected.occurred_at ? new Date(selected.occurred_at).toLocaleString("vi-VN") : "—"}</dd><dt>Nhóm</dt><dd>{selected.category || "—"}</dd><dt>Ghi chú</dt><dd>{selected.note || "—"}</dd><dt>Hóa đơn liên quan</dt><dd>{selected.matched_invoice_id || "Không có"}</dd>
-    {selected.location_lat != null && <><dt>Vị trí</dt><dd>{selected.location_lat}, {selected.location_lon} · {selected.location_captured_at || ""}<br /><a href={mapLink(selected)} target="_blank" rel="noreferrer">Mở trên OpenStreetMap</a> <button className="btn-link" onClick={editLocation}>Cập nhật vị trí</button> <button className="btn-link danger" onClick={() => updateSelected({ location_lat: null, location_lon: null, location_captured_at: null })}>Xóa vị trí</button></dd></>}
+      <dl className="ledger-details"><dt>Số tiền</dt><dd>{money(selected)}</dd><dt>Loại</dt><dd>{selected.direction === "credit" ? "Thu" : "Chi"}</dd><dt>Người bán / nguồn</dt><dd>{selected.merchant || "—"}</dd><dt>Ngày</dt><dd>{selected.occurred_at ? new Date(selected.occurred_at).toLocaleString("vi-VN") : "—"}</dd><dt>Nhóm</dt><dd>{selected.category || "—"}</dd><dt>Ghi chú</dt><dd>{selected.note || "—"}</dd><dt>Hóa đơn liên quan</dt><dd>{selected.matched_invoice_id ? <><button className="btn-link" onClick={() => window.dispatchEvent(new CustomEvent("view-invoice", { detail: selected.matched_invoice_id }))}>Mở hóa đơn {selected.matched_invoice_id}</button> <button className="btn-link danger" onClick={unlinkInvoice}>Hủy liên kết</button></> : "Không có"}</dd>
+    {(() => {
+      const paymentLat = selected.payment_lat ?? selected.location_lat;
+      const paymentLon = selected.payment_lon ?? selected.location_lon;
+      const hasPaymentLocation = paymentLat != null && paymentLon != null;
+      const hasMerchantLocation = selected.merchant_lat != null && selected.merchant_lon != null;
+      return <>
+        {hasPaymentLocation && <><dt>Vị trí thiết bị lúc thanh toán</dt><dd>{paymentLat}, {paymentLon} · {selected.payment_captured_at || selected.location_captured_at || ""}<br /><a href={mapLink(selected)} target="_blank" rel="noreferrer">Mở trên OpenStreetMap</a> <button className="btn-link" onClick={editLocation}>Cập nhật GPS (chủ động)</button> <button className="btn-link danger" onClick={clearLocation}>Xóa vị trí thanh toán</button></dd></>}
+        {hasMerchantLocation && <><dt>Vị trí cửa hàng</dt><dd>{selected.merchant_name || selected.merchant_address || "Chưa có tên/địa chỉ"} · {selected.merchant_lat}, {selected.merchant_lon}{selected.merchant_verified_by_user ? " · đã xác nhận bởi người dùng" : " · chưa xác nhận"}<br /><button className="btn-link danger" onClick={clearMerchantLocation}>Xóa vị trí cửa hàng</button></dd></>}
+        {!hasPaymentLocation && <><dt>Vị trí thanh toán</dt><dd>Chưa ghi nhận · GPS là tùy chọn, không phải bằng chứng thanh toán hoặc vị trí cửa hàng. <button className="btn-link" onClick={editLocation}>Thêm GPS (chủ động)</button></dd></>}
+        <dt>Ngữ cảnh mua hàng</dt><dd>{selected.purchase_context_type || "Chưa xác định"}{selected.user_confirmed_location ? " · người dùng đã xác nhận" : ""}</dd>
+      </>;
+    })()}
       </dl>
       <div className="ledger-attachments"><h3>Ảnh / chứng từ đính kèm</h3><label className="btn-small">Chụp hoặc chọn ảnh<input type="file" accept="image/*,.pdf" hidden onChange={(e) => e.target.files?.[0] && uploadAttachment(e.target.files[0])} /></label>{attachments.map((item) => <div key={item.id}><a href={`/payments/attachments/${item.id}/content`} onClick={(e) => downloadAttachment(e, item)}>{item.mime_type} · {Math.round(item.size / 1024)} KB</a></div>)}<p className="ledger-hint">Ảnh không phải hóa đơn chỉ là chứng từ tham khảo; thông tin kế toán cần bạn xác nhận.</p></div>
       <label className="ledger-share"><input type="checkbox" checked={sharing} onChange={toggleSharing} /> Cho phép dùng các địa điểm tôi chia sẻ để gợi ý cho người khác (mặc định tắt; không chia sẻ số tiền, giao dịch hay ảnh).</label>

@@ -1,9 +1,11 @@
 """Review UI: sửa field máy đọc sai → provenance manual + review_history + export eval."""
 
+import json
 import pytest
 from fastapi.testclient import TestClient
 
 from src import app as app_module
+from src.domain.models import InvoiceUpdate
 from src.store.sql_repository import (
     Database,
     InvoiceRepository,
@@ -116,8 +118,57 @@ def test_patch_unchanged_value_not_logged(client):
     assert r.json()["review_history"] == []
 
 
+def test_invoice_location_fields_round_trip_through_update(client):
+    h = _register(client)
+    inv = _upload(client, h, "location.txt", SAMPLE)
+
+    response = client.put(
+        f"/invoices/{inv.id}",
+        json={
+            "payment_lat": 0,
+            "payment_lon": 106.7,
+            "payment_captured_at": "2026-11-08T10:00:00Z",
+            "payment_accuracy_m": 12.5,
+            "payment_source": "gps",
+            "merchant_lat": 10.77,
+            "merchant_lon": 106.7,
+            "merchant_name": "Quán Sen",
+            "merchant_verified_by_user": True,
+            "purchase_context_type": "physical",
+            "evidence_refs": ["attachment-1"],
+            "user_confirmed_location": True,
+        },
+        headers=h,
+    )
+
+    assert response.status_code == 200, response.text
+    updated = client.get(f"/invoices/{inv.id}", headers=h).json()
+    assert updated["payment_lat"] == 0
+    assert updated["payment_lon"] == 106.7
+    assert updated["payment_accuracy_m"] == 12.5
+    assert updated["merchant_lat"] == 10.77
+    assert updated["merchant_verified_by_user"] is True
+    assert updated["purchase_context_type"] == "physical"
+    assert updated["evidence_refs"] == ["attachment-1"]
+    assert updated["user_confirmed_location"] is True
+
+
+def test_invoice_location_update_is_user_scoped(client):
+    owner_headers = _register(client, "location-owner")
+    inv = _upload(client, owner_headers, "location-private.txt", SAMPLE)
+    other_headers = _register(client, "location-other")
+
+    response = client.put(
+        f"/invoices/{inv.id}",
+        json={"payment_lat": 10, "payment_lon": 106},
+        headers=other_headers,
+    )
+    assert response.status_code == 404
+
+
 def test_export_corrections_eval_data(client):
     """GET /eval/corrections → data eval: field, old (máy đọc), new (user sửa), confidence."""
+
     h = _register(client)
     inv = _upload(client, h, "rev1.txt", SAMPLE)
     client.put(f"/invoices/{inv.id}", json={"total": 20000000.0, "vendor": "CÔNG TY XYZ (đúng)"}, headers=h)
@@ -156,3 +207,51 @@ def test_corrected_invoice_via_worker_path(client):
     assert updated.provenance["issue_date"]["source"] == "manual"
     assert len(updated.review_history) == 1
     assert updated.review_history[0]["field"] == "issue_date"
+
+
+def test_historical_json_fields_normalize_null_and_non_object_values():
+    """Legacy null/scalar provenance and non-list review history stay usable."""
+    from src.models import Invoice as SqlInvoice
+
+    repo = app_module.repo
+    legacy_user = app_module.users.create("legacy-json-user", "x" * 60)
+    inv = SqlInvoice(
+        id="legacy-json",
+        user_id=legacy_user.id,
+        invoice_number="LEGACY-1",
+    )
+    repo.upsert(inv)
+
+    with repo.db.engine.begin() as conn:
+        conn.exec_driver_sql(
+            "UPDATE invoices SET provenance = ?, review_history = ? WHERE id = ?",
+            (None, json.dumps({"old": "shape"}), inv.id),
+        )
+    fetched = repo.get(inv.id, user_id=legacy_user.id)
+
+    assert fetched.provenance == {}
+    assert fetched.review_history == []
+    updated = repo.update(inv.id, InvoiceUpdate(vendor="Repaired vendor"), user_id=legacy_user.id)
+    assert updated.vendor == "Repaired vendor"
+    assert updated.provenance["vendor"]["source"] == "manual"
+    assert len(updated.review_history) == 1
+
+
+def test_non_object_provenance_is_ignored_without_losing_invoice():
+    """A historical JSON array is not valid field provenance but remains readable."""
+    from src.models import Invoice as SqlInvoice
+
+    repo = app_module.repo
+    legacy_user = app_module.users.create("legacy-array-user", "x" * 60)
+    inv = SqlInvoice(id="legacy-array", user_id=legacy_user.id, invoice_number="LEGACY-2")
+    repo.upsert(inv)
+    with repo.db.engine.begin() as conn:
+        conn.exec_driver_sql(
+            "UPDATE invoices SET provenance = ?, review_history = ? WHERE id = ?",
+            (json.dumps(["unexpected", "legacy"]), json.dumps({"old": "shape"}), inv.id),
+        )
+
+    fetched = repo.get(inv.id, user_id=legacy_user.id)
+    assert fetched is not None
+    assert fetched.provenance == {}
+    assert fetched.review_history == []

@@ -82,6 +82,63 @@ def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_two_accounts_cannot_access_invoice_image_purchase_photo_or_transactions(client, monkeypatch, tmp_path):
+    """Account B cannot fetch account A's invoice/file, purchase/photo, or transaction rows."""
+    from pathlib import Path
+
+    monkeypatch.setenv("OPEN_REGISTRATION", "1")
+    monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "0")
+    token_a = _register(client, "two-account-a")
+    token_b = _register(client, "two-account-b")
+
+    invoice_text = (
+        "HÓA ĐƠN GIÁ TRỊ GIA TĂNG\nSố hóa đơn: TWO-ACCOUNT-1\n"
+        "Người bán: CÔNG TY ABC\nTổng cộng tiền thanh toán: 30000\n"
+    ).encode("utf-8")
+    invoice = client.post(
+        "/upload",
+        files={"file": ("invoice.txt", invoice_text, "text/plain")},
+        headers=_auth(token_a),
+    )
+    assert invoice.status_code == 202, invoice.text
+    invoice_id = invoice.json()["id"]
+    assert client.get(f"/invoices/{invoice_id}", headers=_auth(token_a)).status_code == 200
+    assert client.get(f"/invoices/{invoice_id}/original", headers=_auth(token_a)).content == invoice_text
+
+    purchase = client.post(
+        "/payments/purchases/manual",
+        data={"item": "A private purchase", "amount": 30000},
+        files={"file": ("private.png", bytes.fromhex("89504e470d0a1a0a") + b"x" * 32, "image/png")},
+        headers=_auth(token_a),
+    )
+    assert purchase.status_code == 201, purchase.text
+    purchase_id = purchase.json()["id"]
+    photo_owner = client.get(f"/payments/purchases/{purchase_id}/photo", headers=_auth(token_a))
+    assert photo_owner.status_code == 200
+    assert photo_owner.content.startswith(bytes.fromhex("89504e47"))
+
+    transaction = client.post(
+        "/payments/transactions",
+        json={"amount": 30000, "currency": "VND", "direction": "debit"},
+        headers=_auth(token_a),
+    )
+    assert transaction.status_code == 200, transaction.text
+    transaction_id = transaction.json()["id"]
+    owner_transactions = client.get("/payments/transactions", headers=_auth(token_a))
+    assert owner_transactions.status_code == 200
+    assert transaction_id in {row["id"] for row in owner_transactions.json()}
+
+    assert client.get(f"/invoices/{invoice_id}", headers=_auth(token_b)).status_code == 404
+    assert client.get(f"/invoices/{invoice_id}/original", headers=_auth(token_b)).status_code == 404
+    assert client.get("/invoices", headers=_auth(token_b)).json() == []
+    assert client.get(f"/payments/purchases/{purchase_id}/photo", headers=_auth(token_b)).status_code == 404
+    assert client.get("/payments/purchases", headers=_auth(token_b)).json() == []
+    other_transactions = client.get("/payments/transactions", headers=_auth(token_b))
+    assert other_transactions.status_code == 200
+    assert transaction_id not in {row["id"] for row in other_transactions.json()}
+
+
 def test_user_cannot_see_other_users_invoices(client):
     """User B không thể xem/sửa/xóa hóa đơn của User A."""
     token_a = _register(client, "isolation-a")

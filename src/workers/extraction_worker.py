@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 from ..config import get_settings
+from ..domain.invoice_rules import is_unreadable_invoice
 from ..domain.models import JobStatus
 from ..extract.extractor import extract_invoice as extract_fn
 from ..extract.xml_parser import parse_xml_invoice
@@ -30,6 +31,7 @@ from ..payments.matching import pick_invoices_decision
 from ..payments.service import match_invoice_saved
 from ..store.sql_repository import (
     Database,
+    DuplicateInvoiceError,
     InvoiceRepository,
     InvoiceTransactionLinkRepository,
     TransactionRepository,
@@ -119,7 +121,10 @@ def _do_extract(
                 user_id=user_id,
             )
         print(f"DEBUG: invoice.provenance = {invoice.provenance}")
-        if not invoice or not invoice.invoice_number or invoice.total <= 0:
+        # Rule miền dùng chung với /payments/camera-upload: thiếu invoice_number
+        # không làm hỏng tài liệu (biên lai VN thường không có số); chỉ khi
+        # không đọc ra BẤT KỲ số tiền nào mới từ chối.
+        if not invoice or is_unreadable_invoice(invoice):
             raise ValueError("Could not extract valid invoice data")
 
         # Update existing invoice row with extracted data
@@ -209,6 +214,10 @@ def _do_extract(
         if mark_failed_on_error and existing:
             try:
                 existing.job_status = JobStatus.FAILED
+                if isinstance(exc, DuplicateInvoiceError):
+                    # Keep the rejected upload attempt failed, but don't persist the
+                    # duplicate invoice number on its placeholder record.
+                    existing.invoice_number = "unknown"
                 invoice_repo.upsert(existing)
             except Exception:
                 logger.exception("Không đánh dấu được FAILED cho %s", invoice_id)

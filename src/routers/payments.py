@@ -31,9 +31,12 @@ from .. import purchase_memory
 from ..auth.security import decode_token
 from ..config import get_settings
 from ..errors import AppError
+from ..domain.invoice_rules import is_unreadable_invoice
 from ..extract.extractor import _extract_text, extract_invoice
 from ..llm.base import get_llm_provider
 from ..models import (
+    InvoiceStatus,
+    InvoiceUpdate,
     PaymentTransaction,
     Purchase,
     SharedPlaceVisit,
@@ -46,6 +49,7 @@ from ..models import (
 from ..security.api_rate_limit import rate_limit_dependency
 from ..store.sql_repository import (
     Database,
+    DuplicateInvoiceError,
     InvoiceRepository,
     InvoiceTransactionLinkRepository,
     PurchaseRepository,
@@ -245,11 +249,32 @@ class TransactionCreate(BaseModel):
     location_lat: float | None = Field(default=None, ge=-90, le=90)
     location_lon: float | None = Field(default=None, ge=-180, le=180)
     location_captured_at: str | None = None
+    payment_lat: float | None = Field(default=None, ge=-90, le=90)
+    payment_lon: float | None = Field(default=None, ge=-180, le=180)
+    payment_captured_at: str | None = None
+    payment_accuracy_m: float | None = Field(default=None, ge=0)
+    payment_source: str | None = Field(default=None, max_length=32)
+    payment_provider: str | None = Field(default=None, max_length=120)
+    merchant_poi_id: str | None = None
+    merchant_name: str | None = Field(default=None, max_length=200)
+    merchant_address: str | None = Field(default=None, max_length=500)
+    merchant_lat: float | None = Field(default=None, ge=-90, le=90)
+    merchant_lon: float | None = Field(default=None, ge=-180, le=180)
+    merchant_source: str | None = Field(default=None, max_length=32)
+    merchant_confidence: float | None = Field(default=None, ge=0, le=1)
+    merchant_verified_by_user: bool = False
+    purchase_context_type: str | None = Field(default=None, pattern="^(physical|online|remote)$")
+    evidence_refs: list[str] = Field(default_factory=list, max_length=100)
+    user_confirmed_location: bool = False
 
     @model_validator(mode="after")
     def location_pair(self):
         if (self.location_lat is None) != (self.location_lon is None):
             raise ValueError("Both coordinates must be supplied together")
+        if (self.payment_lat is None) != (self.payment_lon is None):
+            raise ValueError("Payment coordinates must be supplied together")
+        if (self.merchant_lat is None) != (self.merchant_lon is None):
+            raise ValueError("Merchant coordinates must be supplied together")
         if not isfinite(self.amount):
             raise ValueError("Amount must be finite")
         return self
@@ -266,11 +291,32 @@ class TransactionUpdate(BaseModel):
     location_lat: float | None = Field(default=None, ge=-90, le=90)
     location_lon: float | None = Field(default=None, ge=-180, le=180)
     location_captured_at: str | None = None
+    payment_lat: float | None = Field(default=None, ge=-90, le=90)
+    payment_lon: float | None = Field(default=None, ge=-180, le=180)
+    payment_captured_at: str | None = None
+    payment_accuracy_m: float | None = Field(default=None, ge=0)
+    payment_source: str | None = Field(default=None, max_length=32)
+    payment_provider: str | None = Field(default=None, max_length=120)
+    merchant_poi_id: str | None = None
+    merchant_name: str | None = Field(default=None, max_length=200)
+    merchant_address: str | None = Field(default=None, max_length=500)
+    merchant_lat: float | None = Field(default=None, ge=-90, le=90)
+    merchant_lon: float | None = Field(default=None, ge=-180, le=180)
+    merchant_source: str | None = Field(default=None, max_length=32)
+    merchant_confidence: float | None = Field(default=None, ge=0, le=1)
+    merchant_verified_by_user: bool | None = None
+    purchase_context_type: str | None = Field(default=None, pattern="^(physical|online|remote)$")
+    evidence_refs: list[str] | None = Field(default=None, max_length=100)
+    user_confirmed_location: bool | None = None
 
     @model_validator(mode="after")
     def location_pair(self):
         if (self.location_lat is None) != (self.location_lon is None):
             raise ValueError("Both coordinates must be supplied together")
+        if (self.payment_lat is None) != (self.payment_lon is None):
+            raise ValueError("Payment coordinates must be supplied together")
+        if (self.merchant_lat is None) != (self.merchant_lon is None):
+            raise ValueError("Merchant coordinates must be supplied together")
         return self
 
 
@@ -292,6 +338,18 @@ class InvoiceLinkRequest(BaseModel):
 
 
 _ALLOWED_IMAP_HOSTS = {"imap.gmail.com", "outlook.office365.com", "imap.mail.yahoo.com"}
+
+
+def _parse_evidence_refs(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        raise AppError("INVALID_EVIDENCE_REFS", "Danh sách bằng chứng không hợp lệ.", status=422)
+    if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
+        raise AppError("INVALID_EVIDENCE_REFS", "Danh sách bằng chứng không hợp lệ.", status=422)
+    return parsed[:100]
 
 
 def _parse_timeline_date(value: str | None) -> datetime | None:
@@ -392,14 +450,42 @@ async def update_transaction(
         raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
     org_id = org.id if org else None
     repo = TransactionRepository(_get_db())
+    tx = repo.get(transaction_id, user.id, organization_id=org_id)
+    if not tx:
+        raise AppError("NOT_FOUND", "Không tìm thấy giao dịch.", status=404)
+    updates = body.model_dump(exclude_unset=True)
+    links = []
+    allocated = 0.0
+    if "amount" in updates or "direction" in updates:
+        link_repo = InvoiceTransactionLinkRepository(_get_db())
+        links = link_repo.list_for_transaction(transaction_id)
+        allocated = sum(item.amount for item in links)
+        next_amount = updates.get("amount", tx.amount)
+        next_direction = updates.get("direction", tx.direction)
+        if allocated > next_amount + 1e-6 or (links and next_direction != TxDirection.DEBIT):
+            raise AppError(
+                "TRANSACTION_LINKS_CONFLICT",
+                "Không thể thay đổi số tiền hoặc loại giao dịch khi các liên kết hóa đơn sẽ mất hiệu lực.",
+                status=409,
+            )
     if not repo.update_details(
         transaction_id, user.id,
-        **body.model_dump(exclude_unset=True),
+        **updates,
         update_fields=set(body.model_fields_set),
         organization_id=org_id,
     ):
         raise AppError("NOT_FOUND", "Không tìm thấy giao dịch.", status=404)
-    return repo.get(transaction_id, user.id, organization_id=org_id)
+    updated = repo.get(transaction_id, user.id, organization_id=org_id)
+    if links and updated and updated.status == TxStatus.MATCHED and allocated < updated.amount - 1e-6:
+        repo.set_status(
+            transaction_id,
+            TxStatus.PENDING_RECEIPT,
+            invoice_id="",
+            user_id=user.id,
+            organization_id=org_id,
+        )
+        updated = repo.get(transaction_id, user.id, organization_id=org_id)
+    return updated
 
 
 @router.post("/transactions/{transaction_id}/dismiss")
@@ -419,6 +505,48 @@ async def dismiss_transaction(
     return {"dismissed": True}
 
 
+@router.get("/transactions/{transaction_id}/invoice-candidates")
+async def transaction_invoice_candidates(
+    transaction_id: str,
+    user: User = Depends(current_user),
+    org: _OrgCtx | None = Depends(current_organization),
+):
+    org_id = org.id if org else None
+    db = _get_db()
+    tx = TransactionRepository(db).get(transaction_id, user.id, organization_id=org_id)
+    if not tx:
+        raise AppError("NOT_FOUND", "Không tìm thấy giao dịch.", status=404)
+
+    from ..payments.matching import pick_invoice_candidates, pick_invoices_decision
+
+    invoices = InvoiceRepository(db).list(
+        user_id=user.id, limit=200, organization_id=org_id
+    )
+    candidates = pick_invoice_candidates(tx, invoices)
+    decision = pick_invoices_decision(tx, invoices)
+    links = InvoiceTransactionLinkRepository(db).list_for_transaction(
+        tx.id, user.id if not org else ""
+    )
+    return {
+        "match_status": decision.kind,
+        "reason": decision.reason,
+        "candidates": [
+            {
+                "id": invoice.id,
+                "invoice_number": invoice.invoice_number,
+                "vendor": invoice.vendor,
+                "total": invoice.total,
+                "currency": invoice.currency,
+                "status": invoice.status,
+            }
+            for invoice in candidates or decision.invoices
+        ],
+        "allocated_amount": sum(item.amount for item in links),
+        "remaining_amount": max(0.0, tx.amount - sum(item.amount for item in links)),
+        "payment_verified": False,
+    }
+
+
 @router.post("/transactions/{transaction_id}/invoices")
 async def link_invoice_to_transaction(
     transaction_id: str,
@@ -436,11 +564,80 @@ async def link_invoice_to_transaction(
     invoice = invoices.get(body.invoice_id, user_id=user.id, organization_id=org_id)
     if not tx or not invoice:
         raise AppError("NOT_FOUND", "Không tìm thấy giao dịch hoặc hóa đơn.", status=404)
+    if tx.direction != TxDirection.DEBIT or tx.status not in (
+        TxStatus.PENDING_RECEIPT, TxStatus.MATCHED
+    ):
+        raise AppError("TRANSACTION_NOT_LINKABLE", "Giao dịch này không thể liên kết hóa đơn.", status=409)
+    if invoice.status == InvoiceStatus.CANCELLED:
+        raise AppError("INVOICE_NOT_LINKABLE", "Hóa đơn đã hủy không thể liên kết.", status=409)
+
     link_repo = InvoiceTransactionLinkRepository(db)
-    amount = body.amount if body.amount is not None else min(tx.amount, invoice.total)
-    if amount > tx.amount or amount > invoice.total:
-        raise AppError("INVALID_LINK_AMOUNT", "Số tiền liên kết vượt quá số tiền giao dịch hoặc hóa đơn.", status=400)
-    return link_repo.create(user.id, tx.id, invoice.id, amount, "manual")
+    tx_links = link_repo.list_for_transaction(tx.id, user.id if not org else "")
+    invoice_links = link_repo.list_for_invoice(invoice.id, user.id if not org else "")
+    current = next(
+        (item for item in tx_links if item.invoice_id == invoice.id), None
+    )
+    tx_remaining = max(0.0, tx.amount - sum(item.amount for item in tx_links))
+    invoice_remaining = max(0.0, invoice.total - sum(item.amount for item in invoice_links))
+    amount = body.amount if body.amount is not None else min(tx_remaining, invoice_remaining)
+    if amount > tx_remaining + 1e-6 or amount > invoice_remaining + 1e-6:
+        raise AppError(
+            "INVALID_LINK_AMOUNT",
+            "Số tiền liên kết vượt quá số dư giao dịch hoặc hóa đơn.",
+            status=400,
+        )
+
+    created_link = link_repo.create(
+        user.id,
+        tx.id,
+        invoice.id,
+        (current.amount if current else 0.0) + amount,
+        "manual",
+    )
+    refreshed_links = link_repo.list_for_transaction(
+        tx.id, user.id if not org else ""
+    )
+    allocated = sum(item.amount for item in refreshed_links)
+    fully_allocated = allocated >= tx.amount - 1e-6
+    if fully_allocated:
+        matched_invoice_id = (
+            refreshed_links[0].invoice_id if len(refreshed_links) == 1 else ""
+        )
+    else:
+        matched_invoice_id = ""
+    transactions.set_status(
+        tx.id,
+        TxStatus.MATCHED if fully_allocated else TxStatus.PENDING_RECEIPT,
+        invoice_id=matched_invoice_id,
+        user_id=user.id,
+        organization_id=org_id,
+    )
+    invoice_allocated = sum(
+        item.amount
+        for item in link_repo.list_for_invoice(invoice.id, user.id if not org else "")
+    )
+    if invoice.status != InvoiceStatus.CANCELLED:
+        invoices.update(
+            invoice.id,
+            InvoiceUpdate(
+                status=(
+                    InvoiceStatus.PAID
+                    if invoice_allocated >= invoice.total - 1e-6
+                    else InvoiceStatus.UNPAID
+                )
+            ),
+            user_id=user.id,
+            organization_id=org_id,
+        )
+    return {
+        "id": created_link.id,
+        "transaction_id": tx.id,
+        "invoice_id": invoice.id,
+        "amount": amount,
+        "allocated_amount": allocated,
+        "remaining_transaction_amount": max(0.0, tx.amount - allocated),
+        "payment_verified": False,
+    }
 
 
 @router.delete("/transactions/{transaction_id}/invoices/{invoice_id}")
@@ -454,15 +651,56 @@ async def unlink_invoice_from_transaction(
         raise AppError("FORBIDDEN", "Role viewer chỉ được xem.", status=403)
     org_id = org.id if org else None
     db = _get_db()
+    link_repo = InvoiceTransactionLinkRepository(db)
     if not TransactionRepository(db).get(transaction_id, user.id, organization_id=org_id):
         raise AppError("NOT_FOUND", "Không tìm thấy giao dịch.", status=404)
-    links = InvoiceTransactionLinkRepository(db).list_for_transaction(transaction_id, user.id)
+    links = link_repo.list_for_transaction(
+        transaction_id, user.id if not org else ""
+    )
     link = next((item for item in links if item.invoice_id == invoice_id), None)
-    if not link or not InvoiceRepository(db).get(
+    invoice = InvoiceRepository(db).get(
         invoice_id, user_id=user.id, organization_id=org_id
-    ):
+    )
+    if not link or not invoice:
         raise AppError("NOT_FOUND", "Không tìm thấy liên kết.", status=404)
-    InvoiceTransactionLinkRepository(db).delete(link.id, user.id)
+    link_repo.delete(link.id, user.id if not org else "")
+
+    remaining_tx_links = link_repo.list_for_transaction(
+        transaction_id, user.id if not org else ""
+    )
+    allocated = sum(item.amount for item in remaining_tx_links)
+    next_invoice_id = (
+        remaining_tx_links[0].invoice_id if len(remaining_tx_links) == 1 else ""
+    )
+    transactions = TransactionRepository(db)
+    tx = transactions.get(transaction_id, user.id, organization_id=org_id)
+    if tx:
+        transactions.set_status(
+            transaction_id,
+            TxStatus.MATCHED if allocated >= tx.amount - 1e-6 else TxStatus.PENDING_RECEIPT,
+            invoice_id=next_invoice_id if allocated >= tx.amount - 1e-6 else "",
+            user_id=user.id,
+            organization_id=org_id,
+        )
+
+    remaining_invoice_links = link_repo.list_for_invoice(
+        invoice_id, user.id if not org else ""
+    )
+    invoice_allocated = sum(item.amount for item in remaining_invoice_links)
+    if invoice.status != InvoiceStatus.CANCELLED:
+        invoices = InvoiceRepository(db)
+        invoices.update(
+            invoice_id,
+            InvoiceUpdate(
+                status=(
+                    InvoiceStatus.PAID
+                    if invoice_allocated >= invoice.total - 1e-6
+                    else InvoiceStatus.UNPAID
+                )
+            ),
+            user_id=user.id,
+            organization_id=org_id,
+        )
     return {"unlinked": True}
 
 
@@ -654,11 +892,18 @@ async def get_timeline(
         user_id=user.id, status=None, direction=None, start_date=start, end_date=end, limit=200
     )
 
-    # Filter only transactions with location
+    # Route points represent device/payment-time location, with legacy fallback.
     located = [
-        tx for tx in transactions if tx.location_lat is not None and tx.location_lon is not None
+        tx for tx in transactions
+        if (tx.payment_lat is not None and tx.payment_lon is not None)
+        or (tx.location_lat is not None and tx.location_lon is not None)
     ]
     located.sort(key=lambda tx: tx.occurred_at or tx.created_at.isoformat())
+
+    def payment_point(tx):
+        if tx.payment_lat is not None and tx.payment_lon is not None:
+            return tx.payment_lat, tx.payment_lon
+        return tx.location_lat, tx.location_lon
 
     if not located:
         return TimelineResponse(
@@ -671,19 +916,19 @@ async def get_timeline(
     total_spent = 0.0
     currency = "VND"
 
-    min_lat = min(tx.location_lat for tx in located)
-    max_lat = max(tx.location_lat for tx in located)
-    min_lon = min(tx.location_lon for tx in located)
-    max_lon = max(tx.location_lon for tx in located)
+    coordinates = [payment_point(tx) for tx in located]
+    min_lat = min(point[0] for point in coordinates)
+    max_lat = max(point[0] for point in coordinates)
+    min_lon = min(point[1] for point in coordinates)
+    max_lon = max(point[1] for point in coordinates)
 
     for i, tx in enumerate(located):
+        lat, lon = payment_point(tx)
         # Determine transport mode from previous point
         transport = "walk"
         if i > 0:
             prev = located[i - 1]
-            dist = _calculate_distance(
-                prev.location_lat, prev.location_lon, tx.location_lat, tx.location_lon
-            )
+            dist = _calculate_distance(*payment_point(prev), lat, lon)
             try:
                 prev_time = datetime.fromisoformat(prev.occurred_at or prev.created_at.isoformat())
                 curr_time = datetime.fromisoformat(tx.occurred_at or tx.created_at.isoformat())
@@ -700,8 +945,8 @@ async def get_timeline(
             TimelinePoint(
                 id=tx.id,
                 type="transaction",
-                lat=tx.location_lat,
-                lon=tx.location_lon,
+                lat=lat,
+                lon=lon,
                 name=name,
                 merchant=tx.merchant,
                 amount=tx.amount,
@@ -904,13 +1149,47 @@ async def camera_upload(
         invoice.file_size = validated.size
         invoice.page_count = validated.page_count
         invoice.source_file = storage_key
+        needs_review = any(
+            (prov.confidence or 0) < 0.7 for prov in (invoice.provenance or {}).values()
+        )
+        invoice.provenance = {
+            key: value.model_dump() if hasattr(value, "model_dump") else dict(value)
+            for key, value in (invoice.provenance or {}).items()
+        }
+        # Rule miền dùng chung với POST /upload: thiếu invoice_number không làm
+        # hỏng tài liệu; chỉ khi không đọc ra số tiền nào mới từ chối.
+        if is_unreadable_invoice(invoice):
+            raise AppError(
+                "EXTRACTION_FAILED",
+                "Không đọc được thông tin hóa đơn từ ảnh. Hãy chụp rõ, đủ sáng và để hóa đơn thẳng trong khung hình.",
+                status=422,
+            )
         db = _get_db()
         saved = InvoiceRepository(db).upsert(invoice)
+        if saved.source_file != storage_key:
+            if saved.source_file and storage.exists(saved.source_file):
+                storage.delete(storage_key)
+            else:
+                # The retry is the only available evidence if the old file is gone.
+                saved.source_file = storage_key
+                InvoiceRepository(db).upsert(saved)
+    except DuplicateInvoiceError as e:
+        # Cùng luật phát hiện trùng như /upload — khác file, cùng số hóa đơn:
+        # không ghi đè bản cũ, không tạo bản thứ hai.
+        storage.delete(storage_key)
+        raise AppError(
+            "DUPLICATE_INVOICE",
+            f"Hóa đơn số {e.invoice_number} đã tồn tại.",
+            status=409,
+            details={"existing_id": e.existing_id},
+        )
+    except AppError:
+        storage.delete(storage_key)
+        raise
     except Exception:
         storage.delete(storage_key)
         raise AppError("EXTRACTION_FAILED", "Không thể xử lý tệp hóa đơn.", status=422)
 
-    needs_review = any((prov.confidence or 0) < 0.7 for prov in invoice.provenance.values())
     return CameraUploadResponse(invoice_id=saved.id, message="Đã lưu hóa đơn để rà soát.", needs_review=needs_review)
 
 
@@ -1031,6 +1310,22 @@ async def create_manual_purchase(
     location_lon: float | None = Form(default=None),
     location_address: str | None = Form(default=None),
     location_name: str | None = Form(default=None),
+    merchant_name: str = Form(default=""),
+    payment_lat: float | None = Form(default=None),
+    payment_lon: float | None = Form(default=None),
+    payment_captured_at: str | None = Form(default=None),
+    payment_accuracy_m: float | None = Form(default=None),
+    payment_source: str | None = Form(default=None),
+    payment_provider: str | None = Form(default=None),
+    merchant_address: str | None = Form(default=None),
+    merchant_lat: float | None = Form(default=None),
+    merchant_lon: float | None = Form(default=None),
+    merchant_source: str | None = Form(default=None),
+    merchant_confidence: float | None = Form(default=None),
+    merchant_verified_by_user: bool = Form(default=False),
+    purchase_context_type: str | None = Form(default=None),
+    evidence_refs: str | None = Form(default=None),
+    user_confirmed_location: bool = Form(default=False),
     user: User = Depends(current_user),
     _rl: None = Depends(rate_limit_dependency("rate_limit_upload")),
 ):
@@ -1061,6 +1356,25 @@ async def create_manual_purchase(
 
     if amount < 0:
         raise AppError("INVALID_AMOUNT", "Số tiền không hợp lệ.", status=422)
+    for lat, lon, label in (
+        (location_lat, location_lon, "legacy"),
+        (payment_lat, payment_lon, "payment"),
+        (merchant_lat, merchant_lon, "merchant"),
+    ):
+        if (lat is None) != (lon is None):
+            raise AppError(
+                "INVALID_LOCATION",
+                f"Cần cung cấp đủ hai tọa độ {label}.",
+                status=422,
+            )
+        if lat is not None and not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise AppError("INVALID_LOCATION", "Tọa độ không hợp lệ.", status=422)
+    if payment_accuracy_m is not None and payment_accuracy_m < 0:
+        raise AppError("INVALID_LOCATION", "Độ chính xác không hợp lệ.", status=422)
+    if merchant_confidence is not None and not 0 <= merchant_confidence <= 1:
+        raise AppError("INVALID_LOCATION", "Độ tin cậy không hợp lệ.", status=422)
+    if purchase_context_type not in (None, "physical", "online", "remote"):
+        raise AppError("INVALID_LOCATION", "Ngữ cảnh mua hàng không hợp lệ.", status=422)
 
     if location_lat is not None and not (location_address or "").strip():
         # Trình duyệt đã cho tọa độ → tự đổi thành địa chỉ; lỗi mạng không chặn lưu.
@@ -1084,6 +1398,22 @@ async def create_manual_purchase(
         location_name=location_name,
         location_address=location_address,
         location_captured_at=datetime.now(timezone.utc).isoformat() if location_lat is not None else None,
+        payment_lat=payment_lat,
+        payment_lon=payment_lon,
+        payment_captured_at=payment_captured_at,
+        payment_accuracy_m=payment_accuracy_m,
+        payment_source=payment_source,
+        payment_provider=payment_provider,
+        merchant_name=merchant_name.strip() or None,
+        merchant_address=merchant_address,
+        merchant_lat=merchant_lat,
+        merchant_lon=merchant_lon,
+        merchant_source=merchant_source,
+        merchant_confidence=merchant_confidence,
+        merchant_verified_by_user=merchant_verified_by_user,
+        purchase_context_type=purchase_context_type,
+        evidence_refs=_parse_evidence_refs(evidence_refs),
+        user_confirmed_location=user_confirmed_location,
     )
     try:
         saved = PurchaseRepository(_get_db()).create(purchase)
@@ -1122,6 +1452,22 @@ async def create_manual_purchase(
         "location_lat": saved.location_lat,
         "location_lon": saved.location_lon,
         "location_address": saved.location_address,
+        "payment_lat": saved.payment_lat,
+        "payment_lon": saved.payment_lon,
+        "payment_captured_at": saved.payment_captured_at,
+        "payment_accuracy_m": saved.payment_accuracy_m,
+        "payment_source": saved.payment_source,
+        "payment_provider": saved.payment_provider,
+        "merchant_name": saved.merchant_name,
+        "merchant_address": saved.merchant_address,
+        "merchant_lat": saved.merchant_lat,
+        "merchant_lon": saved.merchant_lon,
+        "merchant_source": saved.merchant_source,
+        "merchant_confidence": saved.merchant_confidence,
+        "merchant_verified_by_user": saved.merchant_verified_by_user,
+        "purchase_context_type": saved.purchase_context_type,
+        "evidence_refs": saved.evidence_refs,
+        "user_confirmed_location": saved.user_confirmed_location,
         "created_at": saved.created_at.isoformat() if hasattr(saved.created_at, "isoformat") else str(saved.created_at),
     }
 
@@ -1156,19 +1502,43 @@ async def list_purchases(
             "currency": p.currency,
             "occurred_at": p.occurred_at,
             "notes": p.notes,
-            "source_file": p.source_file,
-            "file_checksum": p.file_checksum,
-            "file_size": p.file_size,
-            "mime_type": p.mime_type,
+            "photo_available": bool(p.source_file),
             "location_lat": p.location_lat,
             "location_lon": p.location_lon,
             "location_name": p.location_name,
             "location_address": p.location_address,
             "location_captured_at": p.location_captured_at,
+            "payment_lat": p.payment_lat,
+            "payment_lon": p.payment_lon,
+            "payment_captured_at": p.payment_captured_at,
+            "payment_accuracy_m": p.payment_accuracy_m,
+            "payment_source": p.payment_source,
+            "payment_provider": p.payment_provider,
+            "merchant_name": p.merchant_name,
+            "merchant_address": p.merchant_address,
+            "merchant_lat": p.merchant_lat,
+            "merchant_lon": p.merchant_lon,
+            "merchant_source": p.merchant_source,
+            "merchant_confidence": p.merchant_confidence,
+            "merchant_verified_by_user": p.merchant_verified_by_user,
+            "purchase_context_type": p.purchase_context_type,
+            "evidence_refs": p.evidence_refs,
+            "user_confirmed_location": p.user_confirmed_location,
             "created_at": p.created_at.isoformat() if hasattr(p.created_at, "isoformat") else str(p.created_at),
         }
         for p in rows
     ]
+
+
+@router.get("/purchases/{purchase_id}/photo")
+async def get_purchase_photo(purchase_id: str, user: User = Depends(current_user)):
+    purchase = PurchaseRepository(_get_db()).get(purchase_id, user.id)
+    if not purchase or not purchase.source_file:
+        raise AppError("NOT_FOUND", "Không tìm thấy ảnh mua hàng.", status=404)
+    content = LocalFileStorage(get_settings().storage_dir).get(purchase.source_file)
+    if content is None:
+        raise AppError("NOT_FOUND", "Không tìm thấy ảnh mua hàng.", status=404)
+    return Response(content, media_type=purchase.mime_type or "application/octet-stream", headers={"Content-Disposition": "inline"})
 
 
 @router.delete("/purchases/{purchase_id}", status_code=204)
@@ -1181,8 +1551,8 @@ async def delete_purchase(purchase_id: str, user: User = Depends(current_user)):
     if purchase.source_file:
         try:
             LocalFileStorage(get_settings().storage_dir).delete(purchase.source_file)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise AppError("STORAGE_DELETE_FAILED", "Không thể xóa ảnh mua hàng.", status=500) from exc
     if not repo.delete(purchase_id, user.id):
         raise AppError("NOT_FOUND", "Không tìm thấy mua hàng.", status=404)
     return None

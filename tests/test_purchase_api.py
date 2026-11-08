@@ -56,7 +56,48 @@ def test_create_manual_purchase_without_file_round_trips(purchases_client):
     assert saved["notes"] == "Trả tiền mặt"
     assert saved["occurred_at"] == "2026-10-31T09:30:00"
     assert saved["location_captured_at"] is None
-    assert saved["source_file"] == ""
+    assert saved["photo_available"] is False
+    assert "source_file" not in saved
+
+
+def test_create_manual_purchase_round_trips_distinct_location_context(purchases_client):
+    client, _, _ = purchases_client
+    response = client.post(
+        "/payments/purchases/manual",
+        data={
+            "item": "Cà phê",
+            "amount": 30,
+            "payment_lat": 0,
+            "payment_lon": 106.7,
+            "payment_source": "gps",
+            "merchant_lat": 10.77,
+            "merchant_lon": 106.7,
+            "merchant_name": "Quán Sen",
+            "merchant_verified_by_user": "true",
+            "purchase_context_type": "physical",
+            "user_confirmed_location": "true",
+        },
+    )
+    assert response.status_code == 201
+    saved = response.json()
+    assert saved["payment_lat"] == 0
+    assert saved["merchant_lat"] == 10.77
+    assert saved["merchant_verified_by_user"] is True
+    assert saved["purchase_context_type"] == "physical"
+
+    listed = client.get("/payments/purchases").json()[0]
+    assert listed["payment_lat"] == 0
+    assert listed["merchant_lat"] == 10.77
+    assert listed["user_confirmed_location"] is True
+
+
+def test_create_manual_purchase_rejects_incomplete_payment_coordinates(purchases_client):
+    client, _, _ = purchases_client
+    response = client.post(
+        "/payments/purchases/manual",
+        data={"item": "Cà phê", "amount": 30, "payment_lat": 10},
+    )
+    assert response.status_code == 422
 
 
 def test_create_manual_purchase_records_location_capture_time(purchases_client):
@@ -146,10 +187,13 @@ def test_create_manual_purchase_with_image_saves_file(purchases_client):
     assert response.status_code == 201
 
     saved = client.get("/payments/purchases").json()[0]
-    assert saved["mime_type"] == "image/png"
-    assert saved["file_size"] == len(PNG)
-    assert saved["file_checksum"]
-    assert (tmp_path / "storage" / saved["source_file"]).exists()
+    assert saved["photo_available"] is True
+    assert "source_file" not in saved
+    assert "file_checksum" not in saved
+    assert "file_size" not in saved
+    assert "mime_type" not in saved
+    purchase = PurchaseRepository(db).get(saved["id"], "owner")
+    assert (tmp_path / "storage" / purchase.source_file).exists()
 
 
 def test_create_manual_purchase_rejects_non_image(purchases_client):
@@ -198,6 +242,56 @@ def test_purchase_list_filters_by_date_range(purchases_client):
     assert len(clamped) == 1
 
 
+def test_purchase_photo_content_is_owner_scoped_and_returns_recorded_mime(purchases_client):
+    client, _, _ = purchases_client
+    created = client.post(
+        "/payments/purchases/manual",
+        data={"item": "Có ảnh", "amount": 7},
+        files={"file": ("anh.png", PNG, "image/png")},
+    ).json()
+
+    response = client.get(f"/payments/purchases/{created['id']}/photo")
+    assert response.status_code == 200
+    assert response.content == PNG
+    assert response.headers["content-type"] == "image/png"
+
+    _act_as(client, "other")
+    assert client.get(f"/payments/purchases/{created['id']}/photo").status_code == 404
+
+
+def test_purchase_photo_content_not_found_without_photo_or_storage_object(purchases_client):
+    client, db, tmp_path = purchases_client
+    no_photo = PurchaseRepository(db).create(Purchase(user_id="owner", item="No photo", amount=1))
+    assert client.get(f"/payments/purchases/{no_photo.id}/photo").status_code == 404
+
+    created = client.post(
+        "/payments/purchases/manual",
+        data={"item": "Missing object", "amount": 7},
+        files={"file": ("anh.png", PNG, "image/png")},
+    ).json()
+    source_file = PurchaseRepository(db).list("owner")[0].source_file
+    (tmp_path / "storage" / source_file).unlink()
+    assert client.get(f"/payments/purchases/{created['id']}/photo").status_code == 404
+
+
+def test_delete_purchase_preserves_record_when_storage_delete_fails(purchases_client, monkeypatch):
+    client, db, _ = purchases_client
+    created = client.post(
+        "/payments/purchases/manual",
+        data={"item": "Keep evidence", "amount": 7},
+        files={"file": ("anh.png", PNG, "image/png")},
+    ).json()
+
+    def fail_delete(self, key):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(payments.LocalFileStorage, "delete", fail_delete)
+    response = client.delete(f"/payments/purchases/{created['id']}")
+
+    assert response.status_code == 500
+    assert PurchaseRepository(db).get(created["id"], "owner") is not None
+
+
 def test_delete_purchase_is_owner_scoped_and_cleans_storage(purchases_client):
     client, db, tmp_path = purchases_client
     created = client.post(
@@ -205,7 +299,7 @@ def test_delete_purchase_is_owner_scoped_and_cleans_storage(purchases_client):
         data={"item": "Có ảnh", "amount": 7},
         files={"file": ("anh.png", PNG, "image/png")},
     ).json()
-    source_file = client.get("/payments/purchases").json()[0]["source_file"]
+    source_file = PurchaseRepository(db).list("owner")[0].source_file
     stored = tmp_path / "storage" / source_file
     assert stored.exists()
 
