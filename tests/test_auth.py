@@ -2,7 +2,13 @@
 import pytest
 
 from src.auth.security import hash_password, verify_password, create_token, decode_token
-from tests.test_utils import TestUserRepository as UserRepository
+from src.store.sql_repository import UserRepository, init_database
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """Repo trên file DB tạm (SQLite :memory: không dùng được với TestClient)."""
+    return UserRepository(init_database(str(tmp_path / "auth.db")))
 
 
 def test_hash_and_verify():
@@ -30,17 +36,15 @@ def test_jwt_invalid():
     assert decode_token("") is None
 
 
-def test_user_repository_create_and_get():
+def test_user_repository_create_and_get(repo):
     """Tạo và tìm người dùng."""
-    repo = UserRepository(db_path=":memory:")
     user = repo.create("kien", "hash123")
     assert repo.get_by_username("kien").id == user.id
     assert repo.get(user.id).username == "kien"
 
 
-def test_user_repository_duplicate_username():
+def test_user_repository_duplicate_username(repo):
     """Username trùng bị chặn."""
-    repo = UserRepository(db_path=":memory:")
     repo.create("kien", "hash123")
     with pytest.raises(ValueError):
         repo.create("kien", "hash456")

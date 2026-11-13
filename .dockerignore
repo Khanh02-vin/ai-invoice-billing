@@ -16,8 +16,5 @@ frontend/dist
 .DS_Store
 .idea
 .vscode
-.claude
-.agents
-PLAN_ai-invoice-billing.md
 README.md
 LICENSE

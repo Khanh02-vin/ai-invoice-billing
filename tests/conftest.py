@@ -1,24 +1,15 @@
-"""Pytest conftest — test KHÔNG BAO GIỜ chạm DB dev (invoices.db ở repo root).
+"""Pytest conftest — test KHÔNG BAO GIỜ chạm DB dev.
 
-Lý do: SQLiteRepo mở/tạo file DB ngay lúc construct, nên chỉ cần import src.app
-là file invoices.db (cwd) được tạo. Các fixture cũ xoá `invoices.db` sau test để
-dọn — nhưng đang chạy dev thì việc đó xoá luôn DB thật (server restart thấy DB
-trống). Thay vào đó, trỏ mọi đường dẫn mặc định về thư mục tạm của phiên test.
-
-Env phải set ở import-time (trước khi test module import src) để repo singleton
-cấp module (auth_ext.user_repo, orgs/search/billing) cũng trỏ vào tmp.
+Mỗi test dùng một file SQLite trong ``tmp_path`` (không dùng ``:memory:``: pool
+của SQLAlchemy là per-thread còn TestClient chạy app ở thread khác).
 """
 from __future__ import annotations
 
 import os
 import tempfile
 
-os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "1")
-os.environ.setdefault("CELERY_TASK_EAGER_PROPAGATES", "1")
-os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")
-_TMP = tempfile.mkdtemp(prefix="invoice-tests-")
-os.environ["DATABASE_PATH"] = os.path.join(_TMP, "invoices.db")
-os.environ["STORAGE_DIR"] = os.path.join(_TMP, "storage")
+_TMP = tempfile.mkdtemp(prefix="spends-tests-")
+os.environ["DATABASE_PATH"] = os.path.join(_TMP, "spends.db")
 
 import pytest
 
@@ -27,7 +18,6 @@ import pytest
 def safe_db(tmp_path, monkeypatch):
     """Mỗi test một DB tạm riêng — không đụng file thật; pytest tự xoá tmp_path."""
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
     monkeypatch.setenv("APP_URL", "http://testserver")
     yield
     # Clear rate-limit singleton để các test không bị ảnh hưởng bởi test trước.
@@ -37,3 +27,30 @@ def safe_db(tmp_path, monkeypatch):
         get_default_limiter().clear()
     except Exception:
         pass
+
+
+@pytest.fixture
+def client():
+    """TestClient trên app thật; DB là file tạm mà ``safe_db`` đặt cho từng test."""
+    from fastapi.testclient import TestClient
+
+    from src.app import app
+
+    return TestClient(app)
+
+
+@pytest.fixture
+def make_user():
+    """Tạo user trực tiếp trong DB test và header Bearer tương ứng.
+
+    Không đi qua ``/auth/register`` để test không phụ thuộc OPEN_REGISTRATION
+    và không ăn hạn mức rate-limit.
+    """
+    from src.api.deps import user_repo
+    from src.auth.security import create_token, hash_password
+
+    def _make(username: str):
+        user = user_repo().create(username, hash_password("matkhau123"))
+        return user, {"Authorization": f"Bearer {create_token(user.id)}"}
+
+    return _make

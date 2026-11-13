@@ -13,75 +13,26 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+from ..api.deps import current_user as current_user_local
+from ..api.deps import user_repo as _get_repo
 from ..auth.security import (
     create_email_token,
     create_refresh_token,
     create_token,
     decode_refresh_token,
-    decode_token,
     hash_password,
 )
 from ..config import get_settings
 from ..errors import AppError
 from ..mail import send_mail, user_email
 from ..models import User
-from ..store.sql_repository import Database, UserRepository, get_database
+from ..store.sql_repository import UserRepository
 
 from ..security.api_rate_limit import rate_limit_dependency
 
 router = APIRouter(prefix="/auth", tags=["auth-ext"])
-
-bearer = HTTPBearer(auto_error=False)
-
-# Lazy: resolve via app module at request time
-_db: Database | None = None
-
-
-def _get_db() -> Database:
-    global _db
-    try:
-        from .. import app as app_module
-
-        app_users = getattr(app_module, "users", None)
-        if getattr(app_users, "db", None) is not None:
-            return app_users.db
-    except Exception:
-        pass
-    if _db is None:
-        _db = get_database(get_settings().database_path)
-    return _db
-
-
-def _get_repo() -> UserRepository:
-    try:
-        from .. import app as app_module
-
-        app_users = getattr(app_module, "users", None)
-        if app_users is not None and hasattr(app_users, "create_email_verification"):
-            return app_users
-        if app_users is not None and getattr(app_users, "db", None) is not None:
-            return UserRepository(app_users.db)
-    except Exception:
-        pass
-    return UserRepository(_get_db())
-
-
-def current_user_local(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> User:
-    """Resolve user from JWT. 401 if missing/invalid."""
-    if not credentials:
-        raise AppError("UNAUTHORIZED", "Cần đăng nhập.", status=401)
-    user_id = decode_token(credentials.credentials)
-    if not user_id:
-        raise AppError("UNAUTHORIZED", "Token không hợp lệ.", status=401)
-    repo = _get_repo()
-    user = repo.get(user_id)
-    if not user:
-        raise AppError("UNAUTHORIZED", "Token không hợp lệ.", status=401)
-    return user
-
 
 # ---- request/response models ----
 

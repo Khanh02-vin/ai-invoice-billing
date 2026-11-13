@@ -2,8 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // Dev: proxy các route API sang backend FastAPI (cùng path như production).
-// Port 8004 trùng với cấu hình dev bạn đang dùng; đổi thành 8000 nếu chạy backend local.
-const API_TARGET = "http://localhost:8004";
+const API_TARGET = "http://localhost:8005";
 
 export default defineConfig({
   plugins: [react()],
@@ -16,17 +15,10 @@ export default defineConfig({
     allowedHosts: [".ts.net", ".trycloudflare.com"],
     proxy: {
       "/auth": API_TARGET,
-      "/invoices": API_TARGET,
-      "/upload": API_TARGET,
-      "/payments": API_TARGET,
-      "/push": API_TARGET,
-      "/reports": API_TARGET,
-      "/organizations": API_TARGET,
-      "/api-keys": API_TARGET,
-      "/orgs": API_TARGET,
-      "/search": API_TARGET,
+      "/places": API_TARGET,
+      "/spends": API_TARGET,
+      "/discover": API_TARGET,
       "/health": API_TARGET,
-      "/eval": API_TARGET,
     },
   },
 });

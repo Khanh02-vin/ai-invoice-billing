@@ -50,6 +50,12 @@ export default function Login({ onLogin, initialError = "" }) {
         onLogin();
         return;
       }
+      // Tài khoản đã xác minh sẵn (demo không có SMTP, AUTO_VERIFY_EMAIL=1) -> vào app ngay.
+      if (res.verified) {
+        setToken(res.access_token);
+        onLogin();
+        return;
+      }
       // Đăng ký: tài khoản phải xác minh email trước khi gọi được API,
       // nên không vào app ngay — báo user kiểm tra hộp thư.
       setMode("login");
@@ -74,7 +80,7 @@ export default function Login({ onLogin, initialError = "" }) {
     <div className="auth-wrap">
       <div className="auth-card">
         <form onSubmit={submit} noValidate>
-          <h1>🧾 Invoice &amp; Billing</h1>
+          <h1>🍜 Quanh Ta</h1>
           <h2>{isLogin ? "Đăng nhập" : "Đăng ký"}</h2>
 
           <div className="form-group">

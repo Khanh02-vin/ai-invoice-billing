@@ -1,33 +1,19 @@
-# docker-compose for ai-invoice-billing Phase 3-4 / v3.0.0.
-# Backend (FastAPI) + Celery worker + Redis + frontend.
-# SQLite and uploaded files share one persistent volume; do not scale backend horizontally.
+# docker-compose cho Quanh Ta: backend FastAPI (SQLite) + frontend Caddy.
+# SQLite là single-writer → không scale backend ngang.
 #
-# Usage:
+# Dùng:
 #   docker compose up --build
 #   docker compose run --rm backend pytest -q
 #
-# Production secrets are read from .env (git-ignored). Copy .env.example → .env
-# and edit before running in production.
+# Secrets đọc từ .env (git-ignored). Copy .env.example → .env rồi sửa.
 
 services:
-  redis:
-    image: redis:7-alpine
-    container_name: invoice-redis
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
   backend:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ai-invoice-billing-backend:latest
-    container_name: invoice-backend
+    image: quanhta-backend:latest
+    container_name: quanhta-backend
     restart: unless-stopped
     env_file:
       - .env
@@ -36,75 +22,30 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       OPEN_REGISTRATION: ${OPEN_REGISTRATION:-0}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
-      STORAGE_DIR: /app/data/storage
-      DATABASE_PATH: /app/data/invoices.db
-      REDIS_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-      # "1" = /upload đẩy extraction vào Celery (trả 202 + client polling);
-      # worker service bên dưới xử lý. Broker chết → tự fallback chạy đồng bộ.
-      WORKER_ENABLED: "1"
+      DATABASE_PATH: /app/data/spends.db
       PORT: "8000"
-      BILLING_PROVIDER: ${BILLING_PROVIDER:-mock}  # mock|stripe|paddle (mock is safe non-secret default)
     volumes:
-      - invoice-data:/app/data
-      # VAPID_PRIVATE_KEY là đường dẫn file, mà image không chứa file này (là
-      # secret, git-ignored). Thiếu mount thì pywebpush không thấy file và push
-      # thất bại im lặng — không có thông báo nào tới điện thoại.
-      - ./vapid_private.pem:/app/vapid_private.pem:ro
+      - quanhta-data:/app/data
     ports:
       - "8000:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       start_period: 10s
       retries: 3
-    # SQLite is single-writer: keep exactly one backend service instance.
     deploy:
       replicas: 1
-
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ai-invoice-billing-backend:latest
-    container_name: invoice-worker
-    restart: unless-stopped
-    command: celery -A src.workers.celery_app worker -l info -Q extraction,billing,pdf,default -c 2
-    healthcheck:
-      disable: true
-    env_file:
-      - .env
-    environment:
-      APP_ENV: ${APP_ENV:-production}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
-      # Phải trùng DATABASE_PATH của backend (volume chung) — nếu không worker
-      # đọc/ghi nhầm file invoices.db khác và hóa đơn không bao giờ được cập nhật.
-      DATABASE_PATH: /app/data/invoices.db
-      STORAGE_DIR: /app/data/storage
-      REDIS_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-      WORKER_ENABLED: "1"
-    volumes:
-      - invoice-data:/app/data
-      # Cùng lý do như backend: worker cũng gửi thông báo nhắc chụp hóa đơn.
-      - ./vapid_private.pem:/app/vapid_private.pem:ro
-    depends_on:
-      redis:
-        condition: service_healthy
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: ai-invoice-billing-frontend:latest
-    container_name: invoice-frontend
+    image: quanhta-frontend:latest
+    container_name: quanhta-frontend
     restart: unless-stopped
     environment:
-      # ":80" = HTTP thuần. Đặt domain thật (VD invoice.example.com) để Caddy tự
+      # ":80" = HTTP thuần. Đặt domain thật (VD quanhta.example.com) để Caddy tự
       # lấy + gia hạn cert Let's Encrypt — cần port 80/443 trỏ về máy này và
       # firewall mở. Không cần certbot riêng.
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
@@ -128,16 +69,14 @@ services:
         condition: service_healthy
 
 volumes:
-  invoice-data:
-    driver: local
-  redis-data:
+  quanhta-data:
     driver: local
   caddy-data:
     driver: local
   caddy-config:
     driver: local
 
-# Subnet cố định — phải khớp với IP tĩnh của frontend (Caddy) ở trên và với
+# Subnet cố định — phải khớp IP tĩnh của frontend (Caddy) ở trên và với
 # RATE_LIMIT_TRUSTED_PROXIES trong .env. Đổi subnet thì đổi cả hai nơi kia.
 networks:
   default:

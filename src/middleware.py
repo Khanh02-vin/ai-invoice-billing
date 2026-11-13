@@ -58,7 +58,7 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app: FastAPI):
         super().__init__(app)
-        self._logger = logging.getLogger("invoice.access")
+        self._logger = logging.getLogger("quanh_ta.access")
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         start = time.perf_counter()

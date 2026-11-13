@@ -1,33 +1,22 @@
-# Caddy phục vụ React SPA (PWA) + proxy API sang backend FastAPI.
+# Caddy phục vụ React SPA + proxy API sang backend FastAPI.
 #
 # SITE_ADDRESS quyết định chế độ chạy:
-#   ":80"                 -> HTTP thuần (LAN/dev, không có HTTPS -> push không bật được)
-#   "invoice.example.com" -> Caddy TỰ lấy + gia hạn cert Let's Encrypt (cần port 80/443 mở)
+#   ":80"                  -> HTTP thuần (LAN/dev)
+#   "quanhta.example.com"  -> Caddy TỰ lấy + gia hạn cert Let's Encrypt (cần port 80/443 mở)
 #
-# Frontend gọi API bằng path tương đối (/auth, /invoices, ...) nên chỉ cần cùng
-# origin — không cần CORS, không cần VITE_API_BASE lúc build.
+# Frontend gọi API bằng path tương đối (/auth, /places, /spends, /discover) nên
+# chỉ cần cùng origin — không cần CORS, không cần VITE_API_BASE lúc build.
 {$SITE_ADDRESS::80}
 
-# API -> backend (giữ nguyên path; backend không có prefix)
-# Phải liệt kê cả path gốc không có hậu tố (vd /invoices, /upload, /search):
-# `path /invoices/*` KHÔNG khớp `/invoices`, và route rơi vào SPA fallback trả
+# API -> backend (giữ nguyên path; backend không có prefix).
+# Phải liệt kê cả path gốc không có hậu tố (vd /places, /spends):
+# `path /places/*` KHÔNG khớp `/places`, và route rơi vào SPA fallback trả
 # index.html → frontend nhận HTML thay vì JSON rồi crash.
-@api path /api/* /auth /auth/* /invoices /invoices/* /upload /upload/* /reports /reports/* /payments /payments/* /push /push/* /billing /billing/* /orgs /orgs/* /search /search/* /eval /eval/* /health /ready /metrics /docs /redoc /openapi.json
+@api path /auth /auth/* /places /places/* /spends /spends/* /discover /discover/* /health /ready /docs /redoc /openapi.json
 handle @api {
 	# docker-compose: backend:8000 (mặc định)
-	# k8s: đặt BACKEND_UPSTREAM=invoice-billing-service:8000
-	reverse_proxy {$BACKEND_UPSTREAM:backend:8000} {
-		# OCR scan / LLM fallback có thể lâu hơn 60s mặc định
-		transport http {
-			read_timeout 120s
-		}
-	}
+	reverse_proxy {$BACKEND_UPSTREAM:backend:8000}
 }
-
-# Service worker + manifest: KHÔNG cache — bản mới phải tới máy ngay,
-# cache thì user kẹt ở SW cũ và không nhận được push mới.
-@nocache path /sw.js /manifest.json
-header @nocache Cache-Control "no-cache, no-store, must-revalidate"
 
 # Asset có hash trong tên (Vite) -> cache vĩnh viễn
 @assets path /assets/*
@@ -38,11 +27,6 @@ handle {
 	root * /srv
 	try_files {path} /index.html
 	file_server
-}
-
-# Upload mặc định 10 MB — khớp MAX_UPLOAD_BYTES
-request_body {
-	max_size 10MB
 }
 
 encode gzip

@@ -1,22 +1,17 @@
 """Tests for Phase 4 auth hardening: email verification, password reset, refresh tokens."""
 from __future__ import annotations
 
-import os
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.auth.security import (
     create_email_token,
     hash_token,
-    create_token,
     decode_token,
 )
-from src.store.users import UserRepository
-from src.routers.auth_ext import router as auth_ext_router
+from src.store.sql_repository import UserRepository
 
 
 # ---- Fixtures ----
@@ -33,21 +28,18 @@ def monkeypatch_env(monkeypatch):
 
 @pytest.fixture
 def user_repo():
-    return UserRepository(db_path=":memory:")
+    """Repo trên đúng file DB mà app dùng (DATABASE_PATH do conftest đặt theo từng test)."""
+    from src.api.deps import user_repo as make_user_repo
+
+    return make_user_repo()
 
 
 @pytest.fixture
 def client(user_repo):
-    """Test client using full app (login/register are in app.py)."""
-    # Patch the module-level repos to use our in-memory repo.
-    import src.routers.auth_ext as auth_ext_module
-    auth_ext_module.user_repo = user_repo
-    import src.app as app_module
-    app_module.users = user_repo
-    # Reset settings cache so env vars take effect
-    from src.config import reset_settings
-    reset_settings()
-    return TestClient(app_module.app)
+    """Test client dùng app thật; repo lấy qua Depends nên không cần patch module."""
+    from src.app import app
+
+    return TestClient(app)
 
 
 def _register(client, username="kien", password="matkhau123", email=None):
@@ -179,6 +171,26 @@ def test_register_without_smtp_reports_not_sent(client, user_repo):
     assert r.status_code == 200
     assert r.json()["verification_sent"] is False
     assert user_repo.get_by_username("nosmtp").verified is False
+
+
+def test_auto_verify_email_when_smtp_absent(monkeypatch, client, user_repo):
+    """AUTO_VERIFY_EMAIL=1 (bản demo không có SMTP) -> tài khoản dùng được ngay.
+
+    Mặc định cờ này tắt, nên hành vi production không đổi.
+    """
+    monkeypatch.setenv("AUTO_VERIFY_EMAIL", "1")
+    from src.config import reset_settings
+    reset_settings()
+
+    r = client.post("/auth/register", json={
+        "username": "demo", "password": "matkhau123", "email": "d@example.com"
+    })
+    assert r.status_code == 200
+    assert user_repo.get_by_username("demo").verified is True
+
+    r = client.post("/auth/login", json={"username": "demo", "password": "matkhau123"})
+    assert r.status_code == 200
+    assert r.json()["access_token"]
 
 
 def test_forgot_password_sends_reset_email(monkeypatch, client, user_repo):

@@ -14,7 +14,7 @@ from email.message import EmailMessage
 from .config import get_settings
 from .models import User
 
-logger = logging.getLogger("invoice.mail")
+logger = logging.getLogger("quanh_ta.mail")
 
 
 def user_email(user: User) -> str:

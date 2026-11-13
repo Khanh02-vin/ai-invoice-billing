@@ -42,6 +42,11 @@ class Settings:
     open_registration: bool = field(
         default_factory=lambda: _bool_env("OPEN_REGISTRATION", default=False)
     )
+    # Bản demo không có SMTP: tự đánh dấu đã xác minh để user đăng nhập lại được.
+    # Mặc định TẮT — production phải xác minh email thật.
+    auto_verify_email: bool = field(
+        default_factory=lambda: _bool_env("AUTO_VERIFY_EMAIL", default=False)
+    )
 
     # CORS
     cors_origins: list[str] = field(
@@ -58,43 +63,6 @@ class Settings:
             self.google_oauth_client_id
             and self.google_oauth_client_secret
             and self.google_oauth_redirect_uri
-        )
-
-    # Gmail metadata OAuth/Pub/Sub (separate from Google Sign-In).
-    gmail_oauth_client_id: str = field(
-        default_factory=lambda: os.getenv("GMAIL_CLIENT_ID", "") or os.getenv("GOOGLE_CLIENT_ID", "")
-    )
-    gmail_oauth_client_secret: str = field(
-        default_factory=lambda: os.getenv("GMAIL_CLIENT_SECRET", "") or os.getenv("GOOGLE_CLIENT_SECRET", "")
-    )
-    gmail_oauth_redirect_uri: str = field(
-        default_factory=lambda: os.getenv("GMAIL_REDIRECT_URI", "")
-        or os.getenv("GOOGLE_REDIRECT_URI", "")
-    )
-    gmail_token_encryption_key: str = field(
-        default_factory=lambda: os.getenv("GMAIL_TOKEN_ENCRYPTION_KEY", "")
-    )
-    gmail_pubsub_verification_token: str = field(
-        default_factory=lambda: os.getenv("GMAIL_PUBSUB_VERIFICATION_TOKEN", "")
-    )
-    gmail_pubsub_audience: str = field(
-        default_factory=lambda: os.getenv("GMAIL_PUBSUB_AUDIENCE", "")
-    )
-    gmail_pubsub_topic: str = field(default_factory=lambda: os.getenv("GMAIL_PUBSUB_TOPIC", ""))
-    gmail_payment_sender_filters: list[str] = field(
-        default_factory=lambda: _list_env("GMAIL_PAYMENT_SENDER_FILTERS", [])
-    )
-    gmail_payment_subject_filters: list[str] = field(
-        default_factory=lambda: _list_env("GMAIL_PAYMENT_SUBJECT_FILTERS", ["payment", "paid", "thanh toan"])
-    )
-
-    @property
-    def gmail_oauth_enabled(self) -> bool:
-        return bool(
-            self.gmail_oauth_client_id
-            and self.gmail_oauth_client_secret
-            and self.gmail_oauth_redirect_uri
-            and self.gmail_token_encryption_key
         )
 
     # Email transport (SMTP). When configured, offline token returns are disabled.
@@ -114,68 +82,6 @@ class Settings:
         """Email transport is considered enabled when SMTP host is configured."""
         return bool(self.smtp_host and self.smtp_port)
 
-    # IMAP poller — đọc email thông báo giao dịch ngân hàng/ví -> /payments/ingest
-    imap_host: str = field(default_factory=lambda: os.getenv("IMAP_HOST", ""))
-    imap_port: int = field(default_factory=lambda: int(os.getenv("IMAP_PORT", "993")))
-    imap_user: str = field(default_factory=lambda: os.getenv("IMAP_USER", ""))
-    imap_pass: str = field(default_factory=lambda: os.getenv("IMAP_PASS", ""))
-    imap_folder: str = field(default_factory=lambda: os.getenv("IMAP_FOLDER", "INBOX"))
-    imap_interval_seconds: int = field(
-        default_factory=lambda: int(os.getenv("IMAP_INTERVAL_SECONDS", "60"))
-    )
-    # Gắn email -> user (VD "linh@gmail.com,user1"); rỗng: mọi email gán cho
-    # mọi user verified (chỉ dùng khi inbox là của chính người dùng).
-    imap_user_map: str = field(default_factory=lambda: os.getenv("IMAP_USER_MAP", ""))
-
-    @property
-    def imap_enabled(self) -> bool:
-        """IMAP poller bật khi có host + user."""
-        return bool(self.imap_host and self.imap_user)
-
-    # Web Push (PWA) — thông báo native khi có giao dịch chờ chụp hóa đơn.
-    # Sinh key: python3 scripts/gen_vapid_keys.py
-    vapid_public_key: str = field(default_factory=lambda: os.getenv("VAPID_PUBLIC_KEY", ""))
-    vapid_private_key: str = field(default_factory=lambda: os.getenv("VAPID_PRIVATE_KEY", ""))
-    vapid_subject: str = field(
-        default_factory=lambda: os.getenv("VAPID_SUBJECT", "mailto:admin@localhost")
-    )
-
-    @property
-    def push_enabled(self) -> bool:
-        """Push bật khi có đủ cặp VAPID key."""
-        return bool(self.vapid_public_key and self.vapid_private_key)
-
-    # Billing
-    billing_provider: str = field(default_factory=lambda: os.getenv("BILLING_PROVIDER", "mock"))
-
-    # Upload
-    max_upload_bytes: int = field(
-        default_factory=lambda: int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
-    )  # 10 MB
-    allowed_mime_types: list[str] = field(
-        default_factory=lambda: _list_env(
-            "ALLOWED_MIME_TYPES",
-            [
-                "application/pdf",
-                "image/png",
-                "image/jpeg",
-                "image/tiff",
-                "text/plain",
-                "application/xml",
-                "text/xml",
-            ],
-        )
-    )
-    max_pdf_pages: int = field(default_factory=lambda: int(os.getenv("MAX_PDF_PAGES", "20")))
-    upload_timeout_seconds: int = field(
-        default_factory=lambda: int(os.getenv("UPLOAD_TIMEOUT_SECONDS", "60"))
-    )
-
-    # Extraction worker: WORKER_ENABLED=1 -> đẩy trích xuất vào hàng đợi Celery
-    # (cần Redis broker, client polling). Mặc định chạy đồng bộ trong request
-    # (fallback cho dev/test/API-only, không cần broker).
-    worker_enabled: bool = field(default_factory=lambda: _bool_env("WORKER_ENABLED", default=False))
-
     # Rate limiting (sliding window, per endpoint policy)
     # Format for env: RL_AUTH_LOGIN=5:60 means 5 requests per 60 seconds.
     rate_limit_auth_login: str = field(
@@ -186,10 +92,6 @@ class Settings:
     )
     rate_limit_auth_resend: str = field(
         default_factory=lambda: os.getenv("RL_AUTH_RESEND", "3:300")
-    )
-    rate_limit_upload: str = field(default_factory=lambda: os.getenv("RL_UPLOAD", "10:60"))
-    rate_limit_payment_ingest: str = field(
-        default_factory=lambda: os.getenv("RL_PAYMENT_INGEST", "20:60")
     )
 
     def rate_limit_policy(self, name: str) -> tuple[int, int]:
@@ -204,33 +106,7 @@ class Settings:
         except (ValueError, AttributeError):
             return 10, 60
 
-    # Storage
-    storage_dir: str = field(default_factory=lambda: os.getenv("STORAGE_DIR", "data/storage"))
-    database_path: str = field(default_factory=lambda: os.getenv("DATABASE_PATH", "invoices.db"))
-
-    # LLM
-    llm_base_url: str = field(
-        default_factory=lambda: os.getenv("LLM_BASE_URL", "https://api.qwencoder.cloud/api/v1")
-    )
-    llm_api_key: str = field(
-        default_factory=lambda: os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY", "")
-    )
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "qwen3.7-max"))
-    llm_timeout_seconds: int = field(
-        default_factory=lambda: int(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
-    )
-    llm_max_retries: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_RETRIES", "2")))
-    llm_cost_cap_usd: float = field(
-        default_factory=lambda: float(os.getenv("LLM_COST_CAP_USD", "0.50"))
-    )
-
-    # Privacy
-    privacy_local_only: bool = field(
-        default_factory=lambda: _bool_env("PRIVACY_LOCAL_ONLY", default=False)
-    )
-    privacy_redact_pii: bool = field(
-        default_factory=lambda: _bool_env("PRIVACY_REDACT_PII", default=True)
-    )
+    database_path: str = field(default_factory=lambda: os.getenv("DATABASE_PATH", "data/spends.db"))
 
     @property
     def is_production(self) -> bool:
@@ -257,31 +133,12 @@ class Settings:
                 "Google OAuth production config requires GOOGLE_CLIENT_ID, "
                 "GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI together."
             )
-        gmail_parts = (
-            self.gmail_oauth_client_id,
-            self.gmail_oauth_client_secret,
-            self.gmail_oauth_redirect_uri,
-            self.gmail_token_encryption_key,
-            self.gmail_pubsub_topic,
-        )
-        if any(gmail_parts) and not self.gmail_oauth_enabled:
-            raise RuntimeError(
-                "Gmail OAuth production config requires client credentials, redirect URI, "
-                "GMAIL_TOKEN_ENCRYPTION_KEY, and GMAIL_PUBSUB_TOPIC."
-            )
         if not self.email_enabled:
             import logging
 
             logging.warning(
                 "Production: email transport chưa cấu hình (EMAIL_SMTP_HOST/EMAIL_SMTP_PORT). "
                 "Cần cấu hình SMTP trước khi gửi email thực tế."
-            )
-        if self.billing_provider == "mock":
-            import logging
-
-            logging.warning(
-                "Production: BILLING_PROVIDER=mock không an toàn cho môi trường thực tế. "
-                "Hãy cấu hình stripe|paddle trước khi nhận thanh toán."
             )
 
 

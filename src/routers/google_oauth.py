@@ -18,7 +18,7 @@ from ..config import get_settings
 from ..errors import AppError
 from ..models import User
 from ..store.sql_repository import UserRepository
-from .auth_ext import current_user_local, _get_repo
+from ..api.deps import current_user as current_user_local, user_repo as _get_repo
 
 router = APIRouter(prefix="/auth/google", tags=["google-oauth"])
 _AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"

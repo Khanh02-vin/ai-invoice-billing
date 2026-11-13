@@ -1,42 +1,9 @@
+# Runtime + test deps cho Quanh Ta. Stdlib lo phần còn lại (sqlite3, smtplib, json...).
 fastapi>=0.100.0
-python-multipart>=0.0.9
 uvicorn>=0.23.0
 pydantic>=2.0.0
 sqlmodel>=0.0.14
-pdfplumber>=0.10.0
-PyPDF2>=3.0.0
+sqlalchemy>=2.0
 PyJWT>=2.8.0
+httpx>=0.27
 pytest>=7.0.0
-
-# OCR ảnh scan hóa đơn. Docker image đã cài tesseract-ocr + tesseract-ocr-vie
-# (xem Dockerfile); thiếu python wrapper thì tính năng đọc ảnh im lặng tắt.
-pytesseract>=0.3.10
-Pillow>=10.0.0
-# paddleocr nặng (~500 MB model) và code tự fallback sang tesseract khi thiếu,
-# nên mặc định TẮT. Bật nếu cần OCR chất lượng cao hơn trên hóa đơn khó.
-# paddleocr>=2.7.0
-
-# RapidOCR là fallback tự chạy nếu PaddleOCR không có; không cần binary hệ thống.
-rapidocr-onnxruntime>=1.2.3
-
-# QR hóa đơn điện tử + render PDF scan (đối chiếu total/vendor qua QR)
-opencv-python-headless>=4.8
-pypdfium2>=4.0
-
-# Nhận diện ảnh cục bộ (purchase memory): vector MobileNetV3 qua ONNX, chạy CPU
-# ~6 ms/ảnh. Chỉ dùng khi có file model xuất sẵn bằng scripts/export_vision_model.py
-# (models/mobilenetv3_embed.onnx); thiếu lib hoặc file thì tự dùng dHash + OCR.
-onnxruntime>=1.16
-
-# Benchmark CORD (tests/benchmark_cord.py) — chỉ cho benchmark, không cần cho app
-# datasets>=2.0
-openai>=1.0
-# Optional production worker stack (API-only installs may omit these)
-celery>=5.3
-redis>=5.0
-reportlab
-# Web Push — thông báo native PWA (tùy chọn: thiếu lib vẫn chạy, chỉ mất push)
-pywebpush>=2.0
-
-# Standalone AI extraction package
--e ./ai-engine

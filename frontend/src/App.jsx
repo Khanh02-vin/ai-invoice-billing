@@ -1,21 +1,19 @@
 import { useEffect, useState } from "react";
 import Login from "./Login";
-import Invoices from "./Invoices";
-import Ledger from "./Ledger";
+import Discover from "./Discover";
 import { api, clearToken, getToken, setToken } from "./api";
 
+// Backend redirects about Google sign-in back here with a one-time code.
 async function consumeGoogleCallback() {
   const url = new URL(window.location.href);
   const params = new URLSearchParams(url.search);
   const code = params.get("google_code");
   const error = params.get("google_error");
 
-  const gmailStatus = params.get("gmail_status");
-  if (!code && !error && !params.has("google_link") && !gmailStatus) return "";
+  if (!code && !error && !params.has("google_link")) return "";
   window.history.replaceState({}, "", url.pathname);
-  if (gmailStatus) return "";
   if (error === "email_exists") {
-    return "Email Google đã có tài khoản. Hãy đăng nhập bằng mật khẩu trước, sau đó liên kết Google trong Cài đặt.";
+    return "Email Google đã có tài khoản. Hãy đăng nhập bằng mật khẩu trước.";
   }
   if (!code) return "";
 
@@ -61,10 +59,9 @@ export default function App() {
   if (loading) return <div className="loading">Đang tải...</div>;
   if (!user) return <Login initialError={authError} onLogin={() => api("/auth/me").then(setUser).catch(() => setUser(null))} />;
   return (
-    <Invoices
+    <Discover
       user={user}
       onLogout={() => {
-        // Logout phải xóa token + ngữ cảnh org (tránh user kế sau kế thừa phiên)
         clearToken();
         setUser(null);
       }}

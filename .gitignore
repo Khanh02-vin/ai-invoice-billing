@@ -8,7 +8,6 @@ venv/
 # Env & secrets
 .env
 *.env
-vapid_*.pem
 .env.production
 
 # DB & data
@@ -43,11 +42,6 @@ Thumbs.db
 # MCOCR sample images (tự tải lại bằng tests/benchmark_mcocr.py)
 data/mcocr_sample/
 
-# CORD sample images + OCR text cache (tự tải lại bằng tests/benchmark_cord.py)
-data/cord_sample/
-# Log benchmark (regenerable)
-tests/*_err.log
-src/invoice_billing.egg-info/
 *.egg-info/
 
 # Secrets & test artifacts — không bao giờ commit
@@ -61,3 +55,7 @@ models/*.onnx.data
 
 # Ảnh người dùng xuất để fine-tune (scripts/export_training_data.py) — không bao giờ commit
 training_data/
+
+# SQLite WAL (sinh ra khi mở DB) — không commit
+*.db-shm
+*.db-wal
