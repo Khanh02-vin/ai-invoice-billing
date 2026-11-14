@@ -1,0 +1,6 @@
+# Không đưa build artifacts/env của máy dev vào build context
+target/
+.env
+fixtures/*.db
+fixtures/*.db-*
+README.md

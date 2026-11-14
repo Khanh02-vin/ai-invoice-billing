@@ -1,0 +1,30 @@
+[package]
+name = "quanh-ta-backend"
+version = "1.0.0"
+edition = "2021"
+description = "Backend Axum cho Quanh Ta — drop-in thay thế FastAPI, đọc trực tiếp SQLite WAL"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: Map giữ thứ tự key như dict Python (qr.rs dựa vào đó khi quét key)
+serde_json = { version = "1", features = ["preserve_order"] }
+jsonwebtoken = "9"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+subtle = "2"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+getrandom = "0.2"
+tower-http = { version = "0.6", features = ["cors"] }
+chrono = { version = "0.4", features = ["clock"] }
+percent-encoding = "2"
+unicode-normalization = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "rustls-native-certs"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
