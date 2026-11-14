@@ -109,8 +109,14 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Backend http://localhost:8000, frontend (Caddy) http://localhost. SQLite nằm trong
-volume `quanhta-data` (`/app/data/spends.db`).
+Backend Python http://localhost:8000, backend Rust http://localhost:8001, frontend
+(Caddy) http://localhost. SQLite nằm trong volume `quanhta-data`
+(`/app/data/spends.db`) — hai backend đọc chung file WAL này.
+
+**Caddy mặc định proxy API vào backend Rust** (`backend-rs`, image 152MB, RSS ~4MB).
+Rollback về Python FastAPI: `BACKEND_UPSTREAM=backend:8000` trong `.env` rồi
+`docker compose up -d frontend`. So sánh hai backend sau khi chạy:
+`scripts/compare_backends.sh`. Chi tiết parity 73 case xem `backend-rs/README.md`.
 
 Trên VPS mới: `sudo ./scripts/deploy.sh yourdomain.com`.
 

@@ -1,9 +1,14 @@
-# docker-compose cho Quanh Ta: backend FastAPI (SQLite) + frontend Caddy.
-# SQLite là single-writer → không scale backend ngang.
+# docker-compose cho Quanh Ta: backend Rust/Axum + backend Python chạy song song
+# (cùng SQLite volume) + frontend Caddy. SQLite là single-writer → không scale
+# backend ngang.
+#
+# Caddy mặc định trỏ vào backend-rs (BACKEND_UPSTREAM trong .env để rollback
+# về Python: BACKEND_UPSTREAM=backend:8000).
 #
 # Dùng:
 #   docker compose up --build
 #   docker compose run --rm backend pytest -q
+#   scripts/compare_backends.sh http://localhost:8000 http://localhost:8001
 #
 # Secrets đọc từ .env (git-ignored). Copy .env.example → .env rồi sửa.
 
@@ -24,6 +29,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
       DATABASE_PATH: /app/data/spends.db
       PORT: "8000"
+      RATE_LIMIT_TRUSTED_PROXIES: ${RATE_LIMIT_TRUSTED_PROXIES:-}
     volumes:
       - quanhta-data:/app/data
     ports:
@@ -37,6 +43,37 @@ services:
     deploy:
       replicas: 1
 
+  # Backend Rust/Axum — drop-in thay thế FastAPI, đọc CÙNG file SQLite WAL
+  # (WAL multi-process + busy_timeout 5s cả hai phía). Caddy mặc định trỏ vào
+  # đây; Python giữ nguyên để đối chiếu (scripts/compare_backends.sh) và rollback.
+  backend-rs:
+    build:
+      context: ./backend-rs
+      dockerfile: Dockerfile
+    image: quanhta-backend-rs:latest
+    container_name: quanhta-backend-rs
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      OPEN_REGISTRATION: ${OPEN_REGISTRATION:-0}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      DATABASE_PATH: /app/data/spends.db
+      PORT: "8000"
+      RATE_LIMIT_TRUSTED_PROXIES: ${RATE_LIMIT_TRUSTED_PROXIES:-}
+    volumes:
+      - quanhta-data:/app/data
+    ports:
+      - "8001:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
   frontend:
     build:
       context: ./frontend
@@ -49,7 +86,9 @@ services:
       # lấy + gia hạn cert Let's Encrypt — cần port 80/443 trỏ về máy này và
       # firewall mở. Không cần certbot riêng.
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
-      BACKEND_UPSTREAM: backend:8000
+      # Backend mà Caddy proxy API sang. Mặc định backend-rs (Rust/Axum);
+      # rollback về Python: BACKEND_UPSTREAM=backend:8000 trong .env.
+      BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-backend-rs:8000}
     networks:
       default:
         # IP tĩnh cho Caddy: backend chỉ tin X-Forwarded-For đến từ đúng IP này

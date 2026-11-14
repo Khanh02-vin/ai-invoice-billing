@@ -1,4 +1,5 @@
-# CI cho Quanh Ta: chạy pytest + build frontend trên mọi push/PR vào main.
+# CI cho Quanh Ta: pytest (Python backend) + cargo test (Rust backend) + build
+# frontend trên mọi push/PR vào main.
 
 name: CI
 
@@ -50,6 +51,26 @@ jobs:
         env:
           APP_ENV: production
           JWT_SECRET: dev-secret-change-me-please-32bytes-min
+
+
+  backend-rs:
+    name: Backend Rust (Axum)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install sqlite3 (fixture schema cho sqlx macro lúc build)
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Tạo fixture schema.db
+        working-directory: backend-rs
+        run: sqlite3 fixtures/schema.db < fixtures/schema.sql
+
+      - name: Run tests (compile-time SQL check qua DATABASE_URL)
+        working-directory: backend-rs
+        run: DATABASE_URL="sqlite://$(pwd)/fixtures/schema.db" cargo test --locked
 
   frontend:
     name: Frontend (Node 20)
