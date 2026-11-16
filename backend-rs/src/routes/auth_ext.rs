@@ -329,6 +329,205 @@ pub async fn reset_password(
     Ok(Json(json!({ "message": "Dat lai mat khau thanh cong." })))
 }
 
+/// POST /auth/dev-reset-password — đặt lại mật khẩu TRỰC TIẾP không cần email.
+/// CHỈ tồn tại ở chế độ dev: production trả 404 (không lộ endpoint) — nếu không,
+/// bất kỳ ai vào được trang đăng nhập đều đổi được mật khẩu mọi tài khoản.
+pub async fn dev_reset_password(
+    State(state): State<AppState>,
+    rid: RequestId,
+    body: Bytes,
+) -> AppResult<Json<Value>> {
+    // Chỉ bật khi operator đặt ALLOW_DEV_PASSWORD_RESET=1 — mặc định ẩn (404)
+    // kể cả khi app chạy dev, để không ai quên tắt rồi để hở lỗ đổi mật khẩu.
+    if !state.settings.dev_password_reset {
+        return Err(AppError::new(
+            "NOT_FOUND",
+            "Not Found",
+            StatusCode::NOT_FOUND,
+        )
+        .with_request_id(&rid));
+    }
+    let mut fields = Vec::new();
+    let parsed = parse_body(&body, &mut fields);
+    let obj = parsed.as_ref().and_then(|v| body_object(v, &mut fields));
+    let (username, new_password) = match obj {
+        Some(o) => (
+            req_str_field(o, "username", &mut fields),
+            req_str_field(o, "new_password", &mut fields),
+        ),
+        None => {
+            crate::validation::push_field(&mut fields, "username");
+            crate::validation::push_field(&mut fields, "new_password");
+            (String::new(), String::new())
+        }
+    };
+    finish(fields)?;
+
+    // Tolerant: gõ "khanh" không dấu vẫn ra "Khánh"
+    let user = store::get_user_by_username_tolerant(&state.pool, &rid, &username).await?;
+    let Some(user) = user else {
+        return Err(AppError::new(
+            "NOT_FOUND",
+            "Ten nguoi dung khong ton tai.",
+            StatusCode::NOT_FOUND,
+        )
+        .with_request_id(&rid));
+    };
+    store::update_password(&state.pool, &rid, &user.id, &hash_password(&new_password)).await?;
+    // Thu hồi toàn bộ refresh token như reset-password thường
+    store::revoke_all_user_refresh_tokens(&state.pool, &rid, &user.id).await?;
+    Ok(Json(json!({ "message": "Dat lai mat khau thanh cong." })))
+}
+
+/// Mã OTP 6 số đều nhau từ 4 byte random (mod 1_000_000, đệm số 0).
+fn six_digit_code() -> String {
+    let mut buf = [0u8; 4];
+    getrandom::getrandom(&mut buf).expect("hệ thống hết entropy");
+    let n = u32::from_be_bytes(buf) % 1_000_000;
+    format!("{n:06}")
+}
+
+const RESET_CODE_TTL: f64 = 600.0; // 10 phút
+const RESET_CODE_MAX_ATTEMPTS: u32 = 5;
+
+fn dev_reset_enabled(state: &AppState, rid: &RequestId) -> Result<(), AppError> {
+    // Chỉ bật khi operator đặt ALLOW_DEV_PASSWORD_RESET=1 — mặc định ẩn (404)
+    // kể cả khi app chạy dev, để không ai quên tắt rồi để hở lỗ đổi mật khẩu.
+    if !state.settings.dev_password_reset {
+        return Err(AppError::new(
+            "NOT_FOUND",
+            "Not Found",
+            StatusCode::NOT_FOUND,
+        )
+        .with_request_id(rid));
+    }
+    Ok(())
+}
+
+/// POST /auth/dev-reset-password/request — gửi mã OTP 6 số tới Gmail của tài
+/// khoản (bước 1 của luồng dev đặt lại mật khẩu có xác nhận Gmail).
+pub async fn dev_reset_request(
+    State(state): State<AppState>,
+    rid: RequestId,
+    body: Bytes,
+) -> AppResult<Json<Value>> {
+    dev_reset_enabled(&state, &rid)?;
+    let username = parse_single_field(&body, "username")?;
+
+    // Tolerant: gõ "khanh" không dấu vẫn ra "Khánh"
+    let user = store::get_user_by_username_tolerant(&state.pool, &rid, &username).await?;
+    let Some(user) = user else {
+        return Err(AppError::new(
+            "NOT_FOUND",
+            "Ten nguoi dung khong ton tai.",
+            StatusCode::NOT_FOUND,
+        )
+        .with_request_id(&rid));
+    };
+    let to = mail::user_email(&user.email, &user.username);
+    if to.is_empty() {
+        return Err(AppError::new(
+            "NO_EMAIL",
+            "Tai khoan chua co email de nhan ma xac nhan.",
+            StatusCode::BAD_REQUEST,
+        )
+        .with_request_id(&rid));
+    }
+
+    let code = six_digit_code();
+    {
+        let mut codes = state.dev_reset_codes.lock().expect("dev reset codes lock");
+        codes.insert(
+            username.clone(),
+            (code.clone(), user.id.clone(), crate::routes::google_oauth::now_f64() + RESET_CODE_TTL, 0),
+        );
+    }
+    let sent = mail::send_mail(
+        &state.settings,
+        &to,
+        "Mã đặt lại mật khẩu — Invoice & Billing",
+        &format!(
+            "Xin chào {},\n\nMã xác nhận đặt lại mật khẩu: {}\n\nMã hết hạn sau 10 phút và chỉ dùng một lần. Nếu bạn không yêu cầu, hãy bỏ qua email này.",
+            user.username, code
+        ),
+    )
+    .await;
+    if !sent {
+        return Err(AppError::new(
+            "EMAIL_SEND_FAILED",
+            "Khong gui duoc email xac nhan, thu lai sau.",
+            StatusCode::BAD_GATEWAY,
+        )
+        .with_request_id(&rid));
+    }
+    // Log phục vụ dev-debug trên máy cá nhân (endpoint chỉ tồn tại khi opt-in)
+    eprintln!("[quanh-ta] dev reset code cho {}: {}", username, code);
+    Ok(Json(json!({
+        "message": "Neu ten nguoi dung ton tai va co email, ma xac nhan da duoc gui qua email."
+    })))
+}
+
+/// POST /auth/dev-reset-password/confirm — xác nhận mã OTP + mật khẩu mới.
+pub async fn dev_reset_confirm(
+    State(state): State<AppState>,
+    rid: RequestId,
+    body: Bytes,
+) -> AppResult<Json<Value>> {
+    dev_reset_enabled(&state, &rid)?;
+    let mut fields = Vec::new();
+    let parsed = parse_body(&body, &mut fields);
+    let obj = parsed.as_ref().and_then(|v| body_object(v, &mut fields));
+    let (username, code, new_password) = match obj {
+        Some(o) => (
+            req_str_field(o, "username", &mut fields),
+            req_str_field(o, "code", &mut fields),
+            req_str_field(o, "new_password", &mut fields),
+        ),
+        None => {
+            crate::validation::push_field(&mut fields, "username");
+            crate::validation::push_field(&mut fields, "code");
+            crate::validation::push_field(&mut fields, "new_password");
+            (String::new(), String::new(), String::new())
+        }
+    };
+    finish(fields)?;
+
+    let invalid = || {
+        AppError::new(
+            "INVALID_RESET_CODE",
+            "Ma xac nhan khong dung hoac da het han.",
+            StatusCode::BAD_REQUEST,
+        )
+        .with_request_id(&rid)
+    };
+    let user_id = {
+        // Khoá guard trong scope riêng — KHÔNG được sống qua bất kỳ .await nào
+        let mut codes = state.dev_reset_codes.lock().expect("dev reset codes lock");
+        let Some((expected_code, user_id, expiry, attempts)) = codes.get(&username).cloned() else {
+            return Err(invalid());
+        };
+        if expiry < crate::routes::google_oauth::now_f64() {
+            codes.remove(&username);
+            return Err(invalid());
+        }
+        if code.trim() != expected_code {
+            let attempts = attempts + 1;
+            if attempts >= RESET_CODE_MAX_ATTEMPTS {
+                codes.remove(&username);
+                return Err(invalid());
+            }
+            codes.insert(username.clone(), (expected_code, user_id, expiry, attempts));
+            return Err(invalid());
+        }
+        codes.remove(&username);
+        user_id
+    };
+
+    store::update_password(&state.pool, &rid, &user_id, &hash_password(&new_password)).await?;
+    store::revoke_all_user_refresh_tokens(&state.pool, &rid, &user_id).await?;
+    Ok(Json(json!({ "message": "Dat lai mat khau thanh cong." })))
+}
+
 /// POST /refresh — issue new tokens via refresh token (rotation).
 pub async fn refresh(
     State(state): State<AppState>,

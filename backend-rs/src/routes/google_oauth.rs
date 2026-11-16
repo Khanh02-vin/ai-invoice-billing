@@ -31,7 +31,7 @@ const STATE_TTL: f64 = 600.0;
 const EXCHANGE_TTL: f64 = 60.0;
 const GOOGLE_ONLY_PASSWORD_HASH: &str = "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
 
-fn now_f64() -> f64 {
+pub(crate) fn now_f64() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())

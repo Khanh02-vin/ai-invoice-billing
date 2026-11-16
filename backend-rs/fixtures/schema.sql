@@ -1,6 +1,8 @@
 -- Schema DDL nguyên văn từ sqlite_master (SQLModel sinh) — nguồn cho
 -- fixtures/schema.db dùng lúc BUILD docker (sqlx macro kiểm tra SQL lúc compile).
--- PHẢI GIỦ ĐỒNG BỘ với TABLE_DDL/INDEX_DDL trong src/db.rs (runtime ensure_schema).
+-- PHẢI GIỦ ĐỒNG BỘ với TABLE_DDL/INDEX_DDL trong src/db.rs (runtime ensure_schema)
+-- + cột receipt_photo được db.rs migrate_columns ALTER thêm cho DB cũ (không xuất
+-- hiện trong sqlite_master gốc — cột này duyệt tay tại đây).
 -- Tái tạo: sqlite3 data/spends.db "SELECT sql || ';' FROM sqlite_master WHERE (type='table' AND name IN ('users','oauth_accounts','email_verifications','password_resets','refresh_tokens','places','spends','spend_drafts')) OR (type='index' AND sql IS NOT NULL) ORDER BY type DESC, name;" > fixtures/schema.sql
 CREATE TABLE email_verifications (
 	id VARCHAR NOT NULL, 
@@ -80,6 +82,7 @@ CREATE TABLE spends (
 	occurred_at DATETIME NOT NULL, 
 	note VARCHAR NOT NULL, 
 	created_at DATETIME NOT NULL, 
+	receipt_photo VARCHAR, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES users (id), 
 	FOREIGN KEY(place_id) REFERENCES places (id)

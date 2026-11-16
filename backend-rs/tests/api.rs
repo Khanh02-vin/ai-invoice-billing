@@ -14,6 +14,7 @@ use quanh_ta_backend::settings::Settings;
 struct TestCtx {
     app: Router,
     pool: sqlx::SqlitePool,
+    state: AppState,
 }
 
 async fn make_ctx() -> TestCtx {
@@ -54,16 +55,19 @@ async fn make_ctx_opts(google_enabled: bool) -> TestCtx {
         google_oauth_client_id: if google_enabled { "test-client-id.apps.googleusercontent.com".into() } else { String::new() },
         google_oauth_client_secret: if google_enabled { "test-secret".into() } else { String::new() },
         google_oauth_redirect_uri: if google_enabled { "http://localhost:5173/auth/google/callback".into() } else { String::new() },
+        dev_password_reset: true,
     };
-    let app = build_router(AppState {
+    let state = AppState {
         pool: pool.clone(),
         settings,
         http: reqwest::Client::new(),
         limiter: std::sync::Arc::new(quanh_ta_backend::rate_limit::RateLimiter::default()),
         oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         oauth_exchanges: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-    });
-    TestCtx { app, pool }
+        dev_reset_codes: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+    };
+    let app = build_router(state.clone());
+    TestCtx { app, pool, state }
 }
 
 async fn make_app() -> Router {
@@ -1345,4 +1349,431 @@ async fn google_oauth_flow() {
     let (status, body) = call(&app2, "DELETE", "/auth/google/unlink", Some(token2), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["code"], "OAUTH_NOT_LINKED");
+}
+
+#[tokio::test]
+async fn dev_reset_password_flow() {
+    let ctx = make_ctx().await;
+    let app = ctx.app.clone();
+    let (_, reg) = call(
+        &app,
+        "POST",
+        "/auth/register",
+        None,
+        Some(json!({"username": "devreset", "password": "cu-123456"})),
+    )
+    .await;
+    let old_refresh = reg["refresh_token"].as_str().unwrap().to_owned();
+
+    // Dev: reset trực tiếp không cần email
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/auth/dev-reset-password",
+        None,
+        Some(json!({"username": "devreset", "new_password": "moi-654321"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["message"], "Dat lai mat khau thanh cong.");
+
+    // Mật khẩu cũ chết, mới vào được, refresh token cũ bị thu hồi
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/login",
+        None,
+        Some(json!({"username": "devreset", "password": "cu-123456"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/login",
+        None,
+        Some(json!({"username": "devreset", "password": "moi-654321"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/refresh",
+        None,
+        Some(json!({"refresh_token": old_refresh})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // User không tồn tại → 404
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/dev-reset-password",
+        None,
+        Some(json!({"username": "khong-ton-tai", "new_password": "x123456"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Production → endpoint 404 (không lộ)
+    let prod_settings = Settings {
+        environment: "production".into(),
+        jwt_secret: "prod-secret-dai-du-32-bytes-roi-day".into(),
+        jwt_expiry_days: 7,
+        open_registration: false,
+        auto_verify_email: false,
+        cors_origins: vec!["https://quanhta.example.com".into()],
+        database_path: "/tmp/prod-unused.db".into(), // không dùng trong test này
+        port: 0,
+        smtp_host: String::new(),
+        smtp_port: 0,
+        smtp_user: String::new(),
+        smtp_pass: String::new(),
+        email_from: String::new(),
+        app_url: String::new(),
+        rate_limit_auth_login: "5:60".into(),
+        rate_limit_auth_register: "3:60".into(),
+        rate_limit_auth_resend: "3:300".into(),
+        google_oauth_client_id: String::new(),
+        google_oauth_client_secret: String::new(),
+        google_oauth_redirect_uri: String::new(),
+        dev_password_reset: false,
+    };
+    let prod_app = build_router(AppState {
+        pool: ctx.pool.clone(),
+        settings: prod_settings,
+        http: reqwest::Client::new(),
+        limiter: std::sync::Arc::new(quanh_ta_backend::rate_limit::RateLimiter::default()),
+        oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        oauth_exchanges: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        dev_reset_codes: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+    });
+    let (status, _) = call(
+        &prod_app,
+        "POST",
+        "/auth/dev-reset-password",
+        None,
+        Some(json!({"username": "devreset", "new_password": "hack-attempt"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn dev_reset_password_opt_in_works_even_in_production_env() {
+    // Operator TỪNG MINH đặt ALLOW_DEV_PASSWORD_RESET=1 → endpoint bật dù APP_ENV=production
+    let ctx = make_ctx().await;
+    let prod_optin = Settings {
+        environment: "production".into(),
+        jwt_secret: "prod-secret-dai-du-32-bytes-roi-day".into(),
+        jwt_expiry_days: 7,
+        open_registration: false,
+        auto_verify_email: false,
+        cors_origins: vec!["https://quanhta.example.com".into()],
+        database_path: "/tmp/prod-optin-unused.db".into(),
+        port: 0,
+        smtp_host: String::new(),
+        smtp_port: 0,
+        smtp_user: String::new(),
+        smtp_pass: String::new(),
+        email_from: String::new(),
+        app_url: String::new(),
+        rate_limit_auth_login: "5:60".into(),
+        rate_limit_auth_register: "3:60".into(),
+        rate_limit_auth_resend: "3:300".into(),
+        google_oauth_client_id: String::new(),
+        google_oauth_client_secret: String::new(),
+        google_oauth_redirect_uri: String::new(),
+        dev_password_reset: true,
+    };
+    let app = build_router(AppState {
+        pool: ctx.pool.clone(),
+        settings: prod_optin,
+        http: reqwest::Client::new(),
+        limiter: std::sync::Arc::new(quanh_ta_backend::rate_limit::RateLimiter::default()),
+        oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        oauth_exchanges: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        dev_reset_codes: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+    });
+    // Production open_registration=false → tạo user trực tiếp bằng SQL
+    sqlx::query("INSERT INTO users (id, username, password_hash, created_at, verified, email) VALUES ('optinuser0000001', 'optinuser', '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!', '2026-01-01 00:00:00.000000', 1, '')")
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/auth/dev-reset-password",
+        None,
+        Some(json!({"username": "optinuser", "new_password": "moi-654321"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["message"], "Dat lai mat khau thanh cong.");
+}
+
+#[tokio::test]
+async fn dev_reset_otp_flow() {
+    let ctx = make_ctx().await;
+    let app = ctx.app.clone();
+    let (_, reg) = call(
+        &app,
+        "POST",
+        "/auth/register",
+        None,
+        Some(json!({"username": "otpuser", "password": "cu-123456", "email": "otp@t.dev"})),
+    )
+    .await;
+    let old_refresh = reg["refresh_token"].as_str().unwrap().to_owned();
+
+    // Bước 1: request mã OTP
+    // Test env không có SMTP → request trả 502 EMAIL_SEND_FAILED nhưng code vẫn
+    // đã lưu trong store (insert trước khi gửi mail) — chấp nhận cả hai trường hợp.
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/auth/dev-reset-password/request",
+        None,
+        Some(json!({"username": "otpuser"})),
+    )
+    .await;
+    assert!(
+        status == StatusCode::OK || status == StatusCode::BAD_GATEWAY,
+        "request status {status}"
+    );
+    let code = ctx
+        .state
+        .dev_reset_codes
+        .lock()
+        .unwrap()
+        .get("otpuser")
+        .unwrap()
+        .0
+        .clone();
+    assert_eq!(code.len(), 6);
+
+    // Sai code → 400 INVALID_RESET_CODE
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/auth/dev-reset-password/confirm",
+        None,
+        Some(json!({"username": "otpuser", "code": "000000", "new_password": "moi-123456"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "INVALID_RESET_CODE");
+
+    // Đúng code → 200; code single-use (confirm lần nữa → 400)
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/auth/dev-reset-password/confirm",
+        None,
+        Some(json!({"username": "otpuser", "code": &code, "new_password": "moi-123456"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["message"], "Dat lai mat khau thanh cong.");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/dev-reset-password/confirm",
+        None,
+        Some(json!({"username": "otpuser", "code": &code, "new_password": "khac-9999"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Mật khẩu mới vào được, cũ chết, refresh cũ thu hồi
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/login",
+        None,
+        Some(json!({"username": "otpuser", "password": "cu-123456"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/login",
+        None,
+        Some(json!({"username": "otpuser", "password": "moi-123456"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/refresh",
+        None,
+        Some(json!({"refresh_token": old_refresh})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn tolerant_username_login_and_reset() {
+    let ctx = make_ctx().await;
+    let app = ctx.app.clone();
+    // User có dấu: "Khánh"
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/register",
+        None,
+        Some(json!({"username": "Khánh", "password": "cu-123456"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Login gõ "khanh" (thường, không dấu) vẫn ra "Khánh"
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/login",
+        None,
+        Some(json!({"username": "khanh", "password": "cu-123456"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Dev reset gõ "khanh" không dấu → đặt lại cho "Khánh"
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/auth/dev-reset-password",
+        None,
+        Some(json!({"username": "khanh", "new_password": "moi-999999"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["message"], "Dat lai mat khau thanh cong.");
+
+    // Login bằng mật khẩu mới, vẫn gõ "khanh"
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/auth/login",
+        None,
+        Some(json!({"username": "khanh", "password": "moi-999999"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn receipt_upload_flow() {
+    let ctx = make_ctx().await;
+    let app = ctx.app.clone();
+    let (_, reg) = call(
+        &app,
+        "POST",
+        "/auth/register",
+        None,
+        Some(json!({"username": "photouser", "password": "secret123"})),
+    )
+    .await;
+    let token = reg["access_token"].as_str().unwrap().to_owned();
+    sqlx::query("INSERT INTO places (id, name, normalized_name, category, address, created_at) VALUES ('placephoto00001', 'Quán Ảnh', 'quan anh', 'cafe', '', '2026-01-01 00:00:00.000000')")
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+    let (_, created) = call(
+        &app,
+        "POST",
+        "/spends",
+        Some(&token),
+        Some(json!({"place_id": "placephoto00001", "amount": 50000})),
+    )
+    .await;
+    let spend_id = created["spend"]["id"].as_str().unwrap().to_owned();
+
+    // JPEG 1x1 chuẩn
+    const TINY_JPEG: &[u8] = &[
+        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00,
+        0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0xFF, 0xC0, 0x00, 0x0B, 0x08,
+        0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01,
+        0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xDA, 0x00, 0x08,
+        0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0xFB, 0xFA, 0x28, 0x28, 0xFF, 0xD9,
+    ];
+    use base64::Engine as _;
+    let data_url = format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(TINY_JPEG)
+    );
+
+    // Upload → 200 + saved
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/spends/{spend_id}/receipt"),
+        Some(&token),
+        Some(json!({ "image": data_url })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["saved"], true);
+
+    // Đọc lại ảnh → đúng bytes + content-type
+    let mut builder = Request::builder().method("GET").uri(format!("/spends/{spend_id}/receipt"));
+    builder = builder.header("authorization", format!("Bearer {token}"));
+    let res = app.clone().oneshot(builder.body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.headers()["content-type"].to_str().unwrap().starts_with("image/jpeg"));
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(bytes.as_ref(), TINY_JPEG);
+
+    // List → receipt: true
+    let (status, body) = call(&app, "GET", "/spends", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["spends"][0]["receipt"], true);
+
+    // User khác → 404 cả GET lẫn POST
+    let (_, reg2) = call(
+        &app,
+        "POST",
+        "/auth/register",
+        None,
+        Some(json!({"username": "photouser2", "password": "secret123"})),
+    )
+    .await;
+    let token2 = reg2["access_token"].as_str().unwrap();
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/spends/{spend_id}/receipt"),
+        Some(token2),
+        Some(json!({ "image": data_url })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "SPEND_NOT_FOUND");
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/spends/{spend_id}/receipt"),
+        Some(token2),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Body sai định dạng (không phải data URL) → 422
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/spends/{spend_id}/receipt"),
+        Some(&token),
+        Some(json!({ "image": "khong-phai-data-url" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["details"]["fields"], json!([["body", "image"]]));
 }

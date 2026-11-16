@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { api, fmtVnd, SPEND_LABEL } from "./api";
+import { useEffect, useRef, useState } from "react";
+import { api, compressImage, fmtVnd, getToken, API_BASE, SPEND_LABEL } from "./api";
 import { CATEGORY_LABELS, categoryLabel, tiktokSearchUrl } from "./labels";
 
 const EMPTY_FORM = {
@@ -53,6 +53,10 @@ export default function History({ coords, draft, onScan, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [qrNote, setQrNote] = useState("");
+  const [photoTarget, setPhotoTarget] = useState("");
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [viewReceipt, setViewReceipt] = useState("");
+  const photoInputRef = useRef(null);
 
   function reload() {
     setLoading(true);
@@ -173,6 +177,48 @@ export default function History({ coords, draft, onScan, onChanged }) {
       setError(err.message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  function addReceipt(spend) {
+    setPhotoTarget(spend.id);
+    photoInputRef.current?.click();
+  }
+
+  async function onReceiptFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !photoTarget) return;
+    setPhotoBusy(true);
+    setError("");
+    try {
+      const dataUrl = await compressImage(file);
+      await api(`/spends/${photoTarget}/receipt`, {
+        method: "POST",
+        body: JSON.stringify({ image: dataUrl }),
+      });
+      setMessage("Đã lưu ảnh biên lai cho giao dịch.");
+      reload();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPhotoBusy(false);
+      setPhotoTarget("");
+    }
+  }
+
+  async function viewReceiptImage(spend) {
+    setError("");
+    try {
+      const token = getToken();
+      const img = await fetch(`${API_BASE}/spends/${spend.id}/receipt`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const blob = await img.blob();
+      const url = URL.createObjectURL(blob);
+      setViewReceipt(url);
+    } catch (err) {
+      setError(err.message);
     }
   }
 
@@ -324,6 +370,11 @@ export default function History({ coords, draft, onScan, onChanged }) {
                     ) : (
                       "Địa điểm đã xoá"
                     )}
+                    {spend.receipt ? (
+                      <span className="receipt-badge" title="Có ảnh biên lai chuyển khoản">
+                        {" 📸"}
+                      </span>
+                    ) : null}
                   </h3>
                   <p className="place-meta">
                     {categoryLabel(spend.category)} · {formatDate(spend.occurred_at)}
@@ -340,6 +391,15 @@ export default function History({ coords, draft, onScan, onChanged }) {
                   <button
                     type="button"
                     className="btn-ghost btn-small"
+                    onClick={() => (spend.receipt ? viewReceiptImage(spend) : addReceipt(spend))}
+                    disabled={photoBusy}
+                    title={spend.receipt ? "Xem ảnh biên lai" : "Chụp thêm ảnh biên lai"}
+                  >
+                    {spend.receipt ? "📸 Xem" : "📸 Biên lai"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost btn-small"
                     onClick={() => remove(spend)}
                   >
                     Xoá
@@ -350,6 +410,33 @@ export default function History({ coords, draft, onScan, onChanged }) {
           </ul>
         ) : null}
       </section>
+
+      <input
+        type="file"
+        accept="image/*"
+        capture="environment"
+        hidden
+        ref={photoInputRef}
+        onChange={onReceiptFile}
+      />
+
+      {viewReceipt ? (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Ảnh biên lai chuyển khoản"
+          onClick={() => { URL.revokeObjectURL(viewReceipt); setViewReceipt(""); }}
+        >
+          <div className="modal-card">
+            <h2>📸 Ảnh biên lai chuyển khoản</h2>
+            <img src={viewReceipt} alt="Ảnh biên lai" style={{ maxWidth: "100%", borderRadius: 8 }} />
+            <button type="button" className="btn-ghost" onClick={() => { URL.revokeObjectURL(viewReceipt); setViewReceipt(""); }}>
+              Đóng
+            </button>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

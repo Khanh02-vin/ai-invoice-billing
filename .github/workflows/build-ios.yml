@@ -1,0 +1,84 @@
+# Build IPA không cần máy Mac (dùng GitHub Actions runner macOS).
+# IPA xuất ra UNSIGNED — để cài lên iPhone cần ký lại bằng Apple ID
+# (AltStore / SideStore) hoặc dùng tài khoản Apple Developer qua xcodebuild signing.
+name: Build iOS IPA (unsigned)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["frontend/**", ".github/workflows/build-ios.yml"]
+
+jobs:
+  build-ipa:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build web (API base từ secret repo, hoặc để trống)
+        env:
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
+        run: npm run build
+
+      - name: Sync Capacitor iOS
+        run: npx cap sync ios
+
+      - name: Install Apple certificates (nếu có secret)
+        if: ${{ secrets.BUILD_CERTIFICATE_BASE64 != '' }}
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/build.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERT_PATH
+          security create-keychain -p "$P12_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$P12_PASSWORD" $KEYCHAIN_PATH
+          security import $CERT_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+      - name: Archive (unsigned nếu không có cert)
+        run: |
+          cd ios/App
+          if [ -n "${{ secrets.BUILD_CERTIFICATE_BASE64 }}" ]; then
+            xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+              -archivePath $RUNNER_TEMP/App.xcarchive archive \
+              CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="${{ secrets.DEVELOPMENT_TEAM }}" \
+              PROVISIONING_PROFILE_SPECIFIER="${{ secrets.PROVISIONING_PROFILE }}" \
+              CODE_SIGNING_ALLOWED=YES
+          else
+            xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+              -archivePath $RUNNER_TEMP/App.xcarchive archive \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          fi
+
+      - name: Export IPA
+        run: |
+          cd ios/App
+          xcodebuild -exportArchive -archivePath $RUNNER_TEMP/App.xcarchive \
+            -exportOptionsPlist exportOptions.plist -exportPath $RUNNER_TEMP/export || true
+          # Fallback: đóng gói thủ công Product app từ archive nếu exportOptions thiếu
+          if [ ! -f $RUNNER_TEMP/export/App.ipa ]; then
+            mkdir -p $RUNNER_TEMP/export/Payload
+            cp -R $RUNNER_TEMP/App.xcarchive/Products/Applications/App.app \
+              $RUNNER_TEMP/export/Payload/
+            cd $RUNNER_TEMP/export && zip -qr App.ipa Payload
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quanh-ta-ipa
+          path: ${{ runner.temp }}/export/App.ipa

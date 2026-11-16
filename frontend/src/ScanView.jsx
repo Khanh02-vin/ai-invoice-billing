@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, fmtVnd } from "./api";
+import { api, compressImage, fmtVnd } from "./api";
 import { hasNativeDetector, makeDetector, scanImageFile, scanVideoFrame } from "./qrScan";
 import { loadApps, loadBanks, pickAppForBank, shouldPrefill, transferQrUrl, transferUrl } from "./vietqr";
 
@@ -45,18 +45,23 @@ function PayBlock({ result, fallbackResult, onOpenBank, draftBusy }) {
   const amount = result?.amount ?? (manualAmount ? Number(manualAmount.replace(/\D/g, "")) : 0);
   const effective = amount > 0 ? { ...base, amount } : null;
   const { banks, apps, error } = usePayInfo(base);
-  const [picked, setPicked] = useState("");
+  const [picked, setPicked] = useState(localStorage.getItem(PAY_APP_KEY) || "");
+  const [linking, setLinking] = useState(false);
 
   const bank = banks?.get(String(base?.bank_bin));
-  const stored = localStorage.getItem(PAY_APP_KEY);
-  const appId = picked || pickAppForBank(apps, bank?.code, stored);
-  const ready = Boolean(appId && bank);
-  const prefill = shouldPrefill(apps, appId);
+  // App chuyển tiền của BẠN (liên kết một lần, lưu localStorage) — ưu tiên hơn
+  // app của ngân hàng nhận, vì tiền rời ra từ app mà bạn dùng.
+  const linkedApp = (apps || []).find((a) => a.id === picked);
+  const fallbackApp = pickAppForBank(apps, bank?.code, picked);
+  const payAppId = linkedApp?.id || fallbackApp || "";
+  const payAppName = (apps || []).find((a) => a.id === payAppId)?.name || "";
+  const ready = Boolean(payAppId && bank);
+  const prefill = shouldPrefill(apps, payAppId);
 
   async function openBank() {
     if (!ready || !effective) return;
     const href = transferUrl({
-      appId,
+      appId: payAppId,
       amount: effective.amount,
       content: effective.merchant_name || "Thanh toan",
       account: effective.account,
@@ -116,20 +121,41 @@ function PayBlock({ result, fallbackResult, onOpenBank, draftBusy }) {
               </p>
             ) : (
               <>
-                <label className="pay-line" htmlFor="pay-app">App của {bank?.name || "ngân hàng nhận"}</label>
-                <select
-                  id="pay-app"
-                  value={appId}
-                  onChange={(event) => {
-                    setPicked(event.target.value);
-                    localStorage.setItem(PAY_APP_KEY, event.target.value);
-                  }}
-                  disabled={!apps?.length}
-                >
-                  {(apps || []).filter((app) => app.id === bank?.code).map((app) => (
-                    <option key={app.id} value={app.id}>{app.name}</option>
-                  ))}
-                </select>
+                <div className="pay-line">
+                  {linkedApp
+                    ? `✅ Đã liên kết app chuyển tiền: ${linkedApp.name}`
+                    : "Chưa liên kết app ngân hàng để chuyển tiền"}
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => setLinking(!linking)}
+                  >
+                    {linking ? "Ẩn" : "🔗 Liên kết app của tôi"}
+                  </button>
+                </div>
+                {linking && (
+                  <label className="pay-line" htmlFor="pay-app">
+                    Chọn app BẠN dùng để chuyển (tiền rời từ app này)
+                    <select
+                      id="pay-app"
+                      value={picked}
+                      onChange={(event) => {
+                        setPicked(event.target.value);
+                        localStorage.setItem(PAY_APP_KEY, event.target.value);
+                      }}
+                      disabled={!apps?.length}
+                    >
+                      <option value="">— Chọn app —</option>
+                      {(apps || []).map((app) => (
+                        <option key={app.id} value={app.id}>
+                          {app.name}
+                          {app.id === bank?.code ? " — ngân hàng nhận" : ""}
+                          {app.autofill ? " · điền sẵn số tiền" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 {ready ? (
                   <button type="button" className="btn-primary pay-open" onClick={openBank} disabled={draftBusy}>
                     {draftBusy
@@ -204,6 +230,8 @@ export default function ScanView({ onUse, coords, onChanged }) {
   const [drafts, setDrafts] = useState([]);
   const [draftBusy, setDraftBusy] = useState(false);
   const [draftMsg, setDraftMsg] = useState("");
+  const [returnDraft, setReturnDraft] = useState(null);
+  const [popupBusy, setPopupBusy] = useState(false);
 
   const loadDrafts = useCallback(() => {
     api("/spends/drafts").then((d) => setDrafts(d.drafts || [])).catch(() => {});
@@ -220,7 +248,11 @@ export default function ScanView({ onUse, coords, onChanged }) {
         .then((d) => {
           const rows = d.drafts || [];
           setDrafts(rows);
-          if (rows.length) setDraftMsg("Đã chuyển khoản xong? Bấm “Đã chuyển” để ghi chi tiêu vào bản đồ.");
+          if (rows.length) {
+            setDraftMsg("Đã chuyển khoản xong? Bấm “Đã chuyển” để ghi chi tiêu vào bản đồ.");
+            // Bước 3 của luồng: quay lại từ app ngân hàng → popup xác nhận
+            setReturnDraft((cur) => cur || rows[0]);
+          }
         })
         .catch(() => {});
     }
@@ -386,6 +418,88 @@ export default function ScanView({ onUse, coords, onChanged }) {
     }
   }
 
+  // "Hóa đơn tự động": app tự vẽ biên lai đối chiếu từ dữ liệu giao dịch + GPS —
+  // 0 cú bấm thêm, luôn có bằng chứng kể cả khi không chụp màn hình ngân hàng.
+  async function makeAutoReceipt(d) {
+    const W = 720;
+    const H = 900;
+    const canvas = document.createElement("canvas");
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#1b2130";
+    ctx.fillRect(0, 0, W, 120);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 40px sans-serif";
+    ctx.fillText("🍜 Quanh Ta", 40, 75);
+    ctx.font = "22px sans-serif";
+    ctx.fillText("Biên lai đối chiếu chuyển khoản", 40, 105);
+    ctx.fillStyle = "#111111";
+    const rows = [
+      ["Địa điểm", d.merchant_name || "Địa điểm chưa rõ"],
+      ["Số tiền", `${new Intl.NumberFormat("vi-VN").format(d.amount)} đ`],
+      ["Ngân hàng nhận", d.bank_bin ? `BIN ${d.bank_bin}` : "—"],
+      ["Số tài khoản", d.account || "—"],
+      ["Toạ độ GPS", d.lat != null ? `${Number(d.lat).toFixed(5)}, ${Number(d.lon).toFixed(5)}` : "không có"],
+      ["Thời gian xác nhận", new Date().toLocaleString("vi-VN")],
+    ];
+    let y = 190;
+    for (const [label, value] of rows) {
+      ctx.font = "20px sans-serif";
+      ctx.fillStyle = "#6b7280";
+      ctx.fillText(label.toUpperCase(), 40, y);
+      ctx.font = "bold 26px sans-serif";
+      ctx.fillStyle = "#111111";
+      const lines = String(value).match(/.{1,34}(\s|$)/g) || [String(value)];
+      for (const line of lines) {
+        ctx.fillText(line.trim(), 40, y + 34);
+        y += 34;
+      }
+      y += 26;
+    }
+    ctx.font = "18px sans-serif";
+    ctx.fillStyle = "#9ca3af";
+    ctx.fillText("Tạo tự động bởi Quanh Ta khi xác nhận đã chuyển khoản.", 40, H - 60);
+    ctx.fillText("Ảnh này đối chiếu với biên lai trong app ngân hàng.", 40, H - 32);
+    return canvas.toDataURL("image/jpeg", 0.85);
+  }
+
+  // Bước 4: xác nhận giao dịch (tạo spend + ghim địa điểm) rồi gắn ảnh biên lai.
+  // Luôn có bằng chứng: ảnh camera (chụp màn hình ngân hàng) hoặc hóa đơn tự động.
+  async function finishConfirm(d, photoDataUrl) {
+    setPopupBusy(true);
+    setError("");
+    try {
+      const evidence = photoDataUrl || (await makeAutoReceipt(d));
+      const res = await api(`/spends/drafts/${d.id}/confirm`, {
+        method: "POST",
+        body: JSON.stringify({ category: "restaurant", place_name: d.merchant_name || undefined }),
+      });
+      const spendId = res.spend?.id;
+      if (spendId) {
+        await api(`/spends/${spendId}/receipt`, {
+          method: "POST",
+          body: JSON.stringify({ image: evidence }),
+        });
+      }
+      setDraftMsg(
+        photoDataUrl
+          ? "Đã lưu giao dịch kèm ảnh biên lai và ghim địa điểm trên bản đồ."
+          : "Đã lưu giao dịch kèm hóa đơn tự động và ghim địa điểm trên bản đồ."
+      );
+      setReturnDraft(null);
+      loadDrafts();
+      if (onChanged) onChanged();
+    } catch (err) {
+      setError(err.message);
+      setReturnDraft(null);
+    } finally {
+      setPopupBusy(false);
+    }
+  }
+
   async function deleteDraft(id) {
     try { await api(`/spends/drafts/${id}`, { method: "DELETE" }); loadDrafts(); } catch (err) { setError(err.message); }
   }
@@ -406,7 +520,7 @@ export default function ScanView({ onUse, coords, onChanged }) {
         )}
 
         <p className="scan-status" role="status" aria-live="polite">
-          {error || draftMsg || status}
+          {draftMsg || error || status}
         </p>
 
         {result ? (
@@ -483,6 +597,43 @@ export default function ScanView({ onUse, coords, onChanged }) {
       </section>
 
       <DraftList drafts={drafts} onConfirm={confirmDraft} onDelete={deleteDraft} />
+
+      {returnDraft ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Xác nhận đã chuyển khoản">
+          <div className="modal-card">
+            <h2>💸 Bạn đã chuyển khoản xong?</h2>
+            <p className="pay-line">
+              {fmtVnd(returnDraft.amount)}
+              {returnDraft.account ? ` · tới ${returnDraft.account}` : ""}
+            </p>
+            <p className="pay-line">
+              Ấn xác nhận: app chụp lại màn hình giao dịch (ngân hàng, số tiền, toạ độ,
+              thời gian) làm bằng chứng đối chiếu — hoàn tất ghi chi tiêu ngay.
+            </p>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => finishConfirm(returnDraft, null)}
+              disabled={popupBusy}
+              aria-busy={popupBusy}
+            >
+              ✅ Xác nhận đã chuyển — chụp màn hình lưu bằng chứng
+            </button>
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => setReturnDraft(null)}
+              disabled={popupBusy}
+            >
+              Chưa chuyển / Bỏ qua
+            </button>
+            <p className="pay-line">
+              Muốn giữ thêm màn hình chuyển khoản thật của ngân hàng? Vào Lịch sử,
+              bấm 📸 Biên lai bên cạnh giao dịch.
+            </p>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

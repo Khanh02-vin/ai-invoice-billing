@@ -7,6 +7,8 @@
 use std::path::Path;
 use std::time::Duration;
 
+use sqlx::Row;
+
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
 pub type Pool = SqlitePool;
@@ -154,5 +156,22 @@ pub async fn ensure_schema(pool: &Pool) -> Result<(), sqlx::Error> {
     for ddl in INDEX_DDL {
         sqlx::query(ddl).execute(&mut *tx).await?;
     }
-    tx.commit().await
+    tx.commit().await?;
+    migrate_columns(pool).await
+}
+
+/// Migration cột thêm sau: bảng cũ tạo trước khi có cột mới — ALTER ADD COLUMN
+/// nếu PRAGMA table_info chưa liệt kê (idempotent).
+async fn migrate_columns(pool: &Pool) -> Result<(), sqlx::Error> {
+    let rows = sqlx::query("PRAGMA table_info(spends)").fetch_all(pool).await?;
+    let names: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.try_get::<String, _>("name").ok())
+        .collect();
+    if !names.iter().any(|n| n == "receipt_photo") {
+        sqlx::query("ALTER TABLE spends ADD COLUMN receipt_photo VARCHAR")
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
 }

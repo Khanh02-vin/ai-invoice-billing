@@ -205,7 +205,8 @@ pub async fn login(
     let (username, password, _email) = parse_user_create(&body)?;
     check_rate_limit(&state, &rid, &ip.0, "rate_limit_auth_login")?;
     let settings = &state.settings;
-    let mut user = store::get_user_by_username(&state.pool, &rid, &username).await?;
+    // Tolerant: exact → lower → bỏ dấu (gõ "khanh" vẫn ra "Khánh")
+    let mut user = store::get_user_by_username_tolerant(&state.pool, &rid, &username).await?;
     if user.is_none() && username.contains('@') {
         user = store::get_user_by_email_ci(
             &state.pool,

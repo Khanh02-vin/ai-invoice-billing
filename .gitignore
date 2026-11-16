@@ -48,3 +48,17 @@ Thumbs.db
 # SQLite WAL (sinh ra khi mở DB) — không commit
 *.db-shm
 *.db-wal
+
+# Capacitor — build artifacts (giữ lại khung project android/ios để tái lập)
+frontend/android/build/
+frontend/android/.gradle/
+frontend/android/local.properties
+frontend/android/app/build/
+frontend/android/.idea/
+frontend/ios/App/Pods/
+frontend/ios/App/DerivedData/
+frontend/ios/App/App/public/
+frontend/ios/capacitor-cordova-ios-plugins/sources/
+*.apk
+*.ipa
+*.keystore

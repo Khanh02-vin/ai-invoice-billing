@@ -30,6 +30,7 @@ async fn main() {
         limiter: std::sync::Arc::new(quanh_ta_backend::rate_limit::RateLimiter::default()),
         oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         oauth_exchanges: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        dev_reset_codes: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
     let addr = format!("0.0.0.0:{port}");
     match tokio::net::TcpListener::bind(&addr).await {

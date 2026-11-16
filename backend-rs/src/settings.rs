@@ -53,6 +53,9 @@ pub struct Settings {
     pub google_oauth_client_id: String,
     pub google_oauth_client_secret: String,
     pub google_oauth_redirect_uri: String,
+    // Opt-in tường minh: bật /auth/dev-reset-password (đặt lại mật khẩu không
+    // cần email). Production KHÔNG bao giờ nên đặt biến này.
+    pub dev_password_reset: bool,
 }
 
 impl Settings {
@@ -89,6 +92,7 @@ impl Settings {
             google_oauth_client_id: env::var("GOOGLE_CLIENT_ID").unwrap_or_default(),
             google_oauth_client_secret: env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default(),
             google_oauth_redirect_uri: env::var("GOOGLE_REDIRECT_URI").unwrap_or_default(),
+            dev_password_reset: bool_env("ALLOW_DEV_PASSWORD_RESET", false),
         }
     }
 

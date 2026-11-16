@@ -4,8 +4,10 @@
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Map, Value};
+use base64::Engine as _;
 use std::collections::HashMap;
 
 use crate::error::{AppError, AppResult, RequestId};
@@ -19,7 +21,7 @@ use crate::store::{self, DraftRow, PlaceRow, SpendListRow};
 use crate::timefmt;
 use crate::validation::{
     body_object, check_len, finish, int_field, int_field_default, opt_datetime_field,
-    opt_float_field, opt_str_field, parse_body, push_query_field, str_field,
+    opt_float_field, opt_str_field, parse_body, push_query_field, req_str_field, str_field,
 };
 
 const SPEND_LABEL: &str = "mức chi ghi nhận";
@@ -33,6 +35,7 @@ fn spend_payload(
     party_size: i64,
     occurred_at_storage: &str,
     note: &str,
+    has_receipt: bool,
 ) -> Value {
     json!({
         "id": id,
@@ -44,6 +47,7 @@ fn spend_payload(
         "spend_per_person": spend_per_person(amount, party_size),
         "occurred_at": timefmt::storage_to_iso(occurred_at_storage),
         "note": note,
+        "receipt": has_receipt,
         "spend_label": SPEND_LABEL,
     })
 }
@@ -123,6 +127,7 @@ pub async fn create_spend(
             party_size,
             &occurred,
             &note.trim(),
+            false,
         )
     })))
 }
@@ -169,6 +174,7 @@ pub async fn list_spends(
                 r.party_size,
                 &r.occurred_at,
                 &r.note,
+                r.receipt_photo.is_some(),
             )
         })
         .collect();
@@ -482,6 +488,149 @@ pub async fn confirm_draft(
             draft.party_size,
             &occurred,
             &final_note,
+            false,
         )
     })))
+}
+
+
+// ---- Ảnh biên lai chuyển khoản ----
+
+const RECEIPT_MAX_BYTES: usize = 2_500_000;
+
+fn receipts_dir(settings: &crate::settings::Settings) -> std::path::PathBuf {
+    std::path::Path::new(&settings.database_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("receipts")
+}
+
+/// POST /spends/{spend_id}/receipt — lưu ảnh biên lai (data URL JPEG/PNG/WebP,
+/// ≤ 2.5MB) vào đĩa kèm giao dịch. Chỉ owner.
+pub async fn upload_receipt(
+    State(state): State<AppState>,
+    rid: RequestId,
+    user: CurrentUser,
+    Path(spend_id): Path<String>,
+    body: Bytes,
+) -> AppResult<Json<Value>> {
+    // spend_id dùng làm tên file — chỉ chấp nhận ký tự an toàn (id sinh ra là hex)
+    if spend_id.is_empty() || !spend_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(AppError::new(
+            "NOT_FOUND",
+            "Không tìm thấy lần chi này.",
+            StatusCode::NOT_FOUND,
+        )
+        .with_request_id(&rid));
+    }
+    let owner = store::get_spend_owner(&state.pool, &rid, &spend_id).await?;
+    if owner.as_deref() != Some(user.id.as_str()) {
+        return Err(AppError::new(
+            "SPEND_NOT_FOUND",
+            "Không tìm thấy lần chi này.",
+            StatusCode::NOT_FOUND,
+        )
+        .with_request_id(&rid));
+    }
+
+    let mut fields = Vec::new();
+    let parsed = parse_body(&body, &mut fields);
+    let obj = parsed.as_ref().and_then(|v| body_object(v, &mut fields));
+    let image = match obj {
+        Some(o) => req_str_field(o, "image", &mut fields),
+        None => {
+            crate::validation::push_field(&mut fields, "image");
+            String::new()
+        }
+    };
+    finish(fields)?;
+
+    let Some((mime, b64)) = image.split_once("base64,") else {
+        return Err(AppError::validation(vec![json!(["body", "image"])]));
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|_| AppError::validation(vec![json!(["body", "image"])]))?;
+    if bytes.is_empty() {
+        return Err(AppError::validation(vec![json!(["body", "image"])]));
+    }
+    if bytes.len() > RECEIPT_MAX_BYTES {
+        return Err(AppError::new(
+            "PAYLOAD_TOO_LARGE",
+            "Ảnh biên lai quá lớn (tối đa 2.5MB).",
+            StatusCode::PAYLOAD_TOO_LARGE,
+        )
+        .with_request_id(&rid));
+    }
+
+    let ext = match mime {
+        "data:image/png" => "png",
+        "data:image/webp" => "webp",
+        _ => "jpg",
+    };
+    let dir = receipts_dir(&state.settings);
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| crate::store::internal_debug(&rid, &e))?;
+    let path = dir.join(format!("{spend_id}.{ext}"));
+    tokio::fs::write(&path, &bytes)
+        .await
+        .map_err(|e| crate::store::internal_debug(&rid, &e))?;
+    let relative = format!(
+        "receipts/{}",
+        path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+    );
+    store::set_receipt_photo(&state.pool, &rid, &user.id, &spend_id, &relative).await?;
+    Ok(Json(json!({ "saved": true, "receipt": relative })))
+}
+
+/// GET /spends/{spend_id}/receipt — đọc lại ảnh biên lai (chỉ owner).
+pub async fn get_receipt(
+    State(state): State<AppState>,
+    rid: RequestId,
+    user: CurrentUser,
+    Path(spend_id): Path<String>,
+) -> AppResult<Response> {
+    let owner = store::get_spend_owner(&state.pool, &rid, &spend_id).await?;
+    if owner.as_deref() != Some(user.id.as_str()) {
+        return Err(AppError::new(
+            "SPEND_NOT_FOUND",
+            "Không tìm thấy lần chi này.",
+            StatusCode::NOT_FOUND,
+        )
+        .with_request_id(&rid));
+    }
+    let Some(relative) = store::get_receipt_photo(&state.pool, &rid, &spend_id).await? else {
+        return Err(AppError::new(
+            "NOT_FOUND",
+            "Giao dịch này chưa có ảnh biên lai.",
+            StatusCode::NOT_FOUND,
+        )
+        .with_request_id(&rid));
+    };
+    let safe = relative.replace('\\', "/");
+    if safe.contains("..") {
+        return Err(crate::store::internal_debug(&rid, "receipt path lạ"));
+    }
+    let full = receipts_dir(&state.settings).parent().unwrap_or(std::path::Path::new(".")).join(&safe);
+    let bytes = tokio::fs::read(&full)
+        .await
+        .map_err(|_| {
+            AppError::new(
+                "NOT_FOUND",
+                "Giao dịch này chưa có ảnh biên lai.",
+                StatusCode::NOT_FOUND,
+            )
+            .with_request_id(&rid)
+        })?;
+    let mime = match full.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        _ => "image/jpeg",
+    };
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, mime)],
+        bytes,
+    )
+        .into_response())
 }

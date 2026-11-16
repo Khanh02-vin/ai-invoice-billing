@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Quanh Ta</string>
+    <string name="title_activity_main">Quanh Ta</string>
+    <string name="package_name">com.quanh.ta</string>
+    <string name="custom_url_scheme">com.quanh.ta</string>
+</resources>

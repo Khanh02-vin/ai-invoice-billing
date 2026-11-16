@@ -33,6 +33,9 @@ pub struct AppState {
     pub oauth_states: std::sync::Arc<std::sync::Mutex<HashMap<String, (String, f64)>>>,
     /// Exchange code → (user_id, expiry) — single-use, TTL 60s
     pub oauth_exchanges: std::sync::Arc<std::sync::Mutex<HashMap<String, (String, f64)>>>,
+    /// Dev reset OTP: username → (code 6 số, user_id, expiry, attempts)
+    pub dev_reset_codes:
+        std::sync::Arc<std::sync::Mutex<HashMap<String, (String, String, f64, u32)>>>,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -48,6 +51,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/resend-verification", post(auth_ext::resend_verification))
         .route("/auth/forgot-password", post(auth_ext::forgot_password))
         .route("/auth/reset-password", post(auth_ext::reset_password))
+        .route("/auth/dev-reset-password", post(auth_ext::dev_reset_password))
+        .route("/auth/dev-reset-password/request", post(auth_ext::dev_reset_request))
+        .route("/auth/dev-reset-password/confirm", post(auth_ext::dev_reset_confirm))
         .route("/auth/refresh", post(auth_ext::refresh))
         .route("/auth/revoke", post(auth_ext::revoke))
         .route("/auth/google/status", get(google_oauth::status))
@@ -70,6 +76,10 @@ pub fn build_router(state: AppState) -> Router {
             post(spends::confirm_draft),
         )
         .route("/spends/{spend_id}", delete(spends::delete_spend))
+        .route(
+            "/spends/{spend_id}/receipt",
+            post(spends::upload_receipt).get(spends::get_receipt),
+        )
         .route("/places", get(places::list_places).post(places::create_place))
         .route("/places/nearby", get(places::nearby))
         .route("/discover", get(discover::discover))

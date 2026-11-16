@@ -9,6 +9,10 @@ use crate::error::{AppError, RequestId};
 
 pub type Db = Pool<Sqlite>;
 
+pub(crate) fn internal_debug(rid: &RequestId, err: impl std::fmt::Debug) -> AppError {
+    internal(rid, err)
+}
+
 fn internal(rid: &RequestId, err: impl std::fmt::Debug) -> AppError {
     eprintln!("[quanh-ta] db_error request_id={} {err:?}", rid.0);
     AppError::new(
@@ -21,7 +25,7 @@ fn internal(rid: &RequestId, err: impl std::fmt::Debug) -> AppError {
 
 // ---- Users ----
 
-#[derive(Debug)]
+#[derive(Debug, sqlx::FromRow)]
 pub struct UserRow {
     pub id: String,
     pub username: String,
@@ -63,6 +67,46 @@ pub async fn get_user_by_username(
 
 /// get_by_email của Python: WHERE lower(email) = <strip + casefold>.
 /// casefold của Rust là to_lowercase — đủ cho email thực tế (khác biệt ß/Đ hiếm).
+
+/// Tìm user theo username "dễ tha": exact → lower → bỏ dấu (normalize_name).
+/// Dùng cho login + dev-reset để gõ "khanh" vẫn ra "Khánh". Register vẫn
+/// so khớp exact (không đổi contract tạo tài khoản).
+pub async fn get_user_by_username_tolerant(
+    db: &Db,
+    rid: &RequestId,
+    username: &str,
+) -> Result<Option<UserRow>, AppError> {
+    if let Some(u) = get_user_by_username(db, rid, username).await? {
+        return Ok(Some(u));
+    }
+    // lower match (SQL)
+    let lowered = username.trim().to_lowercase();
+    let row = sqlx::query_as::<_, UserRow>(
+        "SELECT id, username, password_hash, CAST(created_at AS TEXT) AS created_at, verified, email \
+         FROM users WHERE lower(username) = $1",
+    )
+    .bind(&lowered)
+    .fetch_optional(db)
+    .await;
+    if let Ok(Some(u)) = row {
+        return Ok(Some(u));
+    }
+    // bỏ dấu: quét danh sách user (app cá nhân, số lượng rất nhỏ)
+    let folded = crate::geo::normalize_name(username);
+    if folded.is_empty() {
+        return Ok(None);
+    }
+    let all = sqlx::query_as::<_, UserRow>(
+        "SELECT id, username, password_hash, CAST(created_at AS TEXT) AS created_at, verified, email FROM users",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| internal(rid, e))?;
+    Ok(all
+        .into_iter()
+        .find(|u| crate::geo::normalize_name(&u.username) == folded))
+}
+
 pub async fn get_user_by_email_ci(
     db: &Db,
     rid: &RequestId,
@@ -194,6 +238,7 @@ pub struct SpendListRow {
     pub party_size: i64,
     pub note: String,
     pub occurred_at: String,
+    pub receipt_photo: Option<String>,
 }
 
 /// list(user_id, start, end) — ORDER BY occurred_at DESC như Python.
@@ -207,7 +252,8 @@ pub async fn list_spends(
 ) -> Result<Vec<SpendListRow>, AppError> {
     let mut sql = String::from(
         "SELECT s.id, s.place_id, p.name AS place_name, p.category, \
-         s.amount, s.party_size, s.note, CAST(s.occurred_at AS TEXT) AS occurred_at \
+         s.amount, s.party_size, s.note, CAST(s.occurred_at AS TEXT) AS occurred_at, \
+         s.receipt_photo \
          FROM spends s LEFT JOIN places p ON p.id = s.place_id WHERE s.user_id = $1",
     );
     if start.is_some() {
@@ -237,6 +283,39 @@ pub async fn delete_spend(
         .execute(db)
         .await
         .map(|_| ())
+        .map_err(|e| internal(rid, e))
+}
+
+/// Lưu đường dẫn ảnh biên lai cho giao dịch (chỉ owner).
+pub async fn set_receipt_photo(
+    db: &Db,
+    rid: &RequestId,
+    user_id: &str,
+    spend_id: &str,
+    path: &str,
+) -> Result<(), AppError> {
+    sqlx::query!(
+        "UPDATE spends SET receipt_photo = $1 WHERE id = $2 AND user_id = $3",
+        path,
+        spend_id,
+        user_id
+    )
+    .execute(db)
+    .await
+    .map(|_| ())
+    .map_err(|e| internal(rid, e))
+}
+
+/// Đường dẫn ảnh biên lai đã lưu (None nếu chưa có).
+pub async fn get_receipt_photo(
+    db: &Db,
+    rid: &RequestId,
+    spend_id: &str,
+) -> Result<Option<String>, AppError> {
+    sqlx::query!("SELECT receipt_photo FROM spends WHERE id = $1", spend_id)
+        .fetch_optional(db)
+        .await
+        .map(|row| row.and_then(|r| r.receipt_photo))
         .map_err(|e| internal(rid, e))
 }
 
