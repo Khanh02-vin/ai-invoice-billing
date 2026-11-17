@@ -277,7 +277,16 @@ pub async fn forgot_password(
             "Xin chào {},\n\nBấm link sau để đặt lại mật khẩu:\n{reset_link}\n\nHoặc dán mã này vào app: {token}\n\nLink/mã hết hạn sau 1 giờ, dùng một lần. Nếu bạn không yêu cầu, hãy bỏ qua email này.",
             user.username
         );
-        mail::send_mail(settings, &to, "Đặt lại mật khẩu — Quanh Ta", &body_text).await;
+        // Gửi trong background: kết nối SMTP + STARTTLS + login tốn ~3s với Gmail.
+        // Không bắt user đợi — trả response ngay, email đi sau. Token đã được lưu
+        // vào DB ở trên nên vẫn hợp lệ dù task chạy sau khi client đã nhận response.
+        let mail_settings = settings.clone();
+        let subject = "Đặt lại mật khẩu — Quanh Ta".to_owned();
+        tokio::spawn(async move {
+            if !mail::send_mail(&mail_settings, &to, &subject, &body_text).await {
+                eprintln!("[quanh-ta] gui email reset that bai (da luu token trong DB)");
+            }
+        });
     }
     // Keep the response generic whether or not the user exists.
     Ok(Json(generic))
