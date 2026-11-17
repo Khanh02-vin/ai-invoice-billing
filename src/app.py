@@ -89,8 +89,9 @@ async def health():
 
 
 @app.get("/ready")
-async def ready():
-    """Readiness check — DB trả lời được."""
+def ready():
+    """Readiness check — DB trả lời được. (sync: FastAPI chạy trong threadpool,
+    không chặn event loop khi SQLite bận.)"""
     try:
         get_db().ping()
     except Exception:  # pragma: no cover - chỉ xảy ra khi file DB hỏng/ổ khoá
@@ -104,12 +105,14 @@ async def ready():
 
 
 @app.post("/auth/register", response_model=Token)
-async def register(
+def register(
     data: UserCreate,
     request: Request,
     repo: UserRepository = Depends(user_repo),
     _rl: None = Depends(rate_limit_dependency("rate_limit_auth_register")),
 ):
+    # sync def → FastAPI chạy trong threadpool: PBKDF2 (100k vòng) + SQLite không
+    # chặn event loop khi nhiều request đăng ký đồng thời.
     # Đọc settings tại request time để test monkeypatch có hiệu lực
     _settings = get_settings()
     if not _settings.open_registration:
@@ -142,11 +145,13 @@ async def register(
 
 
 @app.post("/auth/login", response_model=Token)
-async def login(
+def login(
     data: UserCreate,
     repo: UserRepository = Depends(user_repo),
     _rl: None = Depends(rate_limit_dependency("rate_limit_auth_login")),
 ):
+    # sync def → threadpool: verify_password băm PBKDF2 100k vòng, phải tránh
+    # chặn event loop khi bị burst login.
     user = repo.get_by_username(data.username)
     if user is None and "@" in data.username:
         user = repo.get_by_email(data.username)
@@ -161,7 +166,7 @@ async def login(
 
 
 @app.get("/auth/me", response_model=UserPublic)
-async def me(user: User = Depends(current_user)):
+def me(user: User = Depends(current_user)):
     return UserPublic(id=user.id, username=user.username, email=user.email)
 
 

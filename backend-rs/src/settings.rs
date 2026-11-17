@@ -147,6 +147,13 @@ impl Settings {
                     .into(),
             );
         }
+        if self.dev_password_reset {
+            return Err(
+                "Production KHÔNG ĐƯỢC bật ALLOW_DEV_PASSWORD_RESET: endpoint đó cho \
+                 đổi mật khẩu mọi tài khoản mà không cần email."
+                    .into(),
+            );
+        }
         Ok(())
     }
 }

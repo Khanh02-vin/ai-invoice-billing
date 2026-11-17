@@ -3,9 +3,8 @@
 //! Chưa cấu hình SMTP (EMAIL_SMTP_HOST/PORT) -> send_mail trả false; caller
 //! quyết định (503 fail-closed ở auth, im lặng bỏ qua ở notify).
 //!
-//! Khớp hành vi Python: port 465 → implicit TLS (SMTP_SSL, lỗi → false không
-//! fallback); còn lại → thử STARTTLS, hỏng thì gửi plain như Python bỏ qua lỗi
-//! TLS trên server nội bộ dev.
+//! Khớp hành vi Python: port 465 → implicit TLS (SMTP_SSL); còn lại → STARTTLS
+//! bắt buộc. Không thiết lập được TLS → false (fail-closed), không gửi plain.
 
 use lettre::message::header::ContentType;
 use lettre::message::{Mailbox, Message};
@@ -96,20 +95,18 @@ pub async fn send_mail(settings: &Settings, to: &str, subject: &str, body: &str)
         };
     }
 
-    // smtplib.SMTP + starttls best-effort: STARTTLS hỏng thì gửi plain
-    if let Ok(builder) = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host) {
-        match try_send(builder, settings.smtp_port, creds.clone(), make_message().expect("message đã kiểm tra mailbox")).await {
-            Ok(()) => return true,
-            Err(e) => eprintln!(
-                "[quanh-ta] STARTTLS gửi thất bại ({e}) — thử plain như Python bỏ qua TLS"
-            ),
-        }
-    }
-    let builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host);
-    match try_send(builder, settings.smtp_port, creds, make_message().expect("message đã kiểm tra mailbox")).await {
-        Ok(()) => true,
+    // SMTP + STARTTLS bắt buộc: email chứa link xác minh/reset — không bao giờ
+    // gửi plain. Không thiết lập được STARTTLS → false (fail-closed).
+    match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host) {
+        Ok(builder) => match try_send(builder, settings.smtp_port, creds, make_message().expect("message đã kiểm tra mailbox")).await {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("[quanh-ta] STARTTLS gửi thất bại -> {to}: {e}");
+                false
+            }
+        },
         Err(e) => {
-            eprintln!("[quanh-ta] Gửi email thất bại -> {to}: {e}");
+            eprintln!("[quanh-ta] Không dựng được STARTTLS transport -> {to}: {e}");
             false
         }
     }

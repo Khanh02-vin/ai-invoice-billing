@@ -3,12 +3,15 @@ ponytail: pbkdf2_hmac stdlib thay bcrypt — đủ an toàn, không thêm dep n�
 
 import base64
 import hashlib
+import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 
 import jwt
 
 from ..config import get_settings
+
+logger = logging.getLogger("quanh_ta.auth")
 
 _ALGO = "HS256"
 _ITERATIONS = 100_000
@@ -48,7 +51,12 @@ def decode_token(token: str) -> str | None:
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         return payload.get("sub")
-    except Exception:
+    except jwt.ExpiredSignatureError:
+        return None  # hết hạn — bình thường, không log
+    except jwt.InvalidTokenError as exc:
+        # Token sai/hỏng/bị sửa: log kiểu lỗi (KHÔNG log nội dung token) để thấy
+        # dấu hiệu dò token, và để lộ cấu hình secret sai thay vì im lặng.
+        logger.warning("invalid_access_token: %s", type(exc).__name__)
         return None
 
 
@@ -79,7 +87,10 @@ def decode_refresh_token(token: str) -> tuple[str, str] | None:
         if not user_id or not jti:
             return None
         return user_id, jti
-    except Exception:
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError as exc:
+        logger.warning("invalid_refresh_token: %s", type(exc).__name__)
         return None
 
 

@@ -96,7 +96,7 @@ async def google_start():
 
 @router.get("/link")
 @router.get("/link/start")
-async def google_link_start(user: User = Depends(current_user_local)):
+def google_link_start(user: User = Depends(current_user_local)):
     _enabled()
     return _auth_redirect(_state("link", user.id))
 
@@ -181,7 +181,7 @@ async def google_callback(code: str, state: str):
 
 
 @router.post("/exchange")
-async def google_exchange(payload: ExchangeRequest):
+def google_exchange(payload: ExchangeRequest):
     record = _exchanges.pop(payload.code, None)
     if not record or record[1] < time.time():
         raise AppError("INVALID_OAUTH_CODE", "Google sign-in code is invalid or expired.", status=400)
@@ -194,7 +194,7 @@ async def google_exchange(payload: ExchangeRequest):
 
 @router.delete("/unlink")
 @router.delete("/link")
-async def google_unlink(user: User = Depends(current_user_local)):
+def google_unlink(user: User = Depends(current_user_local)):
     repo = _get_repo()
     accounts = repo.list_oauth_accounts(user.id)
     if not accounts:

@@ -460,8 +460,8 @@ pub async fn dev_reset_request(
         )
         .with_request_id(&rid));
     }
-    // Log phục vụ dev-debug trên máy cá nhân (endpoint chỉ tồn tại khi opt-in)
-    eprintln!("[quanh-ta] dev reset code cho {}: {}", username, code);
+    // Không log mã OTP: log server (docker logs / journal) là nơi nhiều người
+    // đọc — lộ mã 6 số là chiếm được tài khoản trong 10 phút.
     Ok(Json(json!({
         "message": "Neu ten nguoi dung ton tai va co email, ma xac nhan da duoc gui qua email."
     })))

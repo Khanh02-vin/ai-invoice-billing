@@ -108,6 +108,12 @@ class Settings:
 
     database_path: str = field(default_factory=lambda: os.getenv("DATABASE_PATH", "data/spends.db"))
 
+    # Opt-in tường minh: bật /auth/dev-reset-password (đặt lại mật khẩu không cần
+    # email). CHỈ dùng trên máy dev; production fail-fast từ chối bật cờ này.
+    dev_password_reset: bool = field(
+        default_factory=lambda: _bool_env("ALLOW_DEV_PASSWORD_RESET", default=False)
+    )
+
     @property
     def is_production(self) -> bool:
         return self.environment.lower() == "production"
@@ -128,6 +134,11 @@ class Settings:
             )
         if self.debug:
             raise RuntimeError("Production không cho phép APP_DEBUG=true.")
+        if self.dev_password_reset:
+            raise RuntimeError(
+                "Production KHÔNG ĐƯỢC bật ALLOW_DEV_PASSWORD_RESET: endpoint đó cho "
+                "đổi mật khẩu mọi tài khoản mà không cần email."
+            )
         if any((self.google_oauth_client_id, self.google_oauth_client_secret, self.google_oauth_redirect_uri)) and not self.google_oauth_enabled:
             raise RuntimeError(
                 "Google OAuth production config requires GOOGLE_CLIENT_ID, "

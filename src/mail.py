@@ -43,11 +43,10 @@ def send_mail(to: str, subject: str, body: str) -> bool:
                 s.send_message(msg)
         else:
             with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as s:
-                try:
-                    s.starttls()
-                    s.ehlo()
-                except Exception:
-                    pass  # server nội bộ (dev) không bật TLS
+                # STARTTLS bắt buộc: email chứa link xác minh/reset — không bao giờ
+                # gửi plain. Server không hỗ trợ TLS → False (fail-closed).
+                s.starttls()
+                s.ehlo()
                 _login(s, settings)
                 s.send_message(msg)
         return True

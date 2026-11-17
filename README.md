@@ -69,8 +69,10 @@ tổ chức/API key/push/report.
 └── data/                    # dữ liệu thật (không commit); DB mặc định data/spends.db
 ```
 
-Lưu ý: `invoices.db` ở root là **dữ liệu cũ của sản phẩm trước**, không còn được app đọc
-hay sửa. Không xoá nếu bạn còn muốn giữ.
+Nguồn dữ liệu duy nhất là **`data/spends.db`** — `.env`, `src/config.py` và
+`docker-compose.yml` đều trỏ về đây. Dữ liệu thật đã được chuyển từ DB cũ sang;
+bản của sản phẩm trước (`data/prod/invoices.db`, kèm các bảng `invoices`,
+`organizations`, `gmail_*`) **không còn được app đọc** — giữ lại chỉ để tra cứu.
 
 ## Chạy local
 

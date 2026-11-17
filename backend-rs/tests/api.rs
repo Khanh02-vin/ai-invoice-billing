@@ -1462,10 +1462,10 @@ async fn dev_reset_password_flow() {
 }
 
 #[tokio::test]
-async fn dev_reset_password_opt_in_works_even_in_production_env() {
-    // Operator TỪNG MINH đặt ALLOW_DEV_PASSWORD_RESET=1 → endpoint bật dù APP_ENV=production
-    let ctx = make_ctx().await;
-    let prod_optin = Settings {
+async fn dev_reset_password_rejected_in_production() {
+    // Fail-fast: production + ALLOW_DEV_PASSWORD_RESET=1 phải bị từ chối lúc
+    // startup, nên cấu hình đó không bao giờ phục vụ request thật.
+    let mut settings = Settings {
         environment: "production".into(),
         jwt_secret: "prod-secret-dai-du-32-bytes-roi-day".into(),
         jwt_expiry_days: 7,
@@ -1488,30 +1488,14 @@ async fn dev_reset_password_opt_in_works_even_in_production_env() {
         google_oauth_redirect_uri: String::new(),
         dev_password_reset: true,
     };
-    let app = build_router(AppState {
-        pool: ctx.pool.clone(),
-        settings: prod_optin,
-        http: reqwest::Client::new(),
-        limiter: std::sync::Arc::new(quanh_ta_backend::rate_limit::RateLimiter::default()),
-        oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        oauth_exchanges: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        dev_reset_codes: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-    });
-    // Production open_registration=false → tạo user trực tiếp bằng SQL
-    sqlx::query("INSERT INTO users (id, username, password_hash, created_at, verified, email) VALUES ('optinuser0000001', 'optinuser', '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!', '2026-01-01 00:00:00.000000', 1, '')")
-        .execute(&ctx.pool)
-        .await
-        .unwrap();
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/auth/dev-reset-password",
-        None,
-        Some(json!({"username": "optinuser", "new_password": "moi-654321"})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["message"], "Dat lai mat khau thanh cong.");
+    let err = settings
+        .ensure_production_readiness()
+        .expect_err("production phải từ chối bật ALLOW_DEV_PASSWORD_RESET");
+    assert!(err.contains("ALLOW_DEV_PASSWORD_RESET"), "lỗi: {err}");
+
+    // Tắt cờ → cấu hình production hợp lệ trở lại.
+    settings.dev_password_reset = false;
+    assert!(settings.ensure_production_readiness().is_ok());
 }
 
 #[tokio::test]

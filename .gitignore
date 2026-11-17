@@ -9,6 +9,9 @@ venv/
 .env
 *.env
 .env.production
+# Backup do scripts/rotate-secrets.sh sinh ra: chứa bản sao .env + DB.
+# KHÔNG được để lọt vào git.
+backups/
 
 # DB & data
 *.db

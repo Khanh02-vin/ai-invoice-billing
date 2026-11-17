@@ -95,7 +95,7 @@ def send_verification_email(user: User, repo: UserRepository, base_url: str = ""
 
 
 @router.post("/verify-email")
-async def verify_email(payload: VerifyEmailRequest):
+def verify_email(payload: VerifyEmailRequest):
     """Verify email via token. Marks user as verified."""
     repo = _get_repo()
     user_id = repo.consume_email_verification(payload.token)
@@ -107,7 +107,7 @@ async def verify_email(payload: VerifyEmailRequest):
 
 
 @router.get("/verify-email/confirm", response_class=HTMLResponse)
-async def confirm_email_get(token: str):
+def confirm_email_get(token: str):
     """Endpoint bạn bấm trong email link — xác nhận và trả HTML thân thiện."""
     # consume_email_verification đã SET verified=1 + đánh dấu used -> single-use.
     repo = _get_repo()
@@ -132,7 +132,7 @@ def _verify_page(title: str, body: str, ok: bool) -> HTMLResponse:
 
 
 @router.post("/resend-verification")
-async def resend_verification(
+def resend_verification(
     payload: ResendVerificationRequest,
     request: Request,
     _rl: None = Depends(rate_limit_dependency("rate_limit_auth_resend")),
@@ -158,7 +158,7 @@ async def resend_verification(
 
 
 @router.post("/forgot-password")
-async def forgot_password(payload: ForgotPasswordRequest):
+def forgot_password(payload: ForgotPasswordRequest):
     """Gửi email chứa token đặt lại mật khẩu (best-effort: phản hồi luôn giống
     nhau để không lộ username có tồn tại hay không)."""
     settings = get_settings()
@@ -190,7 +190,7 @@ async def forgot_password(payload: ForgotPasswordRequest):
 
 
 @router.post("/reset-password")
-async def reset_password(payload: ResetPasswordRequest):
+def reset_password(payload: ResetPasswordRequest):
     """Reset password via token."""
     user_repo = _get_repo()
     db = getattr(user_repo, "db", None)
@@ -216,7 +216,7 @@ async def reset_password(payload: ResetPasswordRequest):
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(payload: RefreshRequest):
+def refresh(payload: RefreshRequest):
     """Refresh access token via refresh token."""
     decoded = decode_refresh_token(payload.refresh_token)
     if not decoded:
@@ -237,7 +237,7 @@ async def refresh(payload: RefreshRequest):
 
 
 @router.post("/revoke")
-async def revoke(payload: RefreshRequest):
+def revoke(payload: RefreshRequest):
     """Revoke a refresh token."""
     decoded = decode_refresh_token(payload.refresh_token)
     if not decoded:
