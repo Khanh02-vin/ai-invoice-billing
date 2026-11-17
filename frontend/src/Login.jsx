@@ -17,7 +17,7 @@ const MODE_TITLE = {
 // Giải thích cơ chế ngay trên từng màn hình — người dùng không phải đoán.
 const MODE_HINT = {
   register:
-    "Tạo tài khoản mới. Email dùng để nhận link/mã xác minh — tài khoản phải xác minh email trước khi đăng nhập (trừ máy demo bật AUTO_VERIFY_EMAIL).",
+    "Tạo tài khoản mới. Bản demo đang tự xác minh (không cần email) — khi có SMTP thật, bạn sẽ nhận link xác minh trước khi đăng nhập.",
   forgot_prod:
     "Nhập tên đăng nhập — hệ thống gửi mã đặt lại mật khẩu qua email (dùng một lần, hết hạn sau 1 giờ).",
   reset_prod:
@@ -253,7 +253,7 @@ export default function Login({ onLogin, initialError = "" }) {
             <div className="form-group">
               <label htmlFor="login-email" id="login-email-label">
                 Email <span className="required" aria-hidden="true">*</span>
-                <span className="sr-only">(bắt buộc, để nhận link xác minh)</span>
+                <span className="sr-only">(dùng để đặt lại mật khẩu)</span>
               </label>
               <input
                 id="login-email"

@@ -43,7 +43,21 @@ export async function api(path, options = {}) {
     window.dispatchEvent(new Event("auth-expired"));
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || data.detail || "Lỗi yêu cầu");
+  if (!res.ok) {
+    // Backend trả error.details.fields = [["body","username"], ...]. Gộp tên
+    // field vào message để người dùng biết mình nhập thiếu gì thay vì chỉ thấy
+    // "Dữ liệu đầu vào không hợp lệ".
+    const fields = data?.error?.details?.fields;
+    let message = data?.error?.message || (typeof data.detail === "string" ? data.detail : "") || "Lỗi yêu cầu";
+    if (Array.isArray(fields) && fields.length) {
+      const names = fields
+        .map((p) => p?.[p.length - 1])
+        .filter(Boolean)
+        .map((n) => ({ username: "Tên đăng nhập", password: "Mật khẩu", email: "Email" }[n] || n));
+      if (names.length) message += ` (${names.join(", ")})`;
+    }
+    throw new Error(message);
+  }
   return data;
 }
 
