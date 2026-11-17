@@ -51,6 +51,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/resend-verification", post(auth_ext::resend_verification))
         .route("/auth/forgot-password", post(auth_ext::forgot_password))
         .route("/auth/reset-password", post(auth_ext::reset_password))
+        .route(
+            "/auth/reset-password/confirm",
+            get(auth_ext::reset_password_confirm),
+        )
         .route("/auth/dev-reset-password", post(auth_ext::dev_reset_password))
         .route("/auth/dev-reset-password/request", post(auth_ext::dev_reset_request))
         .route("/auth/dev-reset-password/confirm", post(auth_ext::dev_reset_confirm))

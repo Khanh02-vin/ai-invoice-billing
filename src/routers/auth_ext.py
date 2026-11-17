@@ -12,7 +12,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 from ..api.deps import current_user as current_user_local
@@ -158,9 +158,9 @@ def resend_verification(
 
 
 @router.post("/forgot-password")
-def forgot_password(payload: ForgotPasswordRequest):
-    """Gửi email chứa token đặt lại mật khẩu (best-effort: phản hồi luôn giống
-    nhau để không lộ username có tồn tại hay không)."""
+def forgot_password(payload: ForgotPasswordRequest, request: Request):
+    """Gửi email chứa link đặt lại mật khẩu (phản hồi luôn giống nhau để không lộ
+    username có tồn tại hay không)."""
     settings = get_settings()
     if not settings.email_enabled:
         raise AppError("EMAIL_SERVICE_UNAVAILABLE", "Email service is unconfigured.", status=503)
@@ -177,13 +177,15 @@ def forgot_password(payload: ForgotPasswordRequest):
     repo.create_password_reset(user.id, token, expires_at)
     to = user_email(user)
     if to:
+        base_url = settings.app_url or str(request.base_url).rstrip("/")
+        reset_link = f"{base_url}/auth/reset-password/confirm?token={token}"
         send_mail(
             to,
-            "Đặt lại mật khẩu — Invoice & Billing",
+            "Đặt lại mật khẩu — Quanh Ta",
             f"Xin chào {user.username},\n\n"
-            "Gửi mã sau tới POST /auth/reset-password kèm mật khẩu mới:\n\n"
-            f"{token}\n\n"
-            "Mã hết hạn sau 1 giờ. Nếu bạn không yêu cầu, hãy bỏ qua email này.",
+            f"Bấm link sau để đặt lại mật khẩu:\n{reset_link}\n\n"
+            "Hoặc dán mã này vào app: " + token + "\n\n"
+            "Link/mã hết hạn sau 1 giờ, dùng một lần. Nếu bạn không yêu cầu, hãy bỏ qua email này.",
         )
     # Keep the response generic whether or not the user exists.
     return {"message": "Neu ten nguoi dung ton tai, email dat lai mat khau se duoc gui qua email."}
@@ -213,6 +215,15 @@ def reset_password(payload: ResetPasswordRequest):
                 session.add(token)
             session.commit()
     return {"message": "Dat lai mat khau thanh cong."}
+
+
+@router.get("/reset-password/confirm")
+def reset_password_confirm(token: str):
+    """Bấm link trong email → chuyển về app với token trên query string.
+    Không consume token ở đây (chỉ consume khi user submit mật khẩu mới)."""
+    from urllib.parse import quote
+
+    return RedirectResponse(url=f"/?reset_token={quote(token)}", status_code=302)
 
 
 @router.post("/refresh", response_model=TokenResponse)

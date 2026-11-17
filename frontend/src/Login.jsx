@@ -35,6 +35,19 @@ export default function Login({ onLogin, initialError = "" }) {
   const [loading, setLoading] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
 
+  // Bấm link trong email → backend redirect về /?reset_token=... → tự mở màn
+  // đặt lại mật khẩu với token đã điền sẵn. Xoá token khỏi URL ngay sau đó.
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("reset_token");
+    if (!token) return;
+    setResetToken(token);
+    setMode("reset");
+    setNotice("Đã nhận mã đặt lại từ email. Nhập mật khẩu mới bên dưới.");
+    const url = new URL(window.location.href);
+    url.searchParams.delete("reset_token");
+    window.history.replaceState({}, "", url.pathname);
+  }, []);
+
   // Server chưa cấu hình OAuth client thì ẩn nút Google (endpoint public, chỉ trả { enabled })
   useEffect(() => {
     fetch(`${API_BASE}/auth/google/status`)

@@ -9,7 +9,7 @@
 use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Json;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -267,17 +267,17 @@ pub async fn forgot_password(
     store::create_password_reset(&state.pool, &rid, &user.id, &token, &expiry_iso(1)).await?;
     let to = mail::user_email(&user.email, &user.username);
     if !to.is_empty() {
+        let base = if settings.app_url.is_empty() {
+            format!("http://localhost:{}", settings.port)
+        } else {
+            settings.app_url.trim_end_matches('/').to_owned()
+        };
+        let reset_link = format!("{base}/auth/reset-password/confirm?token={token}");
         let body_text = format!(
-            "Xin chào {},\n\nGửi mã sau tới POST /auth/reset-password kèm mật khẩu mới:\n\n{}\n\nMã hết hạn sau 1 giờ. Nếu bạn không yêu cầu, hãy bỏ qua email này.",
-            user.username, token
+            "Xin chào {},\n\nBấm link sau để đặt lại mật khẩu:\n{reset_link}\n\nHoặc dán mã này vào app: {token}\n\nLink/mã hết hạn sau 1 giờ, dùng một lần. Nếu bạn không yêu cầu, hãy bỏ qua email này.",
+            user.username
         );
-        mail::send_mail(
-            settings,
-            &to,
-            "Đặt lại mật khẩu — Invoice & Billing",
-            &body_text,
-        )
-        .await;
+        mail::send_mail(settings, &to, "Đặt lại mật khẩu — Quanh Ta", &body_text).await;
     }
     // Keep the response generic whether or not the user exists.
     Ok(Json(generic))
@@ -327,6 +327,15 @@ pub async fn reset_password(
     // Thu hồi toàn bộ refresh token của user sau khi đổi mật khẩu
     store::revoke_all_user_refresh_tokens(&state.pool, &rid, &row.user_id).await?;
     Ok(Json(json!({ "message": "Dat lai mat khau thanh cong." })))
+}
+
+/// GET /auth/reset-password/confirm — bấm link trong email → redirect về app
+/// với token trên query. Không consume token ở đây (chỉ consume khi submit mật khẩu mới).
+pub async fn reset_password_confirm(Query(params): Query<HashMap<String, String>>) -> Response {
+    let token = params.get("token").cloned().unwrap_or_default();
+    let encoded = percent_encoding::utf8_percent_encode(&token, percent_encoding::NON_ALPHANUMERIC)
+        .to_string();
+    Redirect::temporary(&format!("/?reset_token={encoded}")).into_response()
 }
 
 /// POST /auth/dev-reset-password — đặt lại mật khẩu TRỰC TIẾP không cần email.

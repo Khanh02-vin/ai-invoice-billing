@@ -221,8 +221,10 @@ def test_forgot_password_sends_reset_email(monkeypatch, client, user_repo):
     assert len(sent) == 1
     assert sent[0]["To"] == "kien@example.com"
     body = sent[0].get_content()
-    m = re.search(r"mật khẩu mới:\s*\n\s*\n(\S+)", body)
+    # Email giờ gửi link bấm-một-lần + token dự phòng để dán vào app.
+    m = re.search(r"/auth/reset-password/confirm\?token=(\S+)", body)
     assert m, body
+    assert "Bấm link sau để đặt lại mật khẩu" in body
 
     # Token trong email dùng reset được thật -> login bằng mật khẩu mới
     r = client.post("/auth/reset-password", json={"token": m.group(1), "new_password": "matsau123"})
