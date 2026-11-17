@@ -674,6 +674,24 @@ pub async fn get_password_reset(
     .map_err(|e| internal(rid, e))
 }
 
+/// Có mã reset còn hạn/chưa dùng của user không — KHÔNG trả nội dung mã.
+pub async fn has_active_reset(db: &Db, rid: &RequestId, user_id: &str) -> Result<bool, AppError> {
+    let rows = sqlx::query_as!(
+        TokenRow,
+        "SELECT id, user_id, expires_at, used FROM password_resets WHERE user_id = $1 AND used = 0",
+        user_id
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| internal(rid, e))?;
+    let now = chrono::Utc::now().timestamp();
+    Ok(rows.iter().any(|r| {
+        crate::timefmt::parse_expiry(&r.expires_at)
+            .map(|dt| dt.timestamp() > now)
+            .unwrap_or(false)
+    }))
+}
+
 pub async fn create_password_reset(
     db: &Db,
     rid: &RequestId,

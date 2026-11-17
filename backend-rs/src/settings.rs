@@ -49,6 +49,8 @@ pub struct Settings {
     pub rate_limit_auth_login: String,
     pub rate_limit_auth_register: String,
     pub rate_limit_auth_resend: String,
+    // Quên mật khẩu: giới hạn chặt để tránh flooding Gmail (bị drop/spam).
+    pub rate_limit_auth_forgot: String,
     // Google OAuth
     pub google_oauth_client_id: String,
     pub google_oauth_client_secret: String,
@@ -56,6 +58,9 @@ pub struct Settings {
     // Opt-in tường minh: bật /auth/dev-reset-password (đặt lại mật khẩu không
     // cần email). Production KHÔNG bao giờ nên đặt biến này.
     pub dev_password_reset: bool,
+    /// "email" (mặc định) = gửi mã qua SMTP; "show" = trả mã trong response để
+    /// hiển thị trên màn hình (demo/self-host, không có SMTP uy tín).
+    pub reset_code_mode: String,
 }
 
 impl Settings {
@@ -89,10 +94,15 @@ impl Settings {
             rate_limit_auth_register: env::var("RL_AUTH_REGISTER")
                 .unwrap_or_else(|_| "3:60".into()),
             rate_limit_auth_resend: env::var("RL_AUTH_RESEND").unwrap_or_else(|_| "3:300".into()),
+            rate_limit_auth_forgot: env::var("RL_AUTH_FORGOT").unwrap_or_else(|_| "3:3600".into()),
             google_oauth_client_id: env::var("GOOGLE_CLIENT_ID").unwrap_or_default(),
             google_oauth_client_secret: env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default(),
             google_oauth_redirect_uri: env::var("GOOGLE_REDIRECT_URI").unwrap_or_default(),
             dev_password_reset: bool_env("ALLOW_DEV_PASSWORD_RESET", false),
+            reset_code_mode: env::var("RESET_CODE_MODE")
+                .unwrap_or_else(|_| "email".into())
+                .trim()
+                .to_lowercase(),
         }
     }
 
@@ -114,6 +124,7 @@ impl Settings {
             "rate_limit_auth_login" => &self.rate_limit_auth_login,
             "rate_limit_auth_register" => &self.rate_limit_auth_register,
             "rate_limit_auth_resend" => &self.rate_limit_auth_resend,
+            "rate_limit_auth_forgot" => &self.rate_limit_auth_forgot,
             _ => "10:60",
         };
         match raw.split_once(':') {
@@ -151,6 +162,13 @@ impl Settings {
             return Err(
                 "Production KHÔNG ĐƯỢC bật ALLOW_DEV_PASSWORD_RESET: endpoint đó cho \
                  đổi mật khẩu mọi tài khoản mà không cần email."
+                    .into(),
+            );
+        }
+        if self.reset_code_mode == "show" {
+            return Err(
+                "Production KHÔNG ĐƯỢC đặt RESET_CODE_MODE=show: mã đặt lại sẽ bị trả \
+                 ra cho bất kỳ ai gọi endpoint. Chỉ dùng ở chế độ demo/local."
                     .into(),
             );
         }

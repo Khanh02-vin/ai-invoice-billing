@@ -244,8 +244,12 @@ pub async fn resend_verification(
 pub async fn forgot_password(
     State(state): State<AppState>,
     rid: RequestId,
+    client_ip: ClientIp,
     body: Bytes,
 ) -> AppResult<Json<Value>> {
+    // Giới hạn số lần yêu cầu reset — tránh flooding Gmail (bị drop/spam) và
+    // tránh lạm dụng dò tài khoản. Mặc định 3 lần / giờ cho mỗi IP.
+    check_rate_limit(&state, &rid, &client_ip.0, "rate_limit_auth_forgot")?;
     let username = parse_single_field(&body, "username")?;
     let settings = &state.settings;
     if !settings.email_enabled() {
@@ -265,6 +269,17 @@ pub async fn forgot_password(
     };
     let token = token_urlsafe_32();
     store::create_password_reset(&state.pool, &rid, &user.id, &token, &expiry_iso(1)).await?;
+
+    // Chế độ demo/self-host: không có SMTP uy tín → trả mã ngay cho client
+    // hiển thị trên màn hình. (Bị cấm ở production bởi ensure_production_readiness.)
+    if settings.reset_code_mode == "show" {
+        return Ok(Json(json!({
+            "message": "Ma dat lai mat khau (che do demo).",
+            "dev_code": token,
+            "expires_minutes": 60,
+        })));
+    }
+
     let to = mail::user_email(&user.email, &user.username);
     if !to.is_empty() {
         let base = if settings.app_url.is_empty() {
@@ -336,6 +351,20 @@ pub async fn reset_password(
     // Thu hồi toàn bộ refresh token của user sau khi đổi mật khẩu
     store::revoke_all_user_refresh_tokens(&state.pool, &rid, &row.user_id).await?;
     Ok(Json(json!({ "message": "Dat lai mat khau thanh cong." })))
+}
+
+/// GET /auth/reset-status?username=... — có mã reset còn hạn không (chỉ bool).
+pub async fn reset_status(
+    State(state): State<AppState>,
+    rid: RequestId,
+    Query(params): Query<HashMap<String, String>>,
+) -> AppResult<Json<Value>> {
+    let username = params.get("username").cloned().unwrap_or_default();
+    let active = match store::get_user_by_username(&state.pool, &rid, &username).await? {
+        Some(user) => store::has_active_reset(&state.pool, &rid, &user.id).await?,
+        None => false,
+    };
+    Ok(Json(json!({ "has_active_code": active })))
 }
 
 /// GET /auth/reset-password/confirm — bấm link trong email → redirect về app

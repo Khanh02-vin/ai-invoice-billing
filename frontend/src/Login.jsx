@@ -129,10 +129,19 @@ export default function Login({ onLogin, initialError = "" }) {
           method: "POST",
           body: JSON.stringify({ username }),
         });
+        // Hỏi backend có mã còn hạn không (chỉ trả bool, không trả nội dung) để
+        // báo đúng tình trạng — user biết chắc có mã đang chờ trong email.
+        let hadCode = false;
+        try {
+          const st = await api(`/auth/reset-status?username=${encodeURIComponent(username.trim())}`);
+          hadCode = !!st.has_active_code;
+        } catch { /* endpoint cũ có thể chưa có — bỏ qua */ }
         setPassword("");
         setMode("reset");
         setNotice(
-          "Email đặt lại đang được gửi (có thể mất vài giây). Sau khi nhận, kiểm tra cả hộp Spam / Quảng cáo. Mã hết hạn sau 1 giờ."
+          hadCode
+            ? "Bạn đã có mã đặt lại còn hạn. Kiểm tra hộp thư (kể cả Spam / Quảng cáo) và dán mã vào đây. Nếu không thấy, bấm 'Gửi lại mã'."
+            : "Email đặt lại đang được gửi. Kiểm tra cả hộp Spam / Quảng cáo. Mã hết hạn sau 1 giờ."
         );
         return;
       }

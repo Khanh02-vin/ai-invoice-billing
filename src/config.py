@@ -93,6 +93,10 @@ class Settings:
     rate_limit_auth_resend: str = field(
         default_factory=lambda: os.getenv("RL_AUTH_RESEND", "3:300")
     )
+    # Quên mật khẩu: giới hạn chặt để tránh flooding Gmail (drop/spam) & dò tài khoản.
+    rate_limit_auth_forgot: str = field(
+        default_factory=lambda: os.getenv("RL_AUTH_FORGOT", "3:3600")
+    )
 
     def rate_limit_policy(self, name: str) -> tuple[int, int]:
         """Trả về (max_requests, window_seconds) cho một chính sách.

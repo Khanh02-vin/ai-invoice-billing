@@ -158,7 +158,11 @@ def resend_verification(
 
 
 @router.post("/forgot-password")
-def forgot_password(payload: ForgotPasswordRequest, request: Request):
+def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    _rl: None = Depends(rate_limit_dependency("rate_limit_auth_forgot")),
+):
     """Gửi email chứa link đặt lại mật khẩu (phản hồi luôn giống nhau để không lộ
     username có tồn tại hay không)."""
     settings = get_settings()
@@ -215,6 +219,17 @@ def reset_password(payload: ResetPasswordRequest):
                 session.add(token)
             session.commit()
     return {"message": "Dat lai mat khau thanh cong."}
+
+
+@router.get("/reset-status")
+def reset_status(username: str):
+    """Có mã reset còn hạn cho username này không — chỉ trả bool, KHÔNG trả mã.
+    Giúp UI báo 'bạn đã có mã, kiểm tra email' mà không lộ nội dung token."""
+    repo = _get_repo()
+    user = repo.get_by_username(username)
+    if not user:
+        return {"has_active_code": False}
+    return {"has_active_code": repo.active_reset_status(user.id)}
 
 
 @router.get("/reset-password/confirm")

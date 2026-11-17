@@ -212,6 +212,20 @@ class UserRepository:
             session.add(pr)
             session.commit()
 
+    def active_reset_status(self, user_id: str) -> bool:
+        """Có mã reset còn hạn/chưa dùng của user này không — KHÔNG trả nội dung mã."""
+        with self.db.get_session() as session:
+            rows = session.exec(
+                select(PasswordReset).where(
+                    PasswordReset.user_id == user_id, PasswordReset.used == False  # noqa: E712
+                )
+            ).all()
+            now = datetime.now(UTC)
+            return any(
+                pr.expires_at and as_utc(datetime.fromisoformat(pr.expires_at)) > now
+                for pr in rows
+            )
+
     def consume_password_reset(self, token: str) -> str | None:
         with self.db.get_session() as session:
             pr = session.exec(select(PasswordReset).where(PasswordReset.token == token)).first()
