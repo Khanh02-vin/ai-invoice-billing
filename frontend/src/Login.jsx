@@ -85,6 +85,26 @@ export default function Login({ onLogin, initialError = "" }) {
     setNotice("");
   }
 
+  async function resendCode() {
+    if (!username.trim()) {
+      setError("Nhập tên đăng nhập ở màn trước rồi bấm Gửi lại.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      await api("/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ username }),
+      });
+      setNotice("Đã gửi mã mới. Kiểm tra cả hộp Spam / Quảng cáo.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function submit(e) {
     e.preventDefault();
     setLoading(true);
@@ -112,7 +132,7 @@ export default function Login({ onLogin, initialError = "" }) {
         setPassword("");
         setMode("reset");
         setNotice(
-          "Nếu tên người dùng tồn tại, email chứa mã đặt lại mật khẩu đã được gửi. Dán mã vào ô bên dưới, mã hết hạn sau 1 giờ."
+          "Email đặt lại đang được gửi (có thể mất vài giây). Sau khi nhận, kiểm tra cả hộp Spam / Quảng cáo. Mã hết hạn sau 1 giờ."
         );
         return;
       }
@@ -223,6 +243,15 @@ export default function Login({ onLogin, initialError = "" }) {
                 autoComplete="off"
                 spellCheck={false}
               />
+              <button
+                type="button"
+                className="link-button"
+                onClick={resendCode}
+                disabled={loading}
+                style={{ marginTop: 6 }}
+              >
+                {loading ? "Đang gửi..." : "Gửi lại mã"}
+              </button>
             </div>
           )}
 
@@ -290,7 +319,7 @@ export default function Login({ onLogin, initialError = "" }) {
 
           <button type="submit" disabled={loading} aria-busy={loading}>
             {loading
-              ? "Đang xử lý..."
+              ? isForgot ? "Đang gửi email..." : "Đang xử lý..."
               : isLogin
                 ? "Đăng nhập"
                 : isRegister
